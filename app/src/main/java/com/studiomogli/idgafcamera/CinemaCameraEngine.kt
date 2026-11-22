@@ -15,6 +15,8 @@ import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.RggbChannelVector
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -61,9 +63,20 @@ data class LiveTelemetry(
     val isLocked: Boolean
 )
 
-enum class CinemaResolution(val label: String, val width: Int, val height: Int, val bitrate: Int) {
-    FHD_1080P("1080P", 1920, 1080, 24_000_000),
-    UHD_4K("4K", 3840, 2160, 50_000_000)
+enum class CinemaResolution(val label: String, val width: Int, val height: Int) {
+    FHD_1080P("1080P", 1920, 1080),
+    UHD_4K("4K", 3840, 2160)
+}
+
+enum class CinemaCodec(val label: String, val encoder: Int) {
+    H264("H.264", MediaRecorder.VideoEncoder.H264),
+    HEVC("HEVC", MediaRecorder.VideoEncoder.HEVC)
+}
+
+enum class MicPreference(val label: String) {
+    AUTO("MIC: AUTO"),
+    INTERNAL("MIC: INT"),
+    EXTERNAL("MIC: EXT")
 }
 
 interface CinemaEngineListener {
@@ -103,6 +116,9 @@ class CinemaCameraEngine(
 
     var targetResolution: CinemaResolution = CinemaResolution.FHD_1080P
     var targetFps: Int = 30
+    var targetCodec: CinemaCodec = CinemaCodec.H264
+    var targetBitrateMbps: Int = 35
+    var micPreference: MicPreference = MicPreference.AUTO
     var isRecording: Boolean = false
         private set
 
@@ -252,6 +268,25 @@ class CinemaCameraEngine(
     }
 
     fun getActiveLens(): CinemaLens? = lenses.getOrNull(activeLensIndex)
+
+    fun getRecordingMaxAmplitude(): Int {
+        return try {
+            if (isRecording) mediaRecorder?.maxAmplitude ?: 0 else 0
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    fun findExternalMicDevice(): AudioDeviceInfo? {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val inputs = am.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        return inputs.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_LINE_ANALOG
+        }
+    }
 
     fun attachSurfaceAndOpen(texture: SurfaceTexture) {
         surfaceTexture = texture
@@ -560,42 +595,61 @@ class CinemaCameraEngine(
         }
     }
 
-    fun triggerTapToFocus(normX: Float, normY: Float) {
+    fun triggerTapToFocus(normX: Float, normY: Float, displayRotation: Int) {
         if (isManualFocus || isAeAfLocked) return
         val session = captureSession ?: return
         val builder = activeBuilder ?: return
         val lens = getActiveLens() ?: return
 
-        try {
-            val chars = cameraManager.getCameraCharacteristics(lens.cameraId)
-            val sensorRect = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
-            val maxAfRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
-            if (maxAfRegions <= 0) return
+        backgroundHandler?.post {
+            try {
+                val chars = cameraManager.getCameraCharacteristics(lens.cameraId)
+                val sensorRect = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return@post
+                val maxAfRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
+                if (maxAfRegions <= 0) return@post
 
-            val cx = (normX.coerceIn(0f, 1f) * sensorRect.width()).toInt()
-            val cy = (normY.coerceIn(0f, 1f) * sensorRect.height()).toInt()
-            val halfW = (sensorRect.width() * 0.08f).toInt()
-            val halfH = (sensorRect.height() * 0.08f).toInt()
+                // Map landscape screen touch coordinates into Camera2 sensor coordinates
+                var sx = normX.coerceIn(0f, 1f)
+                var sy = normY.coerceIn(0f, 1f)
+                if (displayRotation == Surface.ROTATION_270) {
+                    sx = 1f - sx
+                    sy = 1f - sy
+                }
+                if (lens.isFront) {
+                    sx = 1f - sx
+                }
 
-            val rect = Rect(
-                (cx - halfW).coerceIn(0, sensorRect.width()),
-                (cy - halfH).coerceIn(0, sensorRect.height()),
-                (cx + halfW).coerceIn(0, sensorRect.width()),
-                (cy + halfH).coerceIn(0, sensorRect.height())
-            )
-            val metering = arrayOf(MeteringRectangle(rect, MeteringRectangle.METERING_WEIGHT_MAX - 1))
+                val cx = (sx * sensorRect.width()).toInt()
+                val cy = (sy * sensorRect.height()).toInt()
+                val halfW = (sensorRect.width() * 0.10f).toInt()
+                val halfH = (sensorRect.height() * 0.10f).toInt()
 
-            builder.set(CaptureRequest.CONTROL_AF_REGIONS, metering)
-            if (!isManualExposure) {
-                builder.set(CaptureRequest.CONTROL_AE_REGIONS, metering)
+                val rect = Rect(
+                    (cx - halfW).coerceIn(0, sensorRect.width() - 1),
+                    (cy - halfH).coerceIn(0, sensorRect.height() - 1),
+                    (cx + halfW).coerceIn(1, sensorRect.width()),
+                    (cy + halfH).coerceIn(1, sensorRect.height())
+                )
+                val metering = arrayOf(MeteringRectangle(rect, MeteringRectangle.METERING_WEIGHT_MAX - 1))
+
+                // 1. Cancel any previous AF trigger
+                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
+                session.capture(builder.build(), captureCallback, backgroundHandler)
+
+                // 2. Apply AF/AE regions and trigger single-shot focus lock
+                builder.set(CaptureRequest.CONTROL_AF_REGIONS, metering)
+                if (!isManualExposure) {
+                    builder.set(CaptureRequest.CONTROL_AE_REGIONS, metering)
+                }
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+                session.capture(builder.build(), captureCallback, backgroundHandler)
+
+                // 3. Keep repeating request locked on that region without re-triggering
+                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
+                session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
+            } catch (_: Exception) {
             }
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-            session.capture(builder.build(), captureCallback, backgroundHandler)
-
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
-            session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
-        } catch (_: Exception) {
         }
     }
 
@@ -751,20 +805,27 @@ class CinemaCameraEngine(
             recorder.setOutputFile(outFile.absolutePath)
         }
 
-        val bitrate = if (resolvedVideoSize.width >= 3840) {
-            CinemaResolution.UHD_4K.bitrate
-        } else {
-            CinemaResolution.FHD_1080P.bitrate
-        }
-
-        recorder.setVideoEncodingBitRate(bitrate)
+        val bitrateBps = targetBitrateMbps.coerceIn(10, 120) * 1_000_000
+        recorder.setVideoEncodingBitRate(bitrateBps)
         recorder.setVideoFrameRate(resolvedFpsRange.upper)
         recorder.setVideoSize(resolvedVideoSize.width, resolvedVideoSize.height)
-        recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+        recorder.setVideoEncoder(targetCodec.encoder)
         recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-        recorder.setAudioEncodingBitRate(192_000)
+        recorder.setAudioEncodingBitRate(256_000)
         recorder.setAudioSamplingRate(48_000)
         recorder.setOrientationHint(computeOrientationHint(lens, displayRotation))
+
+        // Route external USB/Wired mic if preferred or detected in AUTO mode (API 28+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
+            val extMic = findExternalMicDevice()
+            if (extMic != null) {
+                try {
+                    recorder.setPreferredDevice(extMic)
+                } catch (_: Exception) {
+                }
+            }
+        }
+
         recorder.prepare()
         return recorder
     }

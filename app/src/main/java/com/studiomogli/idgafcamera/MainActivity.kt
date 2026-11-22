@@ -8,7 +8,13 @@ import android.content.pm.PackageManager
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.net.Uri
+import android.text.InputType
+import android.widget.EditText
+import androidx.appcompat.app.AlertDialog
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -40,6 +46,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var textureView: TextureView
     private lateinit var focusReticle: View
     private lateinit var overlayView: CinemaOverlayView
+    private lateinit var audioMeterView: AudioMeterView
+
+    // Phase 4 Pro Audio / Codec / Bitrate Bar
+    private lateinit var btnProSettingsToggle: TextView
+    private lateinit var proSettingsBar: LinearLayout
+    private lateinit var btnProCodec: TextView
+    private lateinit var btnProBitrate: TextView
+    private lateinit var btnProMic: TextView
+    private val bitrateOptions = listOf(24, 35, 50, 75, 100, 120)
+    private var bitrateIdx = 1
+    private var micPrefIdx = 0
+
+    // Live Audio VU preview monitor (runs when idle; switches to MediaRecorder amplitude while recording)
+    @Volatile private var audioMonitorRunning = false
+    private var audioMonitorThread: Thread? = null
 
     // Phase 3 Monitoring Toolbar
     private lateinit var btnMonitorToggle: TextView
@@ -168,6 +189,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         textureView = findViewById(R.id.cameraTextureView)
         focusReticle = findViewById(R.id.focusReticle)
         overlayView = findViewById(R.id.cinemaOverlayView)
+        audioMeterView = findViewById(R.id.audioMeterView)
+        btnProSettingsToggle = findViewById(R.id.btnProSettingsToggle)
+        proSettingsBar = findViewById(R.id.proSettingsBar)
+        btnProCodec = findViewById(R.id.btnProCodec)
+        btnProBitrate = findViewById(R.id.btnProBitrate)
+        btnProMic = findViewById(R.id.btnProMic)
         btnMonitorToggle = findViewById(R.id.btnMonitorToggle)
         monitorToolsBar = findViewById(R.id.monitorToolsBar)
         btnToolGrid = findViewById(R.id.btnToolGrid)
@@ -211,6 +238,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         setupTopAndRightControls()
         setupProDockAndDrawer()
         setupMonitoringTools()
+        setupProAudioAndCodecBar()
 
         textureView.setOnTouchListener { v, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
@@ -219,7 +247,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 } else {
                     val normX = event.x / v.width.coerceAtLeast(1)
                     val normY = event.y / v.height.coerceAtLeast(1)
-                    engine.triggerTapToFocus(normX, normY)
+                    val rot = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                        display?.rotation ?: Surface.ROTATION_90
+                    } else {
+                        @Suppress("DEPRECATION")
+                        windowManager.defaultDisplay.rotation
+                    }
+                    engine.triggerTapToFocus(normX, normY, rot)
                     showFocusReticle(event.x, event.y)
                 }
             }
@@ -282,9 +316,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun setupMonitoringTools() {
         btnMonitorToggle.setOnClickListener {
             val showing = monitorToolsBar.visibility == View.VISIBLE
+            if (!showing && proSettingsBar.visibility == View.VISIBLE) {
+                proSettingsBar.visibility = View.GONE
+                styleToolPill(btnProSettingsToggle, false)
+            }
             monitorToolsBar.visibility = if (showing) View.GONE else View.VISIBLE
-            btnMonitorToggle.setBackgroundResource(if (!showing) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
-            btnMonitorToggle.setTextColor(if (!showing) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+            styleToolPill(btnMonitorToggle, !showing)
         }
 
         btnToolGrid.setOnClickListener {
@@ -325,6 +362,166 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         view.setTextColor(if (active) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
     }
 
+    private fun setupProAudioAndCodecBar() {
+        btnProSettingsToggle.setOnClickListener {
+            val showing = proSettingsBar.visibility == View.VISIBLE
+            if (!showing && monitorToolsBar.visibility == View.VISIBLE) {
+                monitorToolsBar.visibility = View.GONE
+                styleToolPill(btnMonitorToggle, false)
+            }
+            proSettingsBar.visibility = if (showing) View.GONE else View.VISIBLE
+            styleToolPill(btnProSettingsToggle, !showing)
+        }
+
+        btnProCodec.setOnClickListener {
+            if (engine.isRecording) return@setOnClickListener
+            engine.targetCodec = if (engine.targetCodec == CinemaCodec.H264) CinemaCodec.HEVC else CinemaCodec.H264
+            btnProCodec.text = engine.targetCodec.label
+            styleToolPill(btnProCodec, engine.targetCodec == CinemaCodec.HEVC)
+        }
+
+        btnProBitrate.setOnClickListener {
+            if (engine.isRecording) return@setOnClickListener
+            bitrateIdx = (bitrateIdx + 1) % bitrateOptions.size
+            val mbps = bitrateOptions[bitrateIdx]
+            engine.targetBitrateMbps = mbps
+            btnProBitrate.text = "$mbps Mbps"
+        }
+
+        btnProMic.setOnClickListener {
+            if (engine.isRecording) return@setOnClickListener
+            val prefs = MicPreference.values()
+            micPrefIdx = (micPrefIdx + 1) % prefs.size
+            val selected = prefs[micPrefIdx]
+            engine.micPreference = selected
+            val extFound = engine.findExternalMicDevice() != null
+            btnProMic.text = if (selected == MicPreference.EXTERNAL && !extFound) {
+                "MIC: NO EXT"
+            } else {
+                selected.label
+            }
+        }
+    }
+
+    private fun startAudioVuMonitor() {
+        if (audioMonitorRunning || !hasPerm(Manifest.permission.RECORD_AUDIO)) return
+        audioMonitorRunning = true
+        audioMonitorThread = Thread {
+            val sampleRate = 16000
+            val minBuf = AudioRecord.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(1024)
+            var ar: AudioRecord? = null
+            val buffer = ShortArray(minBuf / 2)
+
+            while (audioMonitorRunning) {
+                if (engine.isRecording) {
+                    // Release AudioRecord while MediaRecorder owns the mic, read MediaRecorder amplitude instead
+                    if (ar != null) {
+                        try { ar.stop(); ar.release() } catch (_: Exception) {}
+                        ar = null
+                    }
+                    val amp = engine.getRecordingMaxAmplitude()
+                    val norm = (amp / 22000f).coerceIn(0f, 1f)
+                    audioMeterView.updateLevel(norm)
+                    try { Thread.sleep(70L) } catch (_: Exception) {}
+                } else {
+                    if (ar == null) {
+                        try {
+                            @SuppressLint("MissingPermission")
+                            val rec = AudioRecord(
+                                MediaRecorder.AudioSource.MIC,
+                                sampleRate,
+                                AudioFormat.CHANNEL_IN_MONO,
+                                AudioFormat.ENCODING_PCM_16BIT,
+                                minBuf
+                            )
+                            if (rec.state == AudioRecord.STATE_INITIALIZED) {
+                                rec.startRecording()
+                                ar = rec
+                            } else {
+                                rec.release()
+                            }
+                        } catch (_: Exception) {
+                            try { Thread.sleep(200L) } catch (_: Exception) {}
+                        }
+                    }
+                    val activeAr = ar
+                    if (activeAr != null) {
+                        val read = activeAr.read(buffer, 0, buffer.size)
+                        if (read > 0) {
+                            var peak = 0
+                            for (i in 0 until read) {
+                                val v = kotlin.math.abs(buffer[i].toInt())
+                                if (v > peak) peak = v
+                            }
+                            val norm = (peak / 18000f).coerceIn(0f, 1f)
+                            audioMeterView.updateLevel(norm)
+                        }
+                    }
+                }
+            }
+            try { ar?.stop(); ar?.release() } catch (_: Exception) {}
+        }.also { it.start() }
+    }
+
+    private fun stopAudioVuMonitor() {
+        audioMonitorRunning = false
+        audioMonitorThread?.interrupt()
+        audioMonitorThread = null
+    }
+
+    private fun showTapToTypeValueDialog() {
+        val panel = activePanel
+        if (panel == ProControlPanel.NONE) return
+
+        val (title, hint) = when (panel) {
+            ProControlPanel.ISO -> "Enter Exact ISO" to "e.g. 100, 400, 800, 1600"
+            ProControlPanel.SHUTTER -> "Enter Shutter (1/X sec)" to "e.g. 48, 50, 60, 120, 500"
+            ProControlPanel.WB -> "Enter White Balance (Kelvin)" to "2500 to 8500 (e.g. 5600)"
+            ProControlPanel.FOCUS -> "Enter Focus Distance (%)" to "0 (Infinity) to 100 (Macro)"
+            ProControlPanel.NONE -> return
+        }
+
+        val input = EditText(this).apply {
+            this.hint = hint
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF888888.toInt())
+            setPadding(36, 28, 36, 28)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(input)
+            .setPositiveButton("Apply") { _, _ ->
+                val v = input.text.toString().trim().toIntOrNull()
+                if (v == null || v <= 0 && panel != ProControlPanel.FOCUS) {
+                    Toast.makeText(this, "Enter a valid number", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                when (panel) {
+                    ProControlPanel.ISO -> engine.setManualIso(v)
+                    ProControlPanel.SHUTTER -> {
+                        val denom = v.coerceIn(1, 8000)
+                        engine.setManualShutterNs(1_000_000_000L / denom)
+                    }
+                    ProControlPanel.WB -> engine.setManualWhiteBalanceKelvin(v)
+                    ProControlPanel.FOCUS -> {
+                        val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
+                        val d = (v.coerceIn(0, 100) / 100f) * maxF
+                        engine.setManualFocusDistance(d)
+                    }
+                    ProControlPanel.NONE -> {}
+                }
+                refreshSliderState()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun setupProDockAndDrawer() {
         pillIso.setOnClickListener {
             selectPanel(if (activePanel == ProControlPanel.ISO) ProControlPanel.NONE else ProControlPanel.ISO)
@@ -346,6 +543,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val locked = engine.toggleAeAfLock()
             updateLockUi(locked)
             Toast.makeText(this, if (locked) "AE / AF LOCKED" else "AE / AF UNLOCKED", Toast.LENGTH_SHORT).show()
+        }
+
+        txtSliderReadout.setOnClickListener {
+            showTapToTypeValueDialog()
         }
 
         btnSliderAuto.setOnClickListener {
@@ -721,6 +922,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         enableImmersiveFullscreen()
         engine.startThread()
         syncAnalysisLoop()
+        startAudioVuMonitor()
         if (textureView.isAvailable) {
             openCameraIfReady()
         } else {
@@ -732,6 +934,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         rackAnimator?.cancel()
         uiHandler.removeCallbacks(timecodeRunnable)
         uiHandler.removeCallbacks(analysisRunnable)
+        stopAudioVuMonitor()
         engine.stopThread()
         super.onPause()
     }
