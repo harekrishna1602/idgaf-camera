@@ -195,9 +195,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 )
                 engine.setZoomRatio(nextZoom)
                 updateZoomReadout()
-            styleToolPill(btnProTorch, engine.isTorchEnabled)
-            btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
-            styleToolPill(btnProStab, engine.isStabilizationEnabled)
                 uiHandler.postDelayed(this, 16L)
             }
         }
@@ -346,9 +343,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 )
                 engine.setZoomRatio(next)
                 updateZoomReadout()
-            styleToolPill(btnProTorch, engine.isTorchEnabled)
-            btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
-            styleToolPill(btnProStab, engine.isStabilizationEnabled)
                 return true
             }
         })
@@ -952,9 +946,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtZoomReadout.setOnClickListener {
             engine.resetZoom()
             updateZoomReadout()
-            styleToolPill(btnProTorch, engine.isTorchEnabled)
-            btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
-            styleToolPill(btnProStab, engine.isStabilizationEnabled)
         }
 
         btnZoomSpeed.setOnClickListener {
