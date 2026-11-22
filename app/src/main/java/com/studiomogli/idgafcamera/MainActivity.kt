@@ -67,6 +67,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnProMic: TextView
     private lateinit var btnProTone: TextView
     private lateinit var btnProPresets: TextView
+    private lateinit var btnRotateMode: TextView
+    private var isPortraitMode = false
+    private var lastToastMs: Long = 0L
+    private var lastToastMsg: String = ""
     private lateinit var btnUpdateApp: TextView
     private lateinit var presetStore: PresetStore
     private var updateDownloadUrl: String? = null
@@ -247,6 +251,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProMic = findViewById(R.id.btnProMic)
         btnProTone = findViewById(R.id.btnProTone)
         btnProPresets = findViewById(R.id.btnProPresets)
+        btnRotateMode = findViewById(R.id.btnRotateMode)
         btnUpdateApp = findViewById(R.id.btnUpdateApp)
         presetStore = PresetStore(this)
         btnMonitorToggle = findViewById(R.id.btnMonitorToggle)
@@ -382,8 +387,34 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (engine.isRecording) return@setOnClickListener
             currentFpsIdx = (currentFpsIdx + 1) % fpsOptions.size
             val fps = fpsOptions[currentFpsIdx]
+            engine.targetFps = fps
             btnFps.text = "$fps FPS"
             engine.updateSettings(currentResolution, fps)
+        }
+
+        btnFps.setOnLongClickListener {
+            if (engine.isRecording) return@setOnLongClickListener true
+            showCustomFpsDialog()
+            true
+        }
+
+        btnRotateMode.setOnClickListener {
+            if (engine.isRecording) {
+                showThrottledToast("Stop recording before rotating.")
+                return@setOnClickListener
+            }
+            isPortraitMode = !isPortraitMode
+            if (isPortraitMode) {
+                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                btnRotateMode.text = "PORT"
+                styleToolPill(btnRotateMode, true)
+            } else {
+                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                btnRotateMode.text = "LAND"
+                btnRotateMode.setBackgroundResource(R.drawable.bg_hud_pill)
+                btnRotateMode.setTextColor(0xFF38BDF8.toInt())
+            }
+            textureView.post { configureTransform(lastPreviewSize) }
         }
 
         btnLastClip.setOnClickListener {
@@ -832,7 +863,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         pillFocus.setOnClickListener {
             if (!engine.capabilities.supportsManualFocus) {
-                Toast.makeText(this, "This lens has fixed focus", Toast.LENGTH_SHORT).show()
+                showThrottledToast("This lens has fixed focus")
                 return@setOnClickListener
             }
             selectPanel(if (activePanel == ProControlPanel.FOCUS) ProControlPanel.NONE else ProControlPanel.FOCUS)
@@ -882,7 +913,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnAeAfLock.setOnClickListener {
             val locked = engine.toggleAeAfLock()
             updateLockUi(locked)
-            Toast.makeText(this, if (locked) "AE / AF LOCKED" else "AE / AF UNLOCKED", Toast.LENGTH_SHORT).show()
+            showThrottledToast(if (locked) "AE / AF LOCKED" else "AE / AF UNLOCKED")
         }
 
         txtSliderReadout.setOnClickListener {
@@ -1206,16 +1237,47 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }.start()
     }
 
+    private fun showThrottledToast(msg: String) {
+        val now = System.currentTimeMillis()
+        if (msg == lastToastMsg && now - lastToastMs < 1800L) return
+        lastToastMsg = msg
+        lastToastMs = now
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showCustomFpsDialog() {
+        val input = EditText(this).apply {
+            hint = "FPS (e.g. 24, 30, 60)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF888888.toInt())
+            setPadding(36, 28, 36, 28)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Enter Custom Frame Rate (FPS)")
+            .setView(input)
+            .setPositiveButton("Apply") { _, _ ->
+                val fps = input.text.toString().trim().toIntOrNull()
+                if (fps == null || fps !in 15..120) {
+                    showThrottledToast("Enter FPS between 15 and 120")
+                    return@setPositiveButton
+                }
+                engine.targetFps = fps
+                btnFps.text = "$fps FPS"
+                engine.updateSettings(currentResolution, fps)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun configureTransform(previewSize: Size) {
         val viewW = textureView.width.toFloat()
         val viewH = textureView.height.toFloat()
         if (viewW <= 0f || viewH <= 0f) return
 
         val matrix = Matrix()
-        val viewRect = RectF(0f, 0f, viewW, viewH)
-        val bufferRect = RectF(0f, 0f, previewSize.height.toFloat(), previewSize.width.toFloat())
-        val centerX = viewRect.centerX()
-        val centerY = viewRect.centerY()
+        val centerX = viewW / 2f
+        val centerY = viewH / 2f
 
         val rotation = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             display?.rotation ?: Surface.ROTATION_90
@@ -1224,15 +1286,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             windowManager.defaultDisplay.rotation
         }
 
-        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
-            bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
-            matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
-            val scale = maxOf(
-                viewH / previewSize.height.toFloat(),
-                viewW / previewSize.width.toFloat()
-            )
-            matrix.postScale(scale, scale, centerX, centerY)
-            matrix.postRotate(90f * (rotation - 2), centerX, centerY)
+        val isRotated90or270 = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270
+        val bufW = if (isRotated90or270) previewSize.height.toFloat() else previewSize.width.toFloat()
+        val bufH = if (isRotated90or270) previewSize.width.toFloat() else previewSize.height.toFloat()
+
+        // Scale proportionally by aspect ratio to avoid portrait/landscape stretching
+        val viewRatio = viewW / viewH.coerceAtLeast(1f)
+        val bufRatio = bufW / bufH.coerceAtLeast(1f)
+        val scaleX = if (bufRatio > viewRatio) bufRatio / viewRatio else 1f
+        val scaleY = if (viewRatio > bufRatio) viewRatio / bufRatio else 1f
+
+        matrix.setScale(scaleX, scaleY, centerX, centerY)
+        if (rotation == Surface.ROTATION_90) {
+            matrix.postRotate(-90f, centerX, centerY)
+        } else if (rotation == Surface.ROTATION_270) {
+            matrix.postRotate(90f, centerX, centerY)
         } else if (rotation == Surface.ROTATION_180) {
             matrix.postRotate(180f, centerX, centerY)
         }

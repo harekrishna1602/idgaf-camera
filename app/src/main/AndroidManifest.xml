@@ -29,7 +29,7 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true"
             android:keepScreenOn="true"
-            android:screenOrientation="fullSensor">
+            android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

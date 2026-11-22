@@ -334,7 +334,7 @@ class CinemaCameraEngine(
         if (!capabilities.supportsManualExposure) return
         if (!isManualExposure) {
             manualShutterNs = if (isShutter180Locked) {
-                compute180ShutterNs(resolvedFpsRange.upper)
+                compute180ShutterNs(targetFps)
             } else {
                 liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, minOf(capabilities.exposureRangeNs.upper, 40_000_000L))
             }
@@ -363,14 +363,14 @@ class CinemaCameraEngine(
         }
         val clampedAngle = angleDegrees.coerceIn(11.25f, 360f)
         isShutter180Locked = kotlin.math.abs(clampedAngle - 180f) < 1f
-        val fps = resolvedFpsRange.upper.coerceAtLeast(1)
+        val fps = targetFps.coerceAtLeast(1)
         val rawNs = ((clampedAngle / 360.0) * (1_000_000_000.0 / fps)).toLong()
         manualShutterNs = rawNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
         pushUpdatedRepeatingRequest()
     }
 
     fun getCurrentShutterAngle(): Float {
-        val fps = resolvedFpsRange.upper.coerceAtLeast(1)
+        val fps = targetFps.coerceAtLeast(1)
         val ns = if (isManualExposure) manualShutterNs else liveShutterNs
         return ((ns.toDouble() * fps / 1_000_000_000.0) * 360.0).toFloat().coerceIn(1f, 360f)
     }
@@ -393,7 +393,7 @@ class CinemaCameraEngine(
                 manualIso = liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
                 isManualExposure = true
             }
-            manualShutterNs = compute180ShutterNs(resolvedFpsRange.upper)
+            manualShutterNs = compute180ShutterNs(targetFps)
             pushUpdatedRepeatingRequest()
         }
         return isShutter180Locked
@@ -465,15 +465,15 @@ class CinemaCameraEngine(
             builder.set(CaptureRequest.CONTROL_AE_LOCK, isAeAfLocked || lockAutoForRecordStart)
         }
 
-        // 2. Focus (Manual Diopter vs Locked AF vs Continuous Video AF)
+        // 2. Focus (Keep steady — no mid-recording continuous focus hunting)
         if (isManualFocus && capabilities.supportsManualFocus) {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
             builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, manualFocusDistance)
-        } else if (isAeAfLocked && capabilities.supportsManualFocus) {
+        } else if (capabilities.supportsManualFocus && liveFocusDistance > 0f) {
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
             builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, liveFocusDistance.coerceIn(0f, capabilities.minFocusDistance))
         } else {
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
         }
 
         // 3. White Balance (Kelvin RGGB Gains vs Locked AWB vs Auto WB)
@@ -678,7 +678,7 @@ class CinemaCameraEngine(
                             listener.onCameraReady(
                                 resolvedPreviewSize,
                                 resolvedVideoSize,
-                                resolvedFpsRange.upper,
+                                targetFps,
                                 lens,
                                 capabilities
                             )
@@ -869,7 +869,7 @@ class CinemaCameraEngine(
 
     private fun createAndPrepareMediaRecorder(lens: CinemaLens, displayRotation: Int): MediaRecorder {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val fileName = "IDGAF_${resolvedVideoSize.height}p_${resolvedFpsRange.upper}fps_$timestamp.mp4"
+        val fileName = "IDGAF_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
         activeFileLabel = "Movies/IDGAF_Camera/$fileName"
 
         val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -910,7 +910,7 @@ class CinemaCameraEngine(
 
         val bitrateBps = targetBitrateMbps.coerceIn(10, 120) * 1_000_000
         recorder.setVideoEncodingBitRate(bitrateBps)
-        recorder.setVideoFrameRate(resolvedFpsRange.upper)
+        recorder.setVideoFrameRate(targetFps)
         recorder.setVideoSize(resolvedVideoSize.width, resolvedVideoSize.height)
         recorder.setVideoEncoder(targetCodec.encoder)
         recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -995,9 +995,16 @@ class CinemaCameraEngine(
     }
 
     private fun chooseBestFpsRange(ranges: Array<Range<Int>>, desiredFps: Int): Range<Int> {
-        if (ranges.isEmpty()) return Range(30, 30)
-        ranges.firstOrNull { it.lower == desiredFps && it.upper == desiredFps }?.let { return it }
-        ranges.firstOrNull { it.upper == desiredFps }?.let { return it }
-        return ranges.minByOrNull { abs(it.upper - desiredFps) } ?: Range(30, 30)
+        val clamped = desiredFps.coerceIn(15, 120)
+        if (ranges.isEmpty()) return Range(clamped, clamped)
+        ranges.firstOrNull { it.lower == clamped && it.upper == clamped }?.let { return it }
+        val containing = ranges
+            .filter { clamped in it.lower..it.upper }
+            .minByOrNull { (it.upper - it.lower).coerceAtLeast(0) }
+        if (containing != null) {
+            // Honor the exact requested FPS rather than falling back to 30/24
+            return Range(clamped, clamped)
+        }
+        return Range(clamped, clamped)
     }
 }
