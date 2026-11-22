@@ -39,6 +39,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var engine: CinemaCameraEngine
     private lateinit var textureView: TextureView
     private lateinit var focusReticle: View
+    private lateinit var overlayView: CinemaOverlayView
+
+    // Phase 3 Monitoring Toolbar
+    private lateinit var btnMonitorToggle: TextView
+    private lateinit var monitorToolsBar: LinearLayout
+    private lateinit var btnToolGrid: TextView
+    private lateinit var btnToolFrame: TextView
+    private lateinit var btnToolPeak: TextView
+    private lateinit var btnToolZebra: TextView
+    private lateinit var btnToolHist: TextView
+    private var frameGuideIdx = 0
 
     private lateinit var txtTimecode: TextView
     private lateinit var viewRecDot: View
@@ -90,6 +101,29 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private var recStartMs: Long = 0L
     private val uiHandler = Handler(Looper.getMainLooper())
+    private val analysisRunnable = object : Runnable {
+        override fun run() {
+            if (overlayView.needsFrameAnalysis() && textureView.isAvailable) {
+                try {
+                    val bmp = textureView.getBitmap(160, 90)
+                    if (bmp != null) {
+                        overlayView.analyzeFrame(bmp)
+                        bmp.recycle()
+                    }
+                } catch (_: Exception) {
+                }
+                uiHandler.postDelayed(this, 120L)
+            }
+        }
+    }
+
+    private fun syncAnalysisLoop() {
+        uiHandler.removeCallbacks(analysisRunnable)
+        if (overlayView.needsFrameAnalysis()) {
+            uiHandler.post(analysisRunnable)
+        }
+    }
+
     private val timecodeRunnable = object : Runnable {
         override fun run() {
             if (engine.isRecording) {
@@ -133,6 +167,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         textureView = findViewById(R.id.cameraTextureView)
         focusReticle = findViewById(R.id.focusReticle)
+        overlayView = findViewById(R.id.cinemaOverlayView)
+        btnMonitorToggle = findViewById(R.id.btnMonitorToggle)
+        monitorToolsBar = findViewById(R.id.monitorToolsBar)
+        btnToolGrid = findViewById(R.id.btnToolGrid)
+        btnToolFrame = findViewById(R.id.btnToolFrame)
+        btnToolPeak = findViewById(R.id.btnToolPeak)
+        btnToolZebra = findViewById(R.id.btnToolZebra)
+        btnToolHist = findViewById(R.id.btnToolHist)
         txtTimecode = findViewById(R.id.txtTimecode)
         viewRecDot = findViewById(R.id.viewRecDot)
         btnResolution = findViewById(R.id.btnResolution)
@@ -168,6 +210,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         setupTopAndRightControls()
         setupProDockAndDrawer()
+        setupMonitoringTools()
 
         textureView.setOnTouchListener { v, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
@@ -234,6 +277,52 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 Toast.makeText(this, "Open Gallery → Movies/IDGAF_Camera", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    private fun setupMonitoringTools() {
+        btnMonitorToggle.setOnClickListener {
+            val showing = monitorToolsBar.visibility == View.VISIBLE
+            monitorToolsBar.visibility = if (showing) View.GONE else View.VISIBLE
+            btnMonitorToggle.setBackgroundResource(if (!showing) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+            btnMonitorToggle.setTextColor(if (!showing) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+        }
+
+        btnToolGrid.setOnClickListener {
+            overlayView.showGrid = !overlayView.showGrid
+            styleToolPill(btnToolGrid, overlayView.showGrid)
+        }
+
+        btnToolFrame.setOnClickListener {
+            val guides = AspectGuide.values()
+            frameGuideIdx = (frameGuideIdx + 1) % guides.size
+            val g = guides[frameGuideIdx]
+            overlayView.aspectGuide = g
+            btnToolFrame.text = "FRAME: ${g.label}"
+            styleToolPill(btnToolFrame, g != AspectGuide.OFF)
+        }
+
+        btnToolPeak.setOnClickListener {
+            overlayView.showPeaking = !overlayView.showPeaking
+            styleToolPill(btnToolPeak, overlayView.showPeaking)
+            syncAnalysisLoop()
+        }
+
+        btnToolZebra.setOnClickListener {
+            overlayView.showZebras = !overlayView.showZebras
+            styleToolPill(btnToolZebra, overlayView.showZebras)
+            syncAnalysisLoop()
+        }
+
+        btnToolHist.setOnClickListener {
+            overlayView.showHistogram = !overlayView.showHistogram
+            styleToolPill(btnToolHist, overlayView.showHistogram)
+            syncAnalysisLoop()
+        }
+    }
+
+    private fun styleToolPill(view: TextView, active: Boolean) {
+        view.setBackgroundResource(if (active) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+        view.setTextColor(if (active) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
     }
 
     private fun setupProDockAndDrawer() {
@@ -598,6 +687,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             recStartMs = System.currentTimeMillis()
             viewRecDot.visibility = View.VISIBLE
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_stop)
+            btnShutterInner.animate().scaleX(0.54f).scaleY(0.54f).setDuration(140L).start()
             txtTimecode.setTextColor(0xFFFF3B30.toInt())
             uiHandler.removeCallbacks(timecodeRunnable)
             uiHandler.post(timecodeRunnable)
@@ -609,6 +699,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             uiHandler.removeCallbacks(timecodeRunnable)
             viewRecDot.visibility = View.GONE
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_rec)
+            btnShutterInner.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140L).start()
             txtTimecode.setTextColor(0xFFFFFFFF.toInt())
             txtTimecode.text = "00:00:00"
             if (savedUri != null) {
@@ -629,6 +720,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         super.onResume()
         enableImmersiveFullscreen()
         engine.startThread()
+        syncAnalysisLoop()
         if (textureView.isAvailable) {
             openCameraIfReady()
         } else {
@@ -639,6 +731,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     override fun onPause() {
         rackAnimator?.cancel()
         uiHandler.removeCallbacks(timecodeRunnable)
+        uiHandler.removeCallbacks(analysisRunnable)
         engine.stopThread()
         super.onPause()
     }
