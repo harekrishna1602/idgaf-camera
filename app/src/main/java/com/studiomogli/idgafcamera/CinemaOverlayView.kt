@@ -18,13 +18,19 @@ enum class AspectGuide(val label: String, val ratio: Float) {
     VERT_916("9:16", 9f / 16f)
 }
 
+enum class GridMode(val label: String) {
+    OFF("GRID: OFF"),
+    THIRDS("GRID: 3x3"),
+    GOLDEN("GRID: φ")
+}
+
 class CinemaOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    var showGrid: Boolean = false
+    var gridMode: GridMode = GridMode.OFF
         set(value) {
             field = value
             invalidate()
@@ -223,12 +229,14 @@ class CinemaOverlayView @JvmOverloads constructor(
             }
         }
 
-        // 4. Rule of Thirds Grid + Center Crosshair
-        if (showGrid) {
-            val x1 = w / 3f
-            val x2 = (w * 2f) / 3f
-            val y1 = h / 3f
-            val y2 = (h * 2f) / 3f
+        // 4. Rule of Thirds OR Golden Ratio (Phi 0.382 / 0.618) Grid + Center Crosshair
+        if (gridMode != GridMode.OFF) {
+            val f1 = if (gridMode == GridMode.GOLDEN) 0.382f else (1f / 3f)
+            val f2 = if (gridMode == GridMode.GOLDEN) 0.618f else (2f / 3f)
+            val x1 = w * f1
+            val x2 = w * f2
+            val y1 = h * f1
+            val y2 = h * f2
             canvas.drawLine(x1, 0f, x1, h, gridPaint)
             canvas.drawLine(x2, 0f, x2, h, gridPaint)
             canvas.drawLine(0f, y1, w, y1, gridPaint)

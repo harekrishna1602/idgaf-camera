@@ -15,6 +15,7 @@ import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.RggbChannelVector
+import android.hardware.camera2.params.TonemapCurve
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaRecorder
@@ -79,6 +80,12 @@ enum class MicPreference(val label: String) {
     EXTERNAL("MIC: EXT")
 }
 
+enum class ToneProfile(val label: String) {
+    STANDARD("STD"),
+    FLAT("FLAT"),
+    CINEMA("CINE")
+}
+
 interface CinemaEngineListener {
     fun onLensesReady(lenses: List<CinemaLens>, activeIndex: Int)
     fun onCameraReady(
@@ -119,6 +126,7 @@ class CinemaCameraEngine(
     var targetCodec: CinemaCodec = CinemaCodec.H264
     var targetBitrateMbps: Int = 35
     var micPreference: MicPreference = MicPreference.AUTO
+    var toneProfile: ToneProfile = ToneProfile.STANDARD
     var isRecording: Boolean = false
         private set
 
@@ -340,6 +348,31 @@ class CinemaCameraEngine(
         pushUpdatedRepeatingRequest()
     }
 
+    fun setManualShutterAngle(angleDegrees: Float) {
+        if (!capabilities.supportsManualExposure) return
+        if (!isManualExposure) {
+            manualIso = liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+            isManualExposure = true
+        }
+        val clampedAngle = angleDegrees.coerceIn(11.25f, 360f)
+        isShutter180Locked = kotlin.math.abs(clampedAngle - 180f) < 1f
+        val fps = resolvedFpsRange.upper.coerceAtLeast(1)
+        val rawNs = ((clampedAngle / 360.0) * (1_000_000_000.0 / fps)).toLong()
+        manualShutterNs = rawNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun getCurrentShutterAngle(): Float {
+        val fps = resolvedFpsRange.upper.coerceAtLeast(1)
+        val ns = if (isManualExposure) manualShutterNs else liveShutterNs
+        return ((ns.toDouble() * fps / 1_000_000_000.0) * 360.0).toFloat().coerceIn(1f, 360f)
+    }
+
+    fun setToneProfile(profile: ToneProfile) {
+        toneProfile = profile
+        pushUpdatedRepeatingRequest()
+    }
+
     fun toggleShutter180Rule(): Boolean {
         if (!capabilities.supportsManualExposure) return false
         isShutter180Locked = !isShutter180Locked
@@ -439,6 +472,37 @@ class CinemaCameraEngine(
         } else {
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AWB_LOCK, isAeAfLocked || lockAutoForRecordStart)
+        }
+
+        // 4. Flat / Cinema Tone Curve
+        when (toneProfile) {
+            ToneProfile.STANDARD -> {
+                builder.set(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_HIGH_QUALITY)
+            }
+            ToneProfile.FLAT -> {
+                // Lifted shadows & rolled-off highlights for easier color grading
+                val flatCurve = floatArrayOf(
+                    0.00f, 0.06f,
+                    0.25f, 0.34f,
+                    0.50f, 0.54f,
+                    0.75f, 0.76f,
+                    1.00f, 0.94f
+                )
+                builder.set(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_CONTRAST_CURVE)
+                builder.set(CaptureRequest.TONEMAP_CURVE, TonemapCurve(flatCurve, flatCurve, flatCurve))
+            }
+            ToneProfile.CINEMA -> {
+                // Filmic S-curve with deep blacks & smooth highlight roll-off
+                val cineCurve = floatArrayOf(
+                    0.00f, 0.00f,
+                    0.20f, 0.14f,
+                    0.50f, 0.50f,
+                    0.80f, 0.86f,
+                    1.00f, 0.98f
+                )
+                builder.set(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_CONTRAST_CURVE)
+                builder.set(CaptureRequest.TONEMAP_CURVE, TonemapCurve(cineCurve, cineCurve, cineCurve))
+            }
         }
     }
 

@@ -15,7 +15,11 @@ import android.net.Uri
 import android.text.InputType
 import android.widget.EditText
 import androidx.appcompat.app.AlertDialog
+import android.os.Build
 import android.os.Bundle
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import android.os.Handler
 import android.os.Looper
 import android.util.Size
@@ -42,6 +46,11 @@ enum class ProControlPanel { NONE, ISO, SHUTTER, FOCUS, WB }
 
 class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
+    companion object {
+        private const val GITHUB_LATEST_RELEASE_API =
+            "https://api.github.com/repos/harekrishna1602/idgaf-camera/releases/latest"
+    }
+
     private lateinit var engine: CinemaCameraEngine
     private lateinit var textureView: TextureView
     private lateinit var focusReticle: View
@@ -54,6 +63,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnProCodec: TextView
     private lateinit var btnProBitrate: TextView
     private lateinit var btnProMic: TextView
+    private lateinit var btnProTone: TextView
+    private lateinit var btnProPresets: TextView
+    private lateinit var btnUpdateApp: TextView
+    private lateinit var presetStore: PresetStore
+    private var updateDownloadUrl: String? = null
+    private var toneIdx = 0
+    private var gridModeIdx = 0
     private val bitrateOptions = listOf(24, 35, 50, 75, 100, 120)
     private var bitrateIdx = 1
     private var micPrefIdx = 0
@@ -96,11 +112,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var txtSliderTitle: TextView
     private lateinit var txtSliderReadout: TextView
     private lateinit var btnSliderAuto: TextView
+    private lateinit var btnShutterUnit: TextView
     private lateinit var btnSlider180: TextView
+    private var shutterInAngleMode = false
+    private val shutterAngles = listOf(11.25f, 22.5f, 45f, 90f, 120f, 144f, 172.8f, 180f, 270f, 360f)
     private lateinit var rackFocusRow: LinearLayout
     private lateinit var btnSetFocusA: TextView
     private lateinit var btnSetFocusB: TextView
+    private lateinit var btnPullTime: TextView
     private lateinit var btnPullFocusAB: TextView
+    private var focusPullDurationMs: Long = 1200L
     private lateinit var proSeekBar: SeekBar
 
     private var activePanel: ProControlPanel = ProControlPanel.NONE
@@ -195,6 +216,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProCodec = findViewById(R.id.btnProCodec)
         btnProBitrate = findViewById(R.id.btnProBitrate)
         btnProMic = findViewById(R.id.btnProMic)
+        btnProTone = findViewById(R.id.btnProTone)
+        btnProPresets = findViewById(R.id.btnProPresets)
+        btnUpdateApp = findViewById(R.id.btnUpdateApp)
+        presetStore = PresetStore(this)
         btnMonitorToggle = findViewById(R.id.btnMonitorToggle)
         monitorToolsBar = findViewById(R.id.monitorToolsBar)
         btnToolGrid = findViewById(R.id.btnToolGrid)
@@ -226,10 +251,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtSliderTitle = findViewById(R.id.txtSliderTitle)
         txtSliderReadout = findViewById(R.id.txtSliderReadout)
         btnSliderAuto = findViewById(R.id.btnSliderAuto)
+        btnShutterUnit = findViewById(R.id.btnShutterUnit)
         btnSlider180 = findViewById(R.id.btnSlider180)
         rackFocusRow = findViewById(R.id.rackFocusRow)
         btnSetFocusA = findViewById(R.id.btnSetFocusA)
         btnSetFocusB = findViewById(R.id.btnSetFocusB)
+        btnPullTime = findViewById(R.id.btnPullTime)
         btnPullFocusAB = findViewById(R.id.btnPullFocusAB)
         proSeekBar = findViewById(R.id.proSeekBar)
 
@@ -239,6 +266,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         setupProDockAndDrawer()
         setupMonitoringTools()
         setupProAudioAndCodecBar()
+
+        btnUpdateApp.setOnClickListener {
+            val url = updateDownloadUrl
+            if (!url.isNullOrBlank()) {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Unable to open update link", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        if (savedInstanceState == null) {
+            checkForGitHubUpdateSilently()
+        }
 
         textureView.setOnTouchListener { v, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
@@ -325,8 +367,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnToolGrid.setOnClickListener {
-            overlayView.showGrid = !overlayView.showGrid
-            styleToolPill(btnToolGrid, overlayView.showGrid)
+            val modes = GridMode.values()
+            gridModeIdx = (gridModeIdx + 1) % modes.size
+            val m = modes[gridModeIdx]
+            overlayView.gridMode = m
+            btnToolGrid.text = m.label
+            styleToolPill(btnToolGrid, m != GridMode.OFF)
         }
 
         btnToolFrame.setOnClickListener {
@@ -401,6 +447,205 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 selected.label
             }
         }
+
+        btnProTone.setOnClickListener {
+            val profiles = ToneProfile.values()
+            toneIdx = (toneIdx + 1) % profiles.size
+            val p = profiles[toneIdx]
+            engine.setToneProfile(p)
+            btnProTone.text = p.label
+            styleToolPill(btnProTone, p != ToneProfile.STANDARD)
+        }
+
+        btnProPresets.setOnClickListener {
+            showPresetsDialog()
+        }
+    }
+
+    private fun showPresetsDialog() {
+        val saved = presetStore.getAll()
+        val items = mutableListOf("+ Save Current Settings as Template")
+        saved.forEach { items.add("Load: ${it.name} (${it.resolutionName.replace("FHD_", "").replace("UHD_", "")} ${it.fps}fps)") }
+
+        AlertDialog.Builder(this)
+            .setTitle("Shooting Templates / Presets")
+            .setItems(items.toTypedArray()) { _, which ->
+                if (which == 0) {
+                    showSavePresetDialog()
+                } else {
+                    val preset = saved[which - 1]
+                    AlertDialog.Builder(this)
+                        .setTitle(preset.name)
+                        .setPositiveButton("Load Template") { _, _ -> applyPreset(preset) }
+                        .setNeutralButton("Delete") { _, _ ->
+                            presetStore.delete(preset.name)
+                            Toast.makeText(this, "Deleted '${preset.name}'", Toast.LENGTH_SHORT).show()
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showSavePresetDialog() {
+        val input = EditText(this).apply {
+            hint = "Template name (e.g. Studio 4K, Night Cine)"
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF888888.toInt())
+            setPadding(36, 28, 36, 28)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Save Shooting Template")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val name = input.text.toString().trim().ifEmpty { "Template ${presetStore.getAll().size + 1}" }
+                val preset = CameraPreset(
+                    name = name,
+                    resolutionName = currentResolution.name,
+                    fps = fpsOptions[currentFpsIdx],
+                    codecName = engine.targetCodec.name,
+                    bitrateMbps = engine.targetBitrateMbps,
+                    micPrefName = engine.micPreference.name,
+                    toneProfileName = engine.toneProfile.name,
+                    isManualExposure = engine.isManualExposure,
+                    manualIso = engine.manualIso,
+                    manualShutterNs = engine.manualShutterNs,
+                    isShutter180Locked = engine.isShutter180Locked,
+                    isManualWb = engine.isManualWb,
+                    manualKelvin = engine.manualKelvin,
+                    isManualFocus = engine.isManualFocus,
+                    manualFocusDistance = engine.manualFocusDistance,
+                    focusPullMs = focusPullDurationMs,
+                    gridModeName = overlayView.gridMode.name,
+                    aspectGuideName = overlayView.aspectGuide.name
+                )
+                presetStore.save(preset)
+                Toast.makeText(this, "Saved template: $name", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun applyPreset(p: CameraPreset) {
+        if (engine.isRecording) {
+            Toast.makeText(this, "Stop recording before loading a template.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        currentResolution = try { CinemaResolution.valueOf(p.resolutionName) } catch (_: Exception) { CinemaResolution.FHD_1080P }
+        currentFpsIdx = fpsOptions.indexOf(p.fps).takeIf { it >= 0 } ?: 1
+        engine.targetCodec = try { CinemaCodec.valueOf(p.codecName) } catch (_: Exception) { CinemaCodec.H264 }
+        engine.targetBitrateMbps = p.bitrateMbps
+        bitrateIdx = bitrateOptions.indexOf(p.bitrateMbps).takeIf { it >= 0 } ?: 1
+        engine.micPreference = try { MicPreference.valueOf(p.micPrefName) } catch (_: Exception) { MicPreference.AUTO }
+        micPrefIdx = MicPreference.values().indexOf(engine.micPreference).coerceAtLeast(0)
+        val tone = try { ToneProfile.valueOf(p.toneProfileName) } catch (_: Exception) { ToneProfile.STANDARD }
+        toneIdx = ToneProfile.values().indexOf(tone).coerceAtLeast(0)
+        engine.setToneProfile(tone)
+
+        if (p.isManualExposure) {
+            engine.setManualIso(p.manualIso)
+            engine.setManualShutterNs(p.manualShutterNs)
+        } else {
+            engine.setAutoExposure()
+        }
+        if (p.isManualWb) engine.setManualWhiteBalanceKelvin(p.manualKelvin) else engine.setAutoWhiteBalance()
+        if (p.isManualFocus) engine.setManualFocusDistance(p.manualFocusDistance) else engine.setAutoFocus()
+
+        focusPullDurationMs = p.focusPullMs.coerceIn(300L, 10000L)
+        btnPullTime.text = String.format(Locale.US, "%.1fs", focusPullDurationMs / 1000f)
+
+        overlayView.gridMode = try { GridMode.valueOf(p.gridModeName) } catch (_: Exception) { GridMode.OFF }
+        gridModeIdx = GridMode.values().indexOf(overlayView.gridMode).coerceAtLeast(0)
+        btnToolGrid.text = overlayView.gridMode.label
+        styleToolPill(btnToolGrid, overlayView.gridMode != GridMode.OFF)
+
+        overlayView.aspectGuide = try { AspectGuide.valueOf(p.aspectGuideName) } catch (_: Exception) { AspectGuide.OFF }
+        frameGuideIdx = AspectGuide.values().indexOf(overlayView.aspectGuide).coerceAtLeast(0)
+        btnToolFrame.text = "FRAME: ${overlayView.aspectGuide.label}"
+        styleToolPill(btnToolFrame, overlayView.aspectGuide != AspectGuide.OFF)
+
+        btnResolution.text = currentResolution.label
+        btnFps.text = "${p.fps} FPS"
+        btnProCodec.text = engine.targetCodec.label
+        styleToolPill(btnProCodec, engine.targetCodec == CinemaCodec.HEVC)
+        btnProBitrate.text = "${engine.targetBitrateMbps} Mbps"
+        btnProMic.text = engine.micPreference.label
+        btnProTone.text = tone.label
+        styleToolPill(btnProTone, tone != ToneProfile.STANDARD)
+
+        engine.updateSettings(currentResolution, p.fps)
+        Toast.makeText(this, "Loaded template: ${p.name}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun checkForGitHubUpdateSilently() {
+        Thread {
+            var conn: HttpURLConnection? = null
+            try {
+                conn = (URL(GITHUB_LATEST_RELEASE_API).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                    setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("User-Agent", "idgaf-camera-StudioMogli")
+                }
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) return@Thread
+
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(body)
+                val latestTag = json.optString("tag_name", "").trim()
+                if (latestTag.isEmpty() || !isNewerVersion(latestTag, getCurrentVersionName())) return@Thread
+
+                var downloadUrl = json.optString("html_url", "")
+                val assets = json.optJSONArray("assets")
+                if (assets != null) {
+                    for (i in 0 until assets.length()) {
+                        val asset = assets.optJSONObject(i) ?: continue
+                        val name = asset.optString("name", "").lowercase()
+                        val directUrl = asset.optString("browser_download_url", "")
+                        if (name.endsWith(".apk") && directUrl.isNotBlank()) {
+                            downloadUrl = directUrl
+                            break
+                        }
+                    }
+                }
+                if (downloadUrl.isNotBlank()) {
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) {
+                            updateDownloadUrl = downloadUrl
+                            btnUpdateApp.visibility = View.VISIBLE
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                conn?.disconnect()
+            }
+        }.start()
+    }
+
+    private fun getCurrentVersionName(): String = try {
+        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
+        }
+        info.versionName ?: "0.5.0"
+    } catch (_: Exception) { "0.5.0" }
+
+    private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
+        val lParts = latestRaw.removePrefix("v").removePrefix("V")
+            .split(".").map { it.filter(Char::isDigit).toIntOrNull() ?: 0 }
+        val cParts = currentRaw.removePrefix("v").removePrefix("V")
+            .split(".").map { it.filter(Char::isDigit).toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(lParts.size, cParts.size)) {
+            val l = lParts.getOrElse(i) { 0 }
+            val c = cParts.getOrElse(i) { 0 }
+            if (l > c) return true
+            if (l < c) return false
+        }
+        return false
     }
 
     private fun startAudioVuMonitor() {
@@ -479,7 +724,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         val (title, hint) = when (panel) {
             ProControlPanel.ISO -> "Enter Exact ISO" to "e.g. 100, 400, 800, 1600"
-            ProControlPanel.SHUTTER -> "Enter Shutter (1/X sec)" to "e.g. 48, 50, 60, 120, 500"
+            ProControlPanel.SHUTTER -> if (shutterInAngleMode) {
+                "Enter Shutter Angle (Degrees)" to "11 to 360 (e.g. 180, 90, 270)"
+            } else {
+                "Enter Shutter Speed (1/X sec)" to "e.g. 48, 50, 60, 120, 500"
+            }
             ProControlPanel.WB -> "Enter White Balance (Kelvin)" to "2500 to 8500 (e.g. 5600)"
             ProControlPanel.FOCUS -> "Enter Focus Distance (%)" to "0 (Infinity) to 100 (Macro)"
             ProControlPanel.NONE -> return
@@ -505,8 +754,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 when (panel) {
                     ProControlPanel.ISO -> engine.setManualIso(v)
                     ProControlPanel.SHUTTER -> {
-                        val denom = v.coerceIn(1, 8000)
-                        engine.setManualShutterNs(1_000_000_000L / denom)
+                        if (shutterInAngleMode) {
+                            engine.setManualShutterAngle(v.toFloat())
+                        } else {
+                            val denom = v.coerceIn(1, 8000)
+                            engine.setManualShutterNs(1_000_000_000L / denom)
+                        }
                     }
                     ProControlPanel.WB -> engine.setManualWhiteBalanceKelvin(v)
                     ProControlPanel.FOCUS -> {
@@ -562,6 +815,36 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             refreshSliderState()
         }
 
+        btnShutterUnit.setOnClickListener {
+            shutterInAngleMode = !shutterInAngleMode
+            btnShutterUnit.text = if (shutterInAngleMode) "ANG°" else "SPD"
+            refreshSliderState()
+        }
+
+        btnPullTime.setOnClickListener {
+            val input = EditText(this).apply {
+                hint = "Seconds (e.g. 0.8, 1.5, 3.0)"
+                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                setTextColor(0xFFFFFFFF.toInt())
+                setHintTextColor(0xFF888888.toInt())
+                setPadding(36, 28, 36, 28)
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Focus Pull Duration (Seconds)")
+                .setView(input)
+                .setPositiveButton("Set") { _, _ ->
+                    val secs = input.text.toString().trim().toFloatOrNull()
+                    if (secs != null && secs in 0.2f..15.0f) {
+                        focusPullDurationMs = (secs * 1000f).toLong()
+                        btnPullTime.text = String.format(Locale.US, "%.1fs", secs)
+                    } else {
+                        Toast.makeText(this, "Enter 0.2 to 15.0 seconds", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
         btnSlider180.setOnClickListener {
             val active = engine.toggleShutter180Rule()
             btnSlider180.setBackgroundResource(if (active) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
@@ -597,7 +880,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             btnPullFocusAB.text = if (rackGoingToB) "PULL B→A" else "PULL A→B"
 
             rackAnimator = ValueAnimator.ofFloat(start, end).apply {
-                duration = 1200L
+                duration = focusPullDurationMs
                 interpolator = AccelerateDecelerateInterpolator()
                 addUpdateListener { anim ->
                     val d = anim.animatedValue as Float
@@ -627,13 +910,22 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         updateAutoButtonVisual(isManual = true)
                     }
                     ProControlPanel.SHUTTER -> {
-                        val idx = progress.coerceIn(0, shutterDenoms.lastIndex)
-                        val denom = shutterDenoms[idx]
-                        val ns = 1_000_000_000L / denom
-                        engine.setManualShutterNs(ns)
-                        txtSliderReadout.text = "1/${denom}s"
-                        btnSlider180.setBackgroundResource(R.drawable.bg_hud_pill)
-                        btnSlider180.setTextColor(0xFFFFFFFF.toInt())
+                        if (shutterInAngleMode) {
+                            val idx = progress.coerceIn(0, shutterAngles.lastIndex)
+                            val ang = shutterAngles[idx]
+                            engine.setManualShutterAngle(ang)
+                            txtSliderReadout.text = String.format(Locale.US, "%.0f°", ang)
+                            btnSlider180.setBackgroundResource(if (kotlin.math.abs(ang - 180f) < 1f) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                            btnSlider180.setTextColor(if (kotlin.math.abs(ang - 180f) < 1f) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                        } else {
+                            val idx = progress.coerceIn(0, shutterDenoms.lastIndex)
+                            val denom = shutterDenoms[idx]
+                            val ns = 1_000_000_000L / denom
+                            engine.setManualShutterNs(ns)
+                            txtSliderReadout.text = "1/${denom}s"
+                            btnSlider180.setBackgroundResource(R.drawable.bg_hud_pill)
+                            btnSlider180.setTextColor(0xFFFFFFFF.toInt())
+                        }
                         updateAutoButtonVisual(isManual = true)
                     }
                     ProControlPanel.FOCUS -> {
@@ -676,6 +968,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         sliderDrawer.visibility = View.VISIBLE
+        btnShutterUnit.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnSlider180.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         rackFocusRow.visibility = if (panel == ProControlPanel.FOCUS) View.VISIBLE else View.GONE
         refreshSliderState()
@@ -695,12 +988,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 updateAutoButtonVisual(engine.isManualExposure)
             }
             ProControlPanel.SHUTTER -> {
-                txtSliderTitle.text = "SHUTTER"
-                proSeekBar.max = shutterDenoms.lastIndex
-                val curDenom = (1_000_000_000L / engine.manualShutterNs.coerceAtLeast(1L)).toInt()
-                val closestIdx = shutterDenoms.indices.minByOrNull { kotlin.math.abs(shutterDenoms[it] - curDenom) } ?: 4
-                proSeekBar.progress = closestIdx
-                txtSliderReadout.text = if (engine.isManualExposure) "1/${curDenom}s" else "AUTO"
+                if (shutterInAngleMode) {
+                    txtSliderTitle.text = "ANGLE"
+                    proSeekBar.max = shutterAngles.lastIndex
+                    val curAng = engine.getCurrentShutterAngle()
+                    val closestIdx = shutterAngles.indices.minByOrNull { kotlin.math.abs(shutterAngles[it] - curAng) } ?: 7
+                    proSeekBar.progress = closestIdx
+                    txtSliderReadout.text = if (engine.isManualExposure) String.format(Locale.US, "%.0f°", curAng) else "AUTO"
+                } else {
+                    txtSliderTitle.text = "SHUTTER"
+                    proSeekBar.max = shutterDenoms.lastIndex
+                    val curDenom = (1_000_000_000L / engine.manualShutterNs.coerceAtLeast(1L)).toInt()
+                    val closestIdx = shutterDenoms.indices.minByOrNull { kotlin.math.abs(shutterDenoms[it] - curDenom) } ?: 4
+                    proSeekBar.progress = closestIdx
+                    txtSliderReadout.text = if (engine.isManualExposure) "1/${curDenom}s" else "AUTO"
+                }
                 btnSlider180.setBackgroundResource(if (engine.isShutter180Locked) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
                 btnSlider180.setTextColor(if (engine.isShutter180Locked) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
                 updateAutoButtonVisual(engine.isManualExposure)
@@ -871,7 +1173,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             txtIsoVal.text = telemetry.iso.toString()
             txtIsoVal.setTextColor(if (telemetry.isManualExposure) orange else white)
 
-            txtShutterVal.text = formatShutter(telemetry.shutterNs)
+            txtShutterVal.text = if (shutterInAngleMode) {
+                String.format(Locale.US, "%.0f°", engine.getCurrentShutterAngle())
+            } else {
+                formatShutter(telemetry.shutterNs)
+            }
             txtShutterVal.setTextColor(if (telemetry.isManualExposure) orange else white)
 
             txtWbVal.text = if (telemetry.isManualWb) "${telemetry.kelvin}K" else "AWB"

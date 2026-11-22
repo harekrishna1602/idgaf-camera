@@ -91,6 +91,21 @@
             android:layout_weight="1" />
 
         <TextView
+            android:id="@+id/btnUpdateApp"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/bg_lens_active"
+            android:gravity="center"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:text="UPDATE"
+            android:textColor="#0B0D10"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/btnProSettingsToggle"
             android:layout_width="wrap_content"
             android:layout_height="32dp"
@@ -276,12 +291,40 @@
             android:id="@+id/btnProMic"
             android:layout_width="wrap_content"
             android:layout_height="26dp"
+            android:layout_marginEnd="6dp"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center"
             android:paddingStart="10dp"
             android:paddingEnd="10dp"
             android:text="MIC: AUTO"
             android:textColor="#34C759"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnProTone"
+            android:layout_width="wrap_content"
+            android:layout_height="26dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/bg_hud_pill"
+            android:gravity="center"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:text="STD"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnProPresets"
+            android:layout_width="wrap_content"
+            android:layout_height="26dp"
+            android:background="@drawable/bg_hud_pill"
+            android:gravity="center"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:text="PRESETS"
+            android:textColor="#FF5F1F"
             android:textSize="10sp"
             android:textStyle="bold" />
     </LinearLayout>
@@ -384,6 +427,22 @@
                     android:textSize="13sp"
                     android:textStyle="bold" />
 
+                <!-- Shutter Unit Toggle (Speed 1/X vs Angle DEG) -->
+                <TextView
+                    android:id="@+id/btnShutterUnit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_hud_pill"
+                    android:gravity="center"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="SPD"
+                    android:textColor="#FF5F1F"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
                 <!-- 180-Degree Shutter Rule Lock (Shutter Panel Only) -->
                 <TextView
                     android:id="@+id/btnSlider180"
@@ -434,6 +493,20 @@
                         android:paddingEnd="8dp"
                         android:text="SET B"
                         android:textColor="#FFFFFF"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/btnPullTime"
+                        android:layout_width="wrap_content"
+                        android:layout_height="26dp"
+                        android:layout_marginEnd="4dp"
+                        android:background="@drawable/bg_hud_pill"
+                        android:gravity="center"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="8dp"
+                        android:text="1.2s"
+                        android:textColor="#CCCCCC"
                         android:textSize="10sp"
                         android:textStyle="bold" />
 
