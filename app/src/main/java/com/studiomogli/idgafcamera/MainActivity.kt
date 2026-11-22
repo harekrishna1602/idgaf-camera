@@ -771,6 +771,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             ProControlPanel.WB -> "Enter White Balance (Kelvin)" to "2500 to 8500 (e.g. 5600)"
             ProControlPanel.FOCUS -> "Enter Focus Distance (%)" to "0 (Infinity) to 100 (Macro)"
+            ProControlPanel.ZOOM -> "Enter Zoom Multiplier (x)" to "1 to 10 (e.g. 1.5, 2, 4)"
             ProControlPanel.NONE -> return
         }
 
@@ -806,6 +807,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
                         val d = (v.coerceIn(0, 100) / 100f) * maxF
                         engine.setManualFocusDistance(d)
+                    }
+                    ProControlPanel.ZOOM -> {
+                        engine.setZoomRatio(v.toFloat())
+                        updateZoomReadoutUi()
                     }
                     ProControlPanel.NONE -> {}
                 }
