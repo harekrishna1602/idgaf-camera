@@ -11,7 +11,10 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.MeteringRectangle
+import android.hardware.camera2.params.RggbChannelVector
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
@@ -28,6 +31,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ln
+import kotlin.math.pow
 
 data class CinemaLens(
     val cameraId: String,
@@ -37,6 +42,25 @@ data class CinemaLens(
     val sensorOrientation: Int
 )
 
+data class CameraCapabilities(
+    val isoRange: Range<Int> = Range(100, 3200),
+    val exposureRangeNs: Range<Long> = Range(125_000L, 100_000_000L),
+    val minFocusDistance: Float = 0f,
+    val supportsManualExposure: Boolean = false,
+    val supportsManualFocus: Boolean = false
+)
+
+data class LiveTelemetry(
+    val iso: Int,
+    val shutterNs: Long,
+    val focusDistance: Float,
+    val kelvin: Int,
+    val isManualExposure: Boolean,
+    val isManualFocus: Boolean,
+    val isManualWb: Boolean,
+    val isLocked: Boolean
+)
+
 enum class CinemaResolution(val label: String, val width: Int, val height: Int, val bitrate: Int) {
     FHD_1080P("1080P", 1920, 1080, 24_000_000),
     UHD_4K("4K", 3840, 2160, 50_000_000)
@@ -44,7 +68,14 @@ enum class CinemaResolution(val label: String, val width: Int, val height: Int, 
 
 interface CinemaEngineListener {
     fun onLensesReady(lenses: List<CinemaLens>, activeIndex: Int)
-    fun onCameraReady(previewSize: Size, activeRes: Size, activeFps: Int, lens: CinemaLens)
+    fun onCameraReady(
+        previewSize: Size,
+        activeRes: Size,
+        activeFps: Int,
+        lens: CinemaLens,
+        caps: CameraCapabilities
+    )
+    fun onTelemetryUpdated(telemetry: LiveTelemetry)
     fun onRecordingStarted()
     fun onRecordingStopped(savedUri: Uri?, filePathLabel: String)
     fun onError(message: String)
@@ -60,7 +91,7 @@ class CinemaCameraEngine(
 
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
-    private var previewBuilder: CaptureRequest.Builder? = null
+    private var activeBuilder: CaptureRequest.Builder? = null
     private var mediaRecorder: MediaRecorder? = null
     private var activeOutputPfd: ParcelFileDescriptor? = null
     private var activeMediaUri: Uri? = null
@@ -75,9 +106,70 @@ class CinemaCameraEngine(
     var isRecording: Boolean = false
         private set
 
+    var capabilities: CameraCapabilities = CameraCapabilities()
+        private set
+
+    // Pro Manual Controls State
+    var isManualExposure: Boolean = false
+        private set
+    var manualIso: Int = 200
+        private set
+    var manualShutterNs: Long = 16_666_666L
+        private set
+    var isShutter180Locked: Boolean = false
+        private set
+
+    var isManualFocus: Boolean = false
+        private set
+    var manualFocusDistance: Float = 0f
+        private set
+
+    var isManualWb: Boolean = false
+        private set
+    var manualKelvin: Int = 5600
+        private set
+
+    var isAeAfLocked: Boolean = false
+        private set
+
+    // Live sensor readouts (used to prevent brightness burst on REC or Auto->Manual switch)
+    private var liveIso: Int = 200
+    private var liveShutterNs: Long = 16_666_666L
+    private var liveFocusDistance: Float = 0f
+    private var lastTelemetryDispatchMs: Long = 0L
+
     private var resolvedVideoSize: Size = Size(1920, 1080)
     private var resolvedPreviewSize: Size = Size(1920, 1080)
     private var resolvedFpsRange: Range<Int> = Range(30, 30)
+
+    private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult
+        ) {
+            result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { liveIso = it }
+            result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { liveShutterNs = it }
+            result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { liveFocusDistance = it }
+
+            val now = System.currentTimeMillis()
+            if (now - lastTelemetryDispatchMs >= 160L) {
+                lastTelemetryDispatchMs = now
+                listener.onTelemetryUpdated(
+                    LiveTelemetry(
+                        iso = if (isManualExposure) manualIso else liveIso,
+                        shutterNs = if (isManualExposure) manualShutterNs else liveShutterNs,
+                        focusDistance = if (isManualFocus) manualFocusDistance else liveFocusDistance,
+                        kelvin = manualKelvin,
+                        isManualExposure = isManualExposure,
+                        isManualFocus = isManualFocus,
+                        isManualWb = isManualWb,
+                        isLocked = isAeAfLocked
+                    )
+                )
+            }
+        }
+    }
 
     fun startThread() {
         if (backgroundThread == null) {
@@ -126,7 +218,6 @@ class CinemaCameraEngine(
             listener.onError("Lens scan error: ${e.message}")
         }
 
-        // Deduplicate back lenses by focal length and label cleanly (UW / 1x / 2x)
         val sortedBack = backCandidates
             .distinctBy { "%.1f".format(Locale.US, it.focalLength) }
             .sortedBy { it.focalLength }
@@ -170,6 +261,8 @@ class CinemaCameraEngine(
     fun selectLens(index: Int) {
         if (isRecording || index !in lenses.indices || index == activeLensIndex) return
         activeLensIndex = index
+        // Reset lens-specific manual focus when switching glass
+        isManualFocus = false
         closeCamera()
         openActiveCamera()
     }
@@ -178,8 +271,189 @@ class CinemaCameraEngine(
         if (isRecording) return
         targetResolution = resolution
         targetFps = fps
+        if (isShutter180Locked && isManualExposure) {
+            manualShutterNs = compute180ShutterNs(fps)
+        }
         closeCamera()
         openActiveCamera()
+    }
+
+    // ==================== PRO MANUAL CONTROLS API ====================
+
+    fun setManualIso(iso: Int) {
+        if (!capabilities.supportsManualExposure) return
+        if (!isManualExposure) {
+            manualShutterNs = if (isShutter180Locked) {
+                compute180ShutterNs(resolvedFpsRange.upper)
+            } else {
+                liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, minOf(capabilities.exposureRangeNs.upper, 40_000_000L))
+            }
+            isManualExposure = true
+        }
+        manualIso = iso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun setManualShutterNs(shutterNs: Long) {
+        if (!capabilities.supportsManualExposure) return
+        if (!isManualExposure) {
+            manualIso = liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+            isManualExposure = true
+        }
+        isShutter180Locked = false
+        manualShutterNs = shutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun toggleShutter180Rule(): Boolean {
+        if (!capabilities.supportsManualExposure) return false
+        isShutter180Locked = !isShutter180Locked
+        if (isShutter180Locked) {
+            if (!isManualExposure) {
+                manualIso = liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+                isManualExposure = true
+            }
+            manualShutterNs = compute180ShutterNs(resolvedFpsRange.upper)
+            pushUpdatedRepeatingRequest()
+        }
+        return isShutter180Locked
+    }
+
+    fun setAutoExposure() {
+        isManualExposure = false
+        isShutter180Locked = false
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun setManualFocusDistance(diopters: Float) {
+        if (!capabilities.supportsManualFocus) return
+        isManualFocus = true
+        manualFocusDistance = diopters.coerceIn(0f, capabilities.minFocusDistance)
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun setAutoFocus() {
+        isManualFocus = false
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun setManualWhiteBalanceKelvin(kelvin: Int) {
+        isManualWb = true
+        manualKelvin = kelvin.coerceIn(2500, 8500)
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun setAutoWhiteBalance() {
+        isManualWb = false
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun toggleAeAfLock(): Boolean {
+        isAeAfLocked = !isAeAfLocked
+        if (isAeAfLocked && !isManualExposure && capabilities.supportsManualExposure) {
+            // Freeze exact current exposure to eliminate any ISP drift
+            manualIso = liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+            manualShutterNs = liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+        }
+        pushUpdatedRepeatingRequest()
+        return isAeAfLocked
+    }
+
+    private fun compute180ShutterNs(fps: Int): Long {
+        val denom = (fps * 2).coerceAtLeast(24)
+        val rawNs = 1_000_000_000L / denom
+        return rawNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+    }
+
+    private fun applyCinemaControls(builder: CaptureRequest.Builder, lockAutoForRecordStart: Boolean = false) {
+        builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, resolvedFpsRange)
+        builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)
+
+        // 1. Exposure (Manual ISO/Shutter vs Locked Auto vs Auto)
+        if (isManualExposure && capabilities.supportsManualExposure) {
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            builder.set(CaptureRequest.SENSOR_SENSITIVITY, manualIso)
+            builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualShutterNs)
+        } else if ((isAeAfLocked || lockAutoForRecordStart) && capabilities.supportsManualExposure && liveIso > 0 && liveShutterNs > 0L) {
+            // Anti-burst lock: freeze exact live ISO & shutter so REC never flashes bright
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            builder.set(CaptureRequest.SENSOR_SENSITIVITY, liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper))
+            builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper))
+        } else {
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, isAeAfLocked || lockAutoForRecordStart)
+        }
+
+        // 2. Focus (Manual Diopter vs Locked AF vs Continuous Video AF)
+        if (isManualFocus && capabilities.supportsManualFocus) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, manualFocusDistance)
+        } else if (isAeAfLocked && capabilities.supportsManualFocus) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, liveFocusDistance.coerceIn(0f, capabilities.minFocusDistance))
+        } else {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+        }
+
+        // 3. White Balance (Kelvin RGGB Gains vs Locked AWB vs Auto WB)
+        if (isManualWb) {
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+            builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+            builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToRggbGains(manualKelvin))
+        } else {
+            builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+            builder.set(CaptureRequest.CONTROL_AWB_LOCK, isAeAfLocked || lockAutoForRecordStart)
+        }
+    }
+
+    private fun pushUpdatedRepeatingRequest() {
+        val session = captureSession ?: return
+        val builder = activeBuilder ?: return
+        backgroundHandler?.post {
+            try {
+                applyCinemaControls(builder)
+                session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /**
+     * Converts color temperature in Kelvin (2500K-8500K) to Camera2 RGGB channel gains.
+     */
+    private fun kelvinToRggbGains(kelvin: Int): RggbChannelVector {
+        val temp = kelvin.coerceIn(2500, 8500) / 100.0
+        var r: Double
+        var g: Double
+        var b: Double
+
+        if (temp <= 66.0) {
+            r = 255.0
+            g = 99.4708025861 * ln(temp) - 161.1195681661
+            b = if (temp <= 19.0) 0.0 else 138.5177312231 * ln(temp - 10.0) - 305.0447927307
+        } else {
+            r = 329.698727446 * (temp - 60.0).pow(-0.1332047592)
+            g = 288.1221695283 * (temp - 60.0).pow(-0.0755148492)
+            b = 255.0
+        }
+
+        r = r.coerceIn(40.0, 255.0)
+        g = g.coerceIn(40.0, 255.0)
+        b = b.coerceIn(40.0, 255.0)
+
+        // Invert relative to daylight (~5600K) so warming slider makes image warmer
+        val rGain = (255.0 / b).toFloat().coerceIn(0.8f, 3.2f)
+        val gGain = (255.0 / g).toFloat().coerceIn(0.9f, 1.4f)
+        val bGain = (255.0 / r).toFloat().coerceIn(0.8f, 3.2f)
+
+        // Normalize green channel to 1.0
+        return RggbChannelVector(
+            (rGain / gGain).coerceIn(0.7f, 3.0f),
+            1.0f,
+            1.0f,
+            (bGain / gGain).coerceIn(0.7f, 3.0f)
+        )
     }
 
     @SuppressLint("MissingPermission")
@@ -194,6 +468,18 @@ class CinemaCameraEngine(
                 listener.onError("Camera stream map unavailable.")
                 return
             }
+
+            val isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+            val expRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+            val minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+
+            capabilities = CameraCapabilities(
+                isoRange = isoRange ?: Range(100, 3200),
+                exposureRangeNs = expRange ?: Range(125_000L, 100_000_000L),
+                minFocusDistance = minFocus,
+                supportsManualExposure = (isoRange != null && expRange != null),
+                supportsManualFocus = (minFocus > 0f)
+            )
 
             val videoSizes = map.getOutputSizes(MediaRecorder::class.java) ?: emptyArray()
             resolvedVideoSize = chooseClosest16x9Size(videoSizes, targetResolution.width, targetResolution.height)
@@ -238,11 +524,9 @@ class CinemaCameraEngine(
 
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(previewSurface)
-                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, resolvedFpsRange)
+                applyCinemaControls(this)
             }
-            previewBuilder = builder
+            activeBuilder = builder
 
             @Suppress("DEPRECATION")
             camera.createCaptureSession(
@@ -252,12 +536,13 @@ class CinemaCameraEngine(
                         if (cameraDevice == null) return
                         captureSession = session
                         try {
-                            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                            session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
                             listener.onCameraReady(
                                 resolvedPreviewSize,
                                 resolvedVideoSize,
                                 resolvedFpsRange.upper,
-                                lens
+                                lens,
+                                capabilities
                             )
                         } catch (e: Exception) {
                             listener.onError("Preview start failed: ${e.message}")
@@ -276,8 +561,9 @@ class CinemaCameraEngine(
     }
 
     fun triggerTapToFocus(normX: Float, normY: Float) {
+        if (isManualFocus || isAeAfLocked) return
         val session = captureSession ?: return
-        val builder = previewBuilder ?: return
+        val builder = activeBuilder ?: return
         val lens = getActiveLens() ?: return
 
         try {
@@ -300,14 +586,15 @@ class CinemaCameraEngine(
             val metering = arrayOf(MeteringRectangle(rect, MeteringRectangle.METERING_WEIGHT_MAX - 1))
 
             builder.set(CaptureRequest.CONTROL_AF_REGIONS, metering)
-            builder.set(CaptureRequest.CONTROL_AE_REGIONS, metering)
+            if (!isManualExposure) {
+                builder.set(CaptureRequest.CONTROL_AE_REGIONS, metering)
+            }
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-            session.capture(builder.build(), null, backgroundHandler)
+            session.capture(builder.build(), captureCallback, backgroundHandler)
 
-            // Resume continuous tracking smoothly after lock
             builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
-            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+            session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
         } catch (_: Exception) {
         }
     }
@@ -327,14 +614,13 @@ class CinemaCameraEngine(
             val previewSurface = Surface(texture)
             val recordSurface = recorder.surface
 
+            // Freeze current exposure on frame 1 to prevent auto-exposure brightness burst!
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                 addTarget(previewSurface)
                 addTarget(recordSurface)
-                set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, resolvedFpsRange)
+                applyCinemaControls(this, lockAutoForRecordStart = true)
             }
-            previewBuilder = builder
+            activeBuilder = builder
 
             @Suppress("DEPRECATION")
             camera.createCaptureSession(
@@ -344,10 +630,19 @@ class CinemaCameraEngine(
                         if (cameraDevice == null) return
                         captureSession = session
                         try {
-                            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                            session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
                             recorder.start()
                             isRecording = true
                             listener.onRecordingStarted()
+
+                            // If user was in Auto mode (not manually locked), smoothly release AE lock after 600ms
+                            if (!isManualExposure && !isAeAfLocked) {
+                                backgroundHandler?.postDelayed({
+                                    if (isRecording && !isManualExposure && !isAeAfLocked) {
+                                        pushUpdatedRepeatingRequest()
+                                    }
+                                }, 600L)
+                            }
                         } catch (e: Exception) {
                             cleanupRecorderOnFailure()
                             listener.onError("Record start failed: ${e.message}")
@@ -537,11 +832,8 @@ class CinemaCameraEngine(
 
     private fun chooseBestFpsRange(ranges: Array<Range<Int>>, desiredFps: Int): Range<Int> {
         if (ranges.isEmpty()) return Range(30, 30)
-        // Prefer exact locked cinema range [fps, fps]
         ranges.firstOrNull { it.lower == desiredFps && it.upper == desiredFps }?.let { return it }
-        // Next prefer variable range whose upper matches desiredFps
         ranges.firstOrNull { it.upper == desiredFps }?.let { return it }
-        // Otherwise pick closest upper FPS
         return ranges.minByOrNull { abs(it.upper - desiredFps) } ?: Range(30, 30)
     }
 }

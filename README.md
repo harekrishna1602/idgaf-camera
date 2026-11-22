@@ -1,10 +1,9 @@
-# IDGAF CAMERA (`v0.1.0` — Phase 1)
+# IDGAF CAMERA (`v0.2.0` — Phase 2: Full Manual Pro Controls)
 
 Free, open, community-built Android cinema camera built on native **Kotlin + Camera2 API** by **Studio Mogli**.
 
-## Phase 1 Features (Live Now)
-- **Native Camera2 Cinema Engine (`CinemaCameraEngine.kt`):** Direct hardware pipeline built for manual cinema controls in upcoming phases.
-- **Landscape Pro HUD:** Full-screen immersive landscape viewfinder with Safety Orange (`#FF5F1F`) telemetry, live `00:00:00` timecode, and tap-to-focus reticle.
-- **Multi-Lens Switcher:** Automatically detects hardware focal lengths (`0.5x` Ultra-Wide, `1x` Wide, `2x` Tele, `FR` Front).
-- **Resolution & FPS Control:** Switch between `1080P` (24 Mbps) and `4K` (50 Mbps) at `24 / 30 / 60 FPS` with automatic hardware fallback.
-- **Direct MediaStore Save:** Saves crisp H.264 `.mp4` + 48kHz AAC audio directly to `Movies/IDGAF_Camera` with 1-tap **CLIP** playback.
+## What's New in Phase 2 (`v0.2.0`)
+- **Full Manual Cinema Dock:** Live bottom telemetry bar with tactile floating sliders for **ISO**, **SHUTTER**, **WB (2500K–8500K)**, **FOCUS**, and **AE/AF LOCK**.
+- **180° Shutter Rule Lock:** 1-tap `180°` button locks shutter speed to `2x FPS` (`1/48s` at 24fps, `1/60s` at 30fps, `1/120s` at 60fps) for natural cinema motion blur.
+- **Smooth A/B Rack Focus:** Save Focus Point **A**, Save Focus Point **B**, and tap **PULL A→B** for a smooth 1.2s motorized cinema focus pull.
+- **Fixed Record Exposure Burst:** Captures live sensor ISO & shutter before switching to `TEMPLATE_RECORD`, eliminating the auto-brightness flash when hitting REC.
