@@ -50,7 +50,9 @@ data class CameraCapabilities(
     val exposureRangeNs: Range<Long> = Range(125_000L, 100_000_000L),
     val minFocusDistance: Float = 0f,
     val supportsManualExposure: Boolean = false,
-    val supportsManualFocus: Boolean = false
+    val supportsManualFocus: Boolean = false,
+    val minZoomRatio: Float = 1.0f,
+    val maxZoomRatio: Float = 1.0f
 )
 
 data class LiveTelemetry(
@@ -127,7 +129,10 @@ class CinemaCameraEngine(
     var targetBitrateMbps: Int = 35
     var micPreference: MicPreference = MicPreference.AUTO
     var toneProfile: ToneProfile = ToneProfile.STANDARD
-    private set
+        private set
+    var currentZoomRatio: Float = 1.0f
+        private set
+    private var activeSensorArray: Rect? = null
     var isRecording: Boolean = false
         private set
 
@@ -307,6 +312,7 @@ class CinemaCameraEngine(
         activeLensIndex = index
         // Reset lens-specific manual focus when switching glass
         isManualFocus = false
+        currentZoomRatio = 1.0f
         closeCamera()
         openActiveCamera()
     }
@@ -367,6 +373,11 @@ class CinemaCameraEngine(
         val fps = resolvedFpsRange.upper.coerceAtLeast(1)
         val ns = if (isManualExposure) manualShutterNs else liveShutterNs
         return ((ns.toDouble() * fps / 1_000_000_000.0) * 360.0).toFloat().coerceIn(1f, 360f)
+    }
+
+    fun setZoomRatio(ratio: Float) {
+        currentZoomRatio = ratio.coerceIn(capabilities.minZoomRatio, capabilities.maxZoomRatio)
+        pushUpdatedRepeatingRequest()
     }
 
     fun setToneProfile(profile: ToneProfile) {
@@ -475,6 +486,20 @@ class CinemaCameraEngine(
             builder.set(CaptureRequest.CONTROL_AWB_LOCK, isAeAfLocked || lockAutoForRecordStart)
         }
 
+        // 3.5 Hardware Zoom (API 30+ CONTROL_ZOOM_RATIO, fallback to SCALER_CROP_REGION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, currentZoomRatio)
+        } else {
+            activeSensorArray?.let { sensor ->
+                val zoom = currentZoomRatio.coerceAtLeast(1.0f)
+                val cropW = (sensor.width() / zoom).toInt().coerceAtLeast(1)
+                val cropH = (sensor.height() / zoom).toInt().coerceAtLeast(1)
+                val left = (sensor.width() - cropW) / 2
+                val top = (sensor.height() - cropH) / 2
+                builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(left, top, left + cropW, top + cropH))
+            }
+        }
+
         // 4. Flat / Cinema Tone Curve
         when (toneProfile) {
             ToneProfile.STANDARD -> {
@@ -572,13 +597,26 @@ class CinemaCameraEngine(
             val isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
             val expRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
             val minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+            activeSensorArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+
+            var minZoom = 1.0f
+            var maxZoom = (chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1.0f).coerceAtLeast(1.0f)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.let { zr ->
+                    minZoom = zr.lower
+                    maxZoom = zr.upper.coerceAtLeast(1.0f)
+                }
+            }
+            currentZoomRatio = currentZoomRatio.coerceIn(minZoom, maxZoom)
 
             capabilities = CameraCapabilities(
                 isoRange = isoRange ?: Range(100, 3200),
                 exposureRangeNs = expRange ?: Range(125_000L, 100_000_000L),
                 minFocusDistance = minFocus,
                 supportsManualExposure = (isoRange != null && expRange != null),
-                supportsManualFocus = (minFocus > 0f)
+                supportsManualFocus = (minFocus > 0f),
+                minZoomRatio = minZoom,
+                maxZoomRatio = maxZoom
             )
 
             val videoSizes = map.getOutputSizes(MediaRecorder::class.java) ?: emptyArray()

@@ -24,7 +24,9 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Size
 import android.view.Gravity
+import android.content.res.Configuration
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
@@ -42,7 +44,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import java.util.Locale
 import kotlin.math.roundToInt
 
-enum class ProControlPanel { NONE, ISO, SHUTTER, FOCUS, WB }
+enum class ProControlPanel { NONE, ISO, SHUTTER, FOCUS, WB, ZOOM }
 
 class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
@@ -105,6 +107,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var txtWbVal: TextView
     private lateinit var pillFocus: LinearLayout
     private lateinit var txtFocusVal: TextView
+    private lateinit var pillZoom: LinearLayout
+    private lateinit var txtZoomVal: TextView
+    private lateinit var zoomRockerRow: LinearLayout
+    private lateinit var btnZoomSpeed: TextView
+    private lateinit var btnZoomWideHold: TextView
+    private lateinit var btnZoomTeleHold: TextView
+    private lateinit var btnZoomPreset1x: TextView
+    private lateinit var btnZoomPreset2x: TextView
+    private lateinit var btnZoomPreset5x: TextView
+    private lateinit var scaleDetector: ScaleGestureDetector
+
+    private val zoomSpeedSteps = listOf("SLOW" to 0.018f, "MED" to 0.045f, "FAST" to 0.11f)
+    private var zoomSpeedIdx = 1
+    private var zoomRockerDirection = 0 // -1 = Wide, +1 = Tele, 0 = stopped
+    private var lastPreviewSize: Size = Size(1920, 1080)
     private lateinit var btnAeAfLock: TextView
 
     // Floating Pro Slider Drawer
@@ -163,6 +180,18 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         uiHandler.removeCallbacks(analysisRunnable)
         if (overlayView.needsFrameAnalysis()) {
             uiHandler.post(analysisRunnable)
+        }
+    }
+
+    private val zoomRockerRunnable = object : Runnable {
+        override fun run() {
+            if (zoomRockerDirection != 0) {
+                val step = zoomSpeedSteps[zoomSpeedIdx].second
+                val nextZoom = engine.currentZoomRatio + (zoomRockerDirection * step * engine.currentZoomRatio.coerceAtLeast(1f))
+                engine.setZoomRatio(nextZoom)
+                updateZoomReadoutUi()
+                uiHandler.postDelayed(this, 24L)
+            }
         }
     }
 
@@ -244,6 +273,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtWbVal = findViewById(R.id.txtWbVal)
         pillFocus = findViewById(R.id.pillFocus)
         txtFocusVal = findViewById(R.id.txtFocusVal)
+        pillZoom = findViewById(R.id.pillZoom)
+        txtZoomVal = findViewById(R.id.txtZoomVal)
+        zoomRockerRow = findViewById(R.id.zoomRockerRow)
+        btnZoomSpeed = findViewById(R.id.btnZoomSpeed)
+        btnZoomWideHold = findViewById(R.id.btnZoomWideHold)
+        btnZoomTeleHold = findViewById(R.id.btnZoomTeleHold)
+        btnZoomPreset1x = findViewById(R.id.btnZoomPreset1x)
+        btnZoomPreset2x = findViewById(R.id.btnZoomPreset2x)
+        btnZoomPreset5x = findViewById(R.id.btnZoomPreset5x)
         btnAeAfLock = findViewById(R.id.btnAeAfLock)
 
         // Floating Drawer bindings
@@ -282,7 +320,18 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             checkForGitHubUpdateSilently()
         }
 
+        scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val nextZoom = engine.currentZoomRatio * detector.scaleFactor
+                engine.setZoomRatio(nextZoom)
+                updateZoomReadoutUi()
+                return true
+            }
+        })
+
         textureView.setOnTouchListener { v, event ->
+            scaleDetector.onTouchEvent(event)
+            if (event.pointerCount > 1) return@setOnTouchListener true
             if (event.action == MotionEvent.ACTION_DOWN) {
                 if (activePanel != ProControlPanel.NONE) {
                     selectPanel(ProControlPanel.NONE)
@@ -338,20 +387,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnLastClip.setOnClickListener {
-            val uri = lastSavedUri
-            if (uri == null) {
-                Toast.makeText(this, "Record a clip first — saved to Movies/IDGAF_Camera", Toast.LENGTH_SHORT).show()
+            if (engine.isRecording) {
+                Toast.makeText(this, "Stop recording before opening Clip Gallery.", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            try {
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, "video/*")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                startActivity(intent)
-            } catch (_: Exception) {
-                Toast.makeText(this, "Open Gallery → Movies/IDGAF_Camera", Toast.LENGTH_SHORT).show()
-            }
+            startActivity(Intent(this, ClipGalleryActivity::class.java))
         }
     }
 
@@ -792,6 +832,48 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             selectPanel(if (activePanel == ProControlPanel.FOCUS) ProControlPanel.NONE else ProControlPanel.FOCUS)
         }
+        pillZoom.setOnClickListener {
+            selectPanel(if (activePanel == ProControlPanel.ZOOM) ProControlPanel.NONE else ProControlPanel.ZOOM)
+        }
+
+        btnZoomSpeed.setOnClickListener {
+            zoomSpeedIdx = (zoomSpeedIdx + 1) % zoomSpeedSteps.size
+            btnZoomSpeed.text = zoomSpeedSteps[zoomSpeedIdx].first
+        }
+
+        btnZoomWideHold.setOnTouchListener { _, ev ->
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    zoomRockerDirection = -1
+                    uiHandler.removeCallbacks(zoomRockerRunnable)
+                    uiHandler.post(zoomRockerRunnable)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    zoomRockerDirection = 0
+                    uiHandler.removeCallbacks(zoomRockerRunnable)
+                }
+            }
+            true
+        }
+
+        btnZoomTeleHold.setOnTouchListener { _, ev ->
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    zoomRockerDirection = 1
+                    uiHandler.removeCallbacks(zoomRockerRunnable)
+                    uiHandler.post(zoomRockerRunnable)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    zoomRockerDirection = 0
+                    uiHandler.removeCallbacks(zoomRockerRunnable)
+                }
+            }
+            true
+        }
+
+        btnZoomPreset1x.setOnClickListener { engine.setZoomRatio(1.0f); updateZoomReadoutUi() }
+        btnZoomPreset2x.setOnClickListener { engine.setZoomRatio(2.0f); updateZoomReadoutUi() }
+        btnZoomPreset5x.setOnClickListener { engine.setZoomRatio(5.0f); updateZoomReadoutUi() }
         btnAeAfLock.setOnClickListener {
             val locked = engine.toggleAeAfLock()
             updateLockUi(locked)
@@ -810,6 +892,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     engine.setAutoFocus()
                 }
                 ProControlPanel.WB -> engine.setAutoWhiteBalance()
+                ProControlPanel.ZOOM -> { engine.setZoomRatio(1.0f); updateZoomReadoutUi() }
                 ProControlPanel.NONE -> {}
             }
             refreshSliderState()
@@ -942,6 +1025,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         txtSliderReadout.text = "${kelvin}K"
                         updateAutoButtonVisual(isManual = true)
                     }
+                    ProControlPanel.ZOOM -> {
+                        val minZ = engine.capabilities.minZoomRatio
+                        val maxZ = engine.capabilities.maxZoomRatio.coerceAtMost(10.0f)
+                        val ratio = minZ + ((maxZ - minZ) * (progress / 100f))
+                        engine.setZoomRatio(ratio)
+                        updateZoomReadoutUi()
+                    }
                     ProControlPanel.NONE -> {}
                 }
             }
@@ -956,7 +1046,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             pillIso to ProControlPanel.ISO,
             pillShutter to ProControlPanel.SHUTTER,
             pillWb to ProControlPanel.WB,
-            pillFocus to ProControlPanel.FOCUS
+            pillFocus to ProControlPanel.FOCUS,
+            pillZoom to ProControlPanel.ZOOM
         )
         pills.forEach { (view, p) ->
             view.setBackgroundResource(if (p == panel) R.drawable.bg_dock_pill_active else R.drawable.bg_hud_pill)
@@ -971,6 +1062,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnShutterUnit.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnSlider180.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         rackFocusRow.visibility = if (panel == ProControlPanel.FOCUS) View.VISIBLE else View.GONE
+        zoomRockerRow.visibility = if (panel == ProControlPanel.ZOOM) View.VISIBLE else View.GONE
         refreshSliderState()
     }
 
@@ -1022,9 +1114,36 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 txtSliderReadout.text = if (engine.isManualWb) "${engine.manualKelvin}K" else "AWB"
                 updateAutoButtonVisual(engine.isManualWb)
             }
+            ProControlPanel.ZOOM -> {
+                txtSliderTitle.text = "SERVO ZOOM"
+                proSeekBar.max = 100
+                updateZoomReadoutUi()
+            }
             ProControlPanel.NONE -> {}
         }
         suppressSeekCallback = false
+    }
+
+    private fun updateZoomReadoutUi() {
+        val z = engine.currentZoomRatio
+        val label = String.format(Locale.US, "%.1fx", z)
+        txtZoomVal.text = label
+        txtZoomVal.setTextColor(if (z > 1.05f) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
+        if (activePanel == ProControlPanel.ZOOM) {
+            txtSliderReadout.text = label
+            val minZ = engine.capabilities.minZoomRatio
+            val maxZ = engine.capabilities.maxZoomRatio.coerceAtMost(10.0f).coerceAtLeast(minZ + 0.1f)
+            suppressSeekCallback = true
+            proSeekBar.progress = (((z - minZ) / (maxZ - minZ)) * 100f).roundToInt().coerceIn(0, 100)
+            suppressSeekCallback = false
+            updateAutoButtonVisual(z > 1.05f)
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        enableImmersiveFullscreen()
+        textureView.post { configureTransform(lastPreviewSize) }
     }
 
     private fun updateAutoButtonVisual(isManual: Boolean) {
@@ -1157,7 +1276,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         caps: CameraCapabilities
     ) {
         runOnUiThread {
+            lastPreviewSize = previewSize
             configureTransform(previewSize)
+            updateZoomReadoutUi()
             val resTag = if (activeRes.width >= 3840) "4K" else "${activeRes.height}P"
             btnResolution.text = resTag
             btnFps.text = "$activeFps FPS"
@@ -1239,6 +1360,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     override fun onPause() {
         rackAnimator?.cancel()
         uiHandler.removeCallbacks(timecodeRunnable)
+        zoomRockerDirection = 0
+        uiHandler.removeCallbacks(zoomRockerRunnable)
         uiHandler.removeCallbacks(analysisRunnable)
         stopAudioVuMonitor()
         engine.stopThread()
