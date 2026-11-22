@@ -15,7 +15,12 @@ import android.net.Uri
 import android.text.InputType
 import android.widget.EditText
 import androidx.appcompat.app.AlertDialog
+import android.content.Context
+import android.os.BatteryManager
 import android.os.Build
+import android.os.Environment
+import android.os.StatFs
+import android.view.LayoutInflater
 import android.os.Bundle
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -25,6 +30,7 @@ import android.os.Looper
 import android.util.Size
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
@@ -64,7 +70,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnProBitrate: TextView
     private lateinit var btnProMic: TextView
     private lateinit var btnProTone: TextView
+    private lateinit var btnProStab: TextView
+    private lateinit var btnProTorch: TextView
     private lateinit var btnProPresets: TextView
+    private lateinit var txtSysTelemetry: TextView
     private lateinit var btnUpdateApp: TextView
     private lateinit var presetStore: PresetStore
     private var updateDownloadUrl: String? = null
@@ -95,6 +104,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var lensRail: LinearLayout
     private lateinit var btnShutterInner: View
     private lateinit var btnLastClip: TextView
+
+    // Phase 6 Pro Cinema Zoom Rocker + Pinch-to-Zoom
+    private lateinit var btnZoomTele: TextView
+    private lateinit var btnZoomWide: TextView
+    private lateinit var txtZoomReadout: TextView
+    private lateinit var btnZoomSpeed: TextView
+    private lateinit var scaleDetector: ScaleGestureDetector
+    private var zoomRockerDir: Int = 0 // +1 = Tele, -1 = Wide, 0 = Idle
+    private val zoomSpeedSteps = listOf("SLOW" to 0.018f, "MED" to 0.042f, "FAST" to 0.085f)
+    private var zoomSpeedIdx = 1
 
     // Phase 2 Pro Dock Pills
     private lateinit var pillIso: LinearLayout
@@ -166,6 +185,31 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
+    private val zoomRockerRunnable = object : Runnable {
+        override fun run() {
+            if (zoomRockerDir != 0) {
+                val step = zoomSpeedSteps[zoomSpeedIdx].second * zoomRockerDir
+                val nextZoom = (engine.currentZoomRatio + step).coerceIn(
+                    engine.capabilities.minZoom,
+                    engine.capabilities.maxZoom
+                )
+                engine.setZoomRatio(nextZoom)
+                updateZoomReadout()
+            styleToolPill(btnProTorch, engine.isTorchEnabled)
+            btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
+            styleToolPill(btnProStab, engine.isStabilizationEnabled)
+                uiHandler.postDelayed(this, 16L)
+            }
+        }
+    }
+
+    private val sysTelemetryRunnable = object : Runnable {
+        override fun run() {
+            updateSystemTelemetry()
+            uiHandler.postDelayed(this, 10000L)
+        }
+    }
+
     private val timecodeRunnable = object : Runnable {
         override fun run() {
             if (engine.isRecording) {
@@ -217,7 +261,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProBitrate = findViewById(R.id.btnProBitrate)
         btnProMic = findViewById(R.id.btnProMic)
         btnProTone = findViewById(R.id.btnProTone)
+        btnProStab = findViewById(R.id.btnProStab)
+        btnProTorch = findViewById(R.id.btnProTorch)
         btnProPresets = findViewById(R.id.btnProPresets)
+        txtSysTelemetry = findViewById(R.id.txtSysTelemetry)
         btnUpdateApp = findViewById(R.id.btnUpdateApp)
         presetStore = PresetStore(this)
         btnMonitorToggle = findViewById(R.id.btnMonitorToggle)
@@ -234,6 +281,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         lensRail = findViewById(R.id.lensRail)
         btnShutterInner = findViewById(R.id.btnShutterInner)
         btnLastClip = findViewById(R.id.btnLastClip)
+        btnZoomTele = findViewById(R.id.btnZoomTele)
+        btnZoomWide = findViewById(R.id.btnZoomWide)
+        txtZoomReadout = findViewById(R.id.txtZoomReadout)
+        btnZoomSpeed = findViewById(R.id.btnZoomSpeed)
 
         // Pro Dock bindings
         pillIso = findViewById(R.id.pillIso)
@@ -266,6 +317,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         setupProDockAndDrawer()
         setupMonitoringTools()
         setupProAudioAndCodecBar()
+        setupCinemaZoomRocker()
+
+        findViewById<TextView>(R.id.btnBrandCredits).setOnClickListener {
+            showStudioMogliCreditsDialog()
+        }
 
         btnUpdateApp.setOnClickListener {
             val url = updateDownloadUrl
@@ -282,8 +338,24 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             checkForGitHubUpdateSilently()
         }
 
+        scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val next = (engine.currentZoomRatio * detector.scaleFactor).coerceIn(
+                    engine.capabilities.minZoom,
+                    engine.capabilities.maxZoom
+                )
+                engine.setZoomRatio(next)
+                updateZoomReadout()
+            styleToolPill(btnProTorch, engine.isTorchEnabled)
+            btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
+            styleToolPill(btnProStab, engine.isStabilizationEnabled)
+                return true
+            }
+        })
+
         textureView.setOnTouchListener { v, event ->
-            if (event.action == MotionEvent.ACTION_DOWN) {
+            scaleDetector.onTouchEvent(event)
+            if (event.action == MotionEvent.ACTION_DOWN && event.pointerCount == 1 && !scaleDetector.isInProgress) {
                 if (activePanel != ProControlPanel.NONE) {
                     selectPanel(ProControlPanel.NONE)
                 } else {
@@ -338,20 +410,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnLastClip.setOnClickListener {
-            val uri = lastSavedUri
-            if (uri == null) {
-                Toast.makeText(this, "Record a clip first — saved to Movies/IDGAF_Camera", Toast.LENGTH_SHORT).show()
+            if (engine.isRecording) {
+                Toast.makeText(this, "Stop recording before opening Clip Vault.", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            try {
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, "video/*")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                startActivity(intent)
-            } catch (_: Exception) {
-                Toast.makeText(this, "Open Gallery → Movies/IDGAF_Camera", Toast.LENGTH_SHORT).show()
-            }
+            startActivity(Intent(this, ClipGalleryActivity::class.java))
         }
     }
 
@@ -455,6 +518,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.setToneProfile(p)
             btnProTone.text = p.label
             styleToolPill(btnProTone, p != ToneProfile.STANDARD)
+        }
+
+        btnProStab.setOnClickListener {
+            val enabled = engine.toggleStabilization()
+            styleToolPill(btnProStab, enabled)
+            Toast.makeText(this, if (enabled) "Stabilization ON" else "Stabilization OFF", Toast.LENGTH_SHORT).show()
+        }
+
+        btnProTorch.setOnClickListener {
+            if (!engine.capabilities.hasFlash) {
+                Toast.makeText(this, "No LED flash on this lens", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val on = engine.toggleTorch()
+            styleToolPill(btnProTorch, on)
         }
 
         btnProPresets.setOnClickListener {
@@ -579,7 +657,53 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         Toast.makeText(this, "Loaded template: ${p.name}", Toast.LENGTH_SHORT).show()
     }
 
-    private fun checkForGitHubUpdateSilently() {
+    private fun updateSystemTelemetry() {
+        try {
+            val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+            val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).coerceIn(0, 100)
+            val stat = StatFs(Environment.getDataDirectory().path)
+            val freeGb = (stat.availableBlocksLong * stat.blockSizeLong) / (1024.0 * 1024.0 * 1024.0)
+            txtSysTelemetry.text = String.format(Locale.US, "%d%% • %.1fGB", pct, freeGb)
+            txtSysTelemetry.setTextColor(
+                when {
+                    pct <= 15 || freeGb < 1.0 -> 0xFFFF3B30.toInt()
+                    pct <= 30 || freeGb < 3.0 -> 0xFFFFCC00.toInt()
+                    else -> 0xFFB0B7C3.toInt()
+                }
+            )
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun showStudioMogliCreditsDialog() {
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_credits, null)
+        val dialog = AlertDialog.Builder(this).setView(view).create()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+
+        view.findViewById<TextView>(R.id.txtCreditsVersion).text =
+            "v${getCurrentVersionName()} • Community Cinema Engine"
+
+        view.findViewById<TextView>(R.id.btnCreditsWebsite).setOnClickListener {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.studiomogli.com")))
+            } catch (_: Exception) {
+                Toast.makeText(this, "Visit www.studiomogli.com", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        view.findViewById<TextView>(R.id.btnCreditsCheckUpdate).setOnClickListener {
+            Toast.makeText(this, "Checking GitHub Releases...", Toast.LENGTH_SHORT).show()
+            checkForGitHubUpdateSilently(manualCheck = true)
+        }
+
+        view.findViewById<TextView>(R.id.btnCreditsClose).setOnClickListener {
+            dialog.dismiss()
+        }
+
+        dialog.show()
+    }
+
+    private fun checkForGitHubUpdateSilently(manualCheck: Boolean = false) {
         Thread {
             var conn: HttpURLConnection? = null
             try {
@@ -595,7 +719,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
                 val json = JSONObject(body)
                 val latestTag = json.optString("tag_name", "").trim()
-                if (latestTag.isEmpty() || !isNewerVersion(latestTag, getCurrentVersionName())) return@Thread
+                if (latestTag.isEmpty() || !isNewerVersion(latestTag, getCurrentVersionName())) {
+                    if (manualCheck) {
+                        runOnUiThread {
+                            Toast.makeText(this, "You're on the latest version (v${getCurrentVersionName()})!", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    return@Thread
+                }
 
                 var downloadUrl = json.optString("html_url", "")
                 val assets = json.optJSONArray("assets")
@@ -615,6 +746,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         if (!isFinishing && !isDestroyed) {
                             updateDownloadUrl = downloadUrl
                             btnUpdateApp.visibility = View.VISIBLE
+                            if (manualCheck) {
+                                Toast.makeText(this, "Update $latestTag available! Tap UPDATE in top bar.", Toast.LENGTH_LONG).show()
+                            }
                         }
                     }
                 }
@@ -631,8 +765,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.5.0"
-    } catch (_: Exception) { "0.5.0" }
+        info.versionName ?: "0.6.2"
+    } catch (_: Exception) { "0.6.2" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -773,6 +907,64 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupCinemaZoomRocker() {
+        btnZoomTele.setOnTouchListener { v, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    zoomRockerDir = 1
+                    v.setBackgroundResource(R.drawable.bg_lens_active)
+                    btnZoomTele.setTextColor(0xFF0B0D10.toInt())
+                    uiHandler.removeCallbacks(zoomRockerRunnable)
+                    uiHandler.post(zoomRockerRunnable)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    zoomRockerDir = 0
+                    v.setBackgroundResource(R.drawable.bg_hud_pill)
+                    btnZoomTele.setTextColor(0xFFFFFFFF.toInt())
+                    uiHandler.removeCallbacks(zoomRockerRunnable)
+                }
+            }
+            true
+        }
+
+        btnZoomWide.setOnTouchListener { v, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    zoomRockerDir = -1
+                    v.setBackgroundResource(R.drawable.bg_lens_active)
+                    btnZoomWide.setTextColor(0xFF0B0D10.toInt())
+                    uiHandler.removeCallbacks(zoomRockerRunnable)
+                    uiHandler.post(zoomRockerRunnable)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    zoomRockerDir = 0
+                    v.setBackgroundResource(R.drawable.bg_hud_pill)
+                    btnZoomWide.setTextColor(0xFFFFFFFF.toInt())
+                    uiHandler.removeCallbacks(zoomRockerRunnable)
+                }
+            }
+            true
+        }
+
+        txtZoomReadout.setOnClickListener {
+            engine.resetZoom()
+            updateZoomReadout()
+            styleToolPill(btnProTorch, engine.isTorchEnabled)
+            btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
+            styleToolPill(btnProStab, engine.isStabilizationEnabled)
+        }
+
+        btnZoomSpeed.setOnClickListener {
+            zoomSpeedIdx = (zoomSpeedIdx + 1) % zoomSpeedSteps.size
+            btnZoomSpeed.text = zoomSpeedSteps[zoomSpeedIdx].first
+        }
+    }
+
+    private fun updateZoomReadout() {
+        txtZoomReadout.text = String.format(Locale.US, "%.1fx", engine.currentZoomRatio)
     }
 
     private fun setupProDockAndDrawer() {
@@ -1161,6 +1353,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val resTag = if (activeRes.width >= 3840) "4K" else "${activeRes.height}P"
             btnResolution.text = resTag
             btnFps.text = "$activeFps FPS"
+            updateZoomReadout()
+            styleToolPill(btnProTorch, engine.isTorchEnabled)
+            btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
+            styleToolPill(btnProStab, engine.isStabilizationEnabled)
             if (activePanel != ProControlPanel.NONE) refreshSliderState()
         }
     }
@@ -1229,6 +1425,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         engine.startThread()
         syncAnalysisLoop()
         startAudioVuMonitor()
+        uiHandler.removeCallbacks(sysTelemetryRunnable)
+        uiHandler.post(sysTelemetryRunnable)
         if (textureView.isAvailable) {
             openCameraIfReady()
         } else {
@@ -1239,8 +1437,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     override fun onPause() {
         rackAnimator?.cancel()
         uiHandler.removeCallbacks(timecodeRunnable)
+        zoomRockerDir = 0
+        uiHandler.removeCallbacks(zoomRockerRunnable)
         uiHandler.removeCallbacks(analysisRunnable)
         stopAudioVuMonitor()
+        uiHandler.removeCallbacks(sysTelemetryRunnable)
         engine.stopThread()
         super.onPause()
     }

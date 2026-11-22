@@ -2,93 +2,94 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginBottom="10dp"
+    android:layout_margin="6dp"
     android:background="@drawable/bg_hud_pill"
-    android:gravity="center_vertical"
-    android:orientation="horizontal"
-    android:padding="10dp">
+    android:orientation="vertical"
+    android:padding="8dp">
 
-    <ImageView
-        android:id="@+id/imgClipThumb"
-        android:layout_width="112dp"
-        android:layout_height="64dp"
-        android:background="#000000"
-        android:contentDescription="Clip Thumbnail"
-        android:scaleType="centerCrop" />
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="110dp"
+        android:background="#000000">
 
-    <LinearLayout
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
-        android:layout_weight="1"
-        android:orientation="vertical">
+        <ImageView
+            android:id="@+id/imgClipThumb"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="Clip Thumbnail"
+            android:scaleType="centerCrop" />
 
         <TextView
-            android:id="@+id/txtClipName"
-            android:layout_width="match_parent"
+            android:id="@+id/txtClipDuration"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:ellipsize="middle"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="6dp"
+            android:background="#CC0B0D10"
             android:fontFamily="monospace"
-            android:singleLine="true"
+            android:paddingStart="6dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="6dp"
+            android:paddingBottom="2dp"
+            android:text="00:00"
             android:textColor="#FFFFFF"
-            android:textSize="12sp"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/txtClipName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:ellipsize="middle"
+        android:fontFamily="monospace"
+        android:singleLine="true"
+        android:textColor="#FFFFFF"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/txtClipSize"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="0.0 MB"
+            android:textColor="#8E96A4"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/btnClipShare"
+            android:layout_width="wrap_content"
+            android:layout_height="24dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/bg_hud_pill"
+            android:gravity="center"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="SHARE"
+            android:textColor="#FF5F1F"
+            android:textSize="9sp"
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/txtClipMeta"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:fontFamily="monospace"
-            android:textColor="#8E96A4"
-            android:textSize="11sp" />
-
-        <LinearLayout
+            android:id="@+id/btnClipDelete"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/btnClipPlay"
-                android:layout_width="wrap_content"
-                android:layout_height="26dp"
-                android:layout_marginEnd="8dp"
-                android:background="@drawable/bg_lens_active"
-                android:gravity="center"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="PLAY"
-                android:textColor="#0B0D10"
-                android:textSize="10sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/btnClipShare"
-                android:layout_width="wrap_content"
-                android:layout_height="26dp"
-                android:layout_marginEnd="8dp"
-                android:background="@drawable/bg_hud_pill"
-                android:gravity="center"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="SHARE"
-                android:textColor="#FFFFFF"
-                android:textSize="10sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/btnClipDelete"
-                android:layout_width="wrap_content"
-                android:layout_height="26dp"
-                android:background="@drawable/bg_hud_pill"
-                android:gravity="center"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="DEL"
-                android:textColor="#FF453A"
-                android:textSize="10sp"
-                android:textStyle="bold" />
-        </LinearLayout>
+            android:layout_height="24dp"
+            android:background="@drawable/bg_hud_pill"
+            android:gravity="center"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="DEL"
+            android:textColor="#FF3B30"
+            android:textSize="9sp"
+            android:textStyle="bold" />
     </LinearLayout>
 </LinearLayout>

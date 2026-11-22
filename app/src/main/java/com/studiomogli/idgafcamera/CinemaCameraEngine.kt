@@ -50,7 +50,12 @@ data class CameraCapabilities(
     val exposureRangeNs: Range<Long> = Range(125_000L, 100_000_000L),
     val minFocusDistance: Float = 0f,
     val supportsManualExposure: Boolean = false,
-    val supportsManualFocus: Boolean = false
+    val supportsManualFocus: Boolean = false,
+    val minZoom: Float = 1.0f,
+    val maxZoom: Float = 4.0f,
+    val hasFlash: Boolean = false,
+    val supportsEis: Boolean = false,
+    val supportsOis: Boolean = false
 )
 
 data class LiveTelemetry(
@@ -127,7 +132,6 @@ class CinemaCameraEngine(
     var targetBitrateMbps: Int = 35
     var micPreference: MicPreference = MicPreference.AUTO
     var toneProfile: ToneProfile = ToneProfile.STANDARD
-        private set
     var isRecording: Boolean = false
         private set
 
@@ -156,6 +160,14 @@ class CinemaCameraEngine(
 
     var isAeAfLocked: Boolean = false
         private set
+
+    var currentZoomRatio: Float = 1.0f
+        private set
+    var isTorchEnabled: Boolean = false
+        private set
+    var isStabilizationEnabled: Boolean = true
+        private set
+    private var sensorActiveArray: Rect? = null
 
     // Live sensor readouts (used to prevent brightness burst on REC or Auto->Manual switch)
     private var liveIso: Int = 200
@@ -307,6 +319,8 @@ class CinemaCameraEngine(
         activeLensIndex = index
         // Reset lens-specific manual focus when switching glass
         isManualFocus = false
+        currentZoomRatio = 1.0f
+        isTorchEnabled = false
         closeCamera()
         openActiveCamera()
     }
@@ -367,6 +381,33 @@ class CinemaCameraEngine(
         val fps = resolvedFpsRange.upper.coerceAtLeast(1)
         val ns = if (isManualExposure) manualShutterNs else liveShutterNs
         return ((ns.toDouble() * fps / 1_000_000_000.0) * 360.0).toFloat().coerceIn(1f, 360f)
+    }
+
+    fun setZoomRatio(zoom: Float) {
+        val clamped = zoom.coerceIn(capabilities.minZoom, capabilities.maxZoom)
+        if (abs(clamped - currentZoomRatio) < 0.005f) return
+        currentZoomRatio = clamped
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun resetZoom() {
+        setZoomRatio(1.0f)
+    }
+
+    fun toggleTorch(): Boolean {
+        if (!capabilities.hasFlash) {
+            isTorchEnabled = false
+            return false
+        }
+        isTorchEnabled = !isTorchEnabled
+        pushUpdatedRepeatingRequest()
+        return isTorchEnabled
+    }
+
+    fun toggleStabilization(): Boolean {
+        isStabilizationEnabled = !isStabilizationEnabled
+        pushUpdatedRepeatingRequest()
+        return isStabilizationEnabled
     }
 
     fun setToneProfile(profile: ToneProfile) {
@@ -475,6 +516,49 @@ class CinemaCameraEngine(
             builder.set(CaptureRequest.CONTROL_AWB_LOCK, isAeAfLocked || lockAutoForRecordStart)
         }
 
+        // 3.5. Hardware Zoom (CONTROL_ZOOM_RATIO on API 30+, SCALER_CROP_REGION fallback)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            builder.set(
+                CaptureRequest.CONTROL_ZOOM_RATIO,
+                currentZoomRatio.coerceIn(capabilities.minZoom, capabilities.maxZoom)
+            )
+        } else {
+            val activeRect = sensorActiveArray
+            if (activeRect != null && currentZoomRatio > 1.01f) {
+                val cropW = (activeRect.width() / currentZoomRatio).toInt().coerceAtLeast(1)
+                val cropH = (activeRect.height() / currentZoomRatio).toInt().coerceAtLeast(1)
+                val left = (activeRect.width() - cropW) / 2
+                val top = (activeRect.height() - cropH) / 2
+                builder.set(CaptureRequest.SCALER_CROP_REGION, Rect(left, top, left + cropW, top + cropH))
+            } else if (activeRect != null) {
+                builder.set(CaptureRequest.SCALER_CROP_REGION, activeRect)
+            }
+        }
+
+        // 3.6. Hardware Torch / Video Light (works on back & front lenses if hardware flash exists)
+        if (capabilities.hasFlash && isTorchEnabled) {
+            builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+        } else {
+            builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+        }
+
+        // 3.7. Hardware Video Stabilization (OIS / EIS)
+        if (isStabilizationEnabled) {
+            if (capabilities.supportsEis) {
+                builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+            }
+            if (capabilities.supportsOis) {
+                builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+            }
+        } else {
+            if (capabilities.supportsEis) {
+                builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            }
+            if (capabilities.supportsOis) {
+                builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
+            }
+        }
+
         // 4. Flat / Cinema Tone Curve
         when (toneProfile) {
             ToneProfile.STANDARD -> {
@@ -572,14 +656,35 @@ class CinemaCameraEngine(
             val isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
             val expRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
             val minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+            sensorActiveArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+
+            val zoomRange = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+            } else null
+            val maxDigital = chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 4.0f
+            val minZ = zoomRange?.lower ?: 1.0f
+            val maxZ = (zoomRange?.upper ?: maxDigital).coerceAtLeast(1.0f).coerceAtMost(10.0f)
+
+            val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            val eisModes = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES) ?: intArrayOf()
+            val oisModes = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION) ?: intArrayOf()
+            val supportsEis = eisModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+            val supportsOis = oisModes.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON)
 
             capabilities = CameraCapabilities(
                 isoRange = isoRange ?: Range(100, 3200),
                 exposureRangeNs = expRange ?: Range(125_000L, 100_000_000L),
                 minFocusDistance = minFocus,
                 supportsManualExposure = (isoRange != null && expRange != null),
-                supportsManualFocus = (minFocus > 0f)
+                supportsManualFocus = (minFocus > 0f),
+                minZoom = minZ,
+                maxZoom = maxZ,
+                hasFlash = hasFlash,
+                supportsEis = supportsEis,
+                supportsOis = supportsOis
             )
+            if (!hasFlash) isTorchEnabled = false
+            currentZoomRatio = currentZoomRatio.coerceIn(minZ, maxZ)
 
             val videoSizes = map.getOutputSizes(MediaRecorder::class.java) ?: emptyArray()
             resolvedVideoSize = chooseClosest16x9Size(videoSizes, targetResolution.width, targetResolution.height)

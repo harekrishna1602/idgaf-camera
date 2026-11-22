@@ -32,6 +32,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ClipGalleryActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape" />
+
     </application>
 
 </manifest>

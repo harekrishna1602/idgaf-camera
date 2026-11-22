@@ -1,11 +1,9 @@
-# IDGAF CAMERA (`v0.5.0` — Phase 5: Presets, Flat Profile, Shutter Angle, Golden Ratio & Updater)
+# IDGAF CAMERA (`v0.6.2` — Pre-Emulation Core Polish)
 
-Free, open, community-built Android cinema camera built on native **Kotlin + Camera2 API** by **Studio Mogli**.
+Free, open, community-built Android cinema camera built on native **Kotlin + Camera2 API** by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's New in Phase 5 (`v0.5.0`)
-- **Save & Load Shooting Templates (`PRO → PRESETS`):** Save all current camera settings (Resolution, FPS, Codec, Bitrate, Mic, Tone Curve, Manual ISO/Shutter/WB/Focus, Focus Pull Time, Grid & Frame Guides) as named templates and reload them in 1 tap.
-- **Flat & Cinema Tone Curves (`PRO → STD / FLAT / CINE`):** Real-time Camera2 `TONEMAP_MODE_CONTRAST_CURVE` profiles with lifted shadows and rolled-off highlights for easier color grading.
-- **Editable Shutter Angle & Shutter Speed:** Toggle **`SPD` / `ANG°`** inside the Shutter drawer to dial or tap-to-type exact Shutter Speed (`1/48s`) or Shutter Angle (`180°`, `90°`, `270°`, `360°`).
-- **Custom Focus Pull Time:** Tap **`1.2s`** in the Focus drawer to set any A→B rack focus duration (`0.2s` to `15.0s`).
-- **Golden Ratio Grid (`φ`):** `GRID` now cycles `OFF → 3x3 → φ (Golden Ratio)`.
-- **Hidden Silent In-App Updater:** Checks `harekrishna1602/idgaf-camera` Releases silently and only reveals the **`UPDATE`** pill when a newer APK is live.
+## What's New in `v0.6.2`
+- **Studio Mogli Credits & About (`IDGAF CAM`):** Tap `IDGAF CAM` in the top-left HUD for app version, `© 2026 Studio Mogli` copyright, clickable `www.studiomogli.com`, and a manual **Check for Updates** button.
+- **OIS / EIS Stabilization Toggle (`PRO → STAB`):** Hardware video stabilization toggle for handheld vs. tripod/gimbal shooting.
+- **Hardware Torch Toggle (`PRO → TORCH`):** Continuous LED video light on back lenses—and automatically enabled on front cameras if the device has front LED flash hardware.
+- **Live Battery % & Free Storage (GB):** Real-time monospace telemetry in the top HUD bar with low-battery/low-storage color warnings.
