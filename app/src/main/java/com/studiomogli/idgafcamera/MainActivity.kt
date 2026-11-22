@@ -24,9 +24,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Size
 import android.view.Gravity
-import android.content.res.Configuration
 import android.view.MotionEvent
-import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
@@ -44,7 +42,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import java.util.Locale
 import kotlin.math.roundToInt
 
-enum class ProControlPanel { NONE, ISO, SHUTTER, FOCUS, WB, ZOOM }
+enum class ProControlPanel { NONE, ISO, SHUTTER, FOCUS, WB }
 
 class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
@@ -67,10 +65,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnProMic: TextView
     private lateinit var btnProTone: TextView
     private lateinit var btnProPresets: TextView
-    private lateinit var btnRotateMode: TextView
-    private var isPortraitMode = false
-    private var lastToastMs: Long = 0L
-    private var lastToastMsg: String = ""
     private lateinit var btnUpdateApp: TextView
     private lateinit var presetStore: PresetStore
     private var updateDownloadUrl: String? = null
@@ -111,21 +105,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var txtWbVal: TextView
     private lateinit var pillFocus: LinearLayout
     private lateinit var txtFocusVal: TextView
-    private lateinit var pillZoom: LinearLayout
-    private lateinit var txtZoomVal: TextView
-    private lateinit var zoomRockerRow: LinearLayout
-    private lateinit var btnZoomSpeed: TextView
-    private lateinit var btnZoomWideHold: TextView
-    private lateinit var btnZoomTeleHold: TextView
-    private lateinit var btnZoomPreset1x: TextView
-    private lateinit var btnZoomPreset2x: TextView
-    private lateinit var btnZoomPreset5x: TextView
-    private lateinit var scaleDetector: ScaleGestureDetector
-
-    private val zoomSpeedSteps = listOf("SLOW" to 0.018f, "MED" to 0.045f, "FAST" to 0.11f)
-    private var zoomSpeedIdx = 1
-    private var zoomRockerDirection = 0 // -1 = Wide, +1 = Tele, 0 = stopped
-    private var lastPreviewSize: Size = Size(1920, 1080)
     private lateinit var btnAeAfLock: TextView
 
     // Floating Pro Slider Drawer
@@ -187,18 +166,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
-    private val zoomRockerRunnable = object : Runnable {
-        override fun run() {
-            if (zoomRockerDirection != 0) {
-                val step = zoomSpeedSteps[zoomSpeedIdx].second
-                val nextZoom = engine.currentZoomRatio + (zoomRockerDirection * step * engine.currentZoomRatio.coerceAtLeast(1f))
-                engine.setZoomRatio(nextZoom)
-                updateZoomReadoutUi()
-                uiHandler.postDelayed(this, 24L)
-            }
-        }
-    }
-
     private val timecodeRunnable = object : Runnable {
         override fun run() {
             if (engine.isRecording) {
@@ -251,7 +218,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProMic = findViewById(R.id.btnProMic)
         btnProTone = findViewById(R.id.btnProTone)
         btnProPresets = findViewById(R.id.btnProPresets)
-        btnRotateMode = findViewById(R.id.btnRotateMode)
         btnUpdateApp = findViewById(R.id.btnUpdateApp)
         presetStore = PresetStore(this)
         btnMonitorToggle = findViewById(R.id.btnMonitorToggle)
@@ -278,15 +244,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtWbVal = findViewById(R.id.txtWbVal)
         pillFocus = findViewById(R.id.pillFocus)
         txtFocusVal = findViewById(R.id.txtFocusVal)
-        pillZoom = findViewById(R.id.pillZoom)
-        txtZoomVal = findViewById(R.id.txtZoomVal)
-        zoomRockerRow = findViewById(R.id.zoomRockerRow)
-        btnZoomSpeed = findViewById(R.id.btnZoomSpeed)
-        btnZoomWideHold = findViewById(R.id.btnZoomWideHold)
-        btnZoomTeleHold = findViewById(R.id.btnZoomTeleHold)
-        btnZoomPreset1x = findViewById(R.id.btnZoomPreset1x)
-        btnZoomPreset2x = findViewById(R.id.btnZoomPreset2x)
-        btnZoomPreset5x = findViewById(R.id.btnZoomPreset5x)
         btnAeAfLock = findViewById(R.id.btnAeAfLock)
 
         // Floating Drawer bindings
@@ -325,18 +282,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             checkForGitHubUpdateSilently()
         }
 
-        scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-            override fun onScale(detector: ScaleGestureDetector): Boolean {
-                val nextZoom = engine.currentZoomRatio * detector.scaleFactor
-                engine.setZoomRatio(nextZoom)
-                updateZoomReadoutUi()
-                return true
-            }
-        })
-
         textureView.setOnTouchListener { v, event ->
-            scaleDetector.onTouchEvent(event)
-            if (event.pointerCount > 1) return@setOnTouchListener true
             if (event.action == MotionEvent.ACTION_DOWN) {
                 if (activePanel != ProControlPanel.NONE) {
                     selectPanel(ProControlPanel.NONE)
@@ -387,42 +333,25 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (engine.isRecording) return@setOnClickListener
             currentFpsIdx = (currentFpsIdx + 1) % fpsOptions.size
             val fps = fpsOptions[currentFpsIdx]
-            engine.targetFps = fps
             btnFps.text = "$fps FPS"
             engine.updateSettings(currentResolution, fps)
         }
 
-        btnFps.setOnLongClickListener {
-            if (engine.isRecording) return@setOnLongClickListener true
-            showCustomFpsDialog()
-            true
-        }
-
-        btnRotateMode.setOnClickListener {
-            if (engine.isRecording) {
-                showThrottledToast("Stop recording before rotating.")
-                return@setOnClickListener
-            }
-            isPortraitMode = !isPortraitMode
-            if (isPortraitMode) {
-                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                btnRotateMode.text = "PORT"
-                styleToolPill(btnRotateMode, true)
-            } else {
-                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                btnRotateMode.text = "LAND"
-                btnRotateMode.setBackgroundResource(R.drawable.bg_hud_pill)
-                btnRotateMode.setTextColor(0xFF38BDF8.toInt())
-            }
-            textureView.post { configureTransform(lastPreviewSize) }
-        }
-
         btnLastClip.setOnClickListener {
-            if (engine.isRecording) {
-                Toast.makeText(this, "Stop recording before opening Clip Gallery.", Toast.LENGTH_SHORT).show()
+            val uri = lastSavedUri
+            if (uri == null) {
+                Toast.makeText(this, "Record a clip first — saved to Movies/IDGAF_Camera", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            startActivity(Intent(this, ClipGalleryActivity::class.java))
+            try {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "video/*")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(intent)
+            } catch (_: Exception) {
+                Toast.makeText(this, "Open Gallery → Movies/IDGAF_Camera", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -802,7 +731,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             ProControlPanel.WB -> "Enter White Balance (Kelvin)" to "2500 to 8500 (e.g. 5600)"
             ProControlPanel.FOCUS -> "Enter Focus Distance (%)" to "0 (Infinity) to 100 (Macro)"
-            ProControlPanel.ZOOM -> "Enter Zoom Multiplier (x)" to "1 to 10 (e.g. 1.5, 2, 4)"
             ProControlPanel.NONE -> return
         }
 
@@ -839,10 +767,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         val d = (v.coerceIn(0, 100) / 100f) * maxF
                         engine.setManualFocusDistance(d)
                     }
-                    ProControlPanel.ZOOM -> {
-                        engine.setZoomRatio(v.toFloat())
-                        updateZoomReadoutUi()
-                    }
                     ProControlPanel.NONE -> {}
                 }
                 refreshSliderState()
@@ -863,57 +787,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         pillFocus.setOnClickListener {
             if (!engine.capabilities.supportsManualFocus) {
-                showThrottledToast("This lens has fixed focus")
+                Toast.makeText(this, "This lens has fixed focus", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             selectPanel(if (activePanel == ProControlPanel.FOCUS) ProControlPanel.NONE else ProControlPanel.FOCUS)
         }
-        pillZoom.setOnClickListener {
-            selectPanel(if (activePanel == ProControlPanel.ZOOM) ProControlPanel.NONE else ProControlPanel.ZOOM)
-        }
-
-        btnZoomSpeed.setOnClickListener {
-            zoomSpeedIdx = (zoomSpeedIdx + 1) % zoomSpeedSteps.size
-            btnZoomSpeed.text = zoomSpeedSteps[zoomSpeedIdx].first
-        }
-
-        btnZoomWideHold.setOnTouchListener { _, ev ->
-            when (ev.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    zoomRockerDirection = -1
-                    uiHandler.removeCallbacks(zoomRockerRunnable)
-                    uiHandler.post(zoomRockerRunnable)
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    zoomRockerDirection = 0
-                    uiHandler.removeCallbacks(zoomRockerRunnable)
-                }
-            }
-            true
-        }
-
-        btnZoomTeleHold.setOnTouchListener { _, ev ->
-            when (ev.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    zoomRockerDirection = 1
-                    uiHandler.removeCallbacks(zoomRockerRunnable)
-                    uiHandler.post(zoomRockerRunnable)
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    zoomRockerDirection = 0
-                    uiHandler.removeCallbacks(zoomRockerRunnable)
-                }
-            }
-            true
-        }
-
-        btnZoomPreset1x.setOnClickListener { engine.setZoomRatio(1.0f); updateZoomReadoutUi() }
-        btnZoomPreset2x.setOnClickListener { engine.setZoomRatio(2.0f); updateZoomReadoutUi() }
-        btnZoomPreset5x.setOnClickListener { engine.setZoomRatio(5.0f); updateZoomReadoutUi() }
         btnAeAfLock.setOnClickListener {
             val locked = engine.toggleAeAfLock()
             updateLockUi(locked)
-            showThrottledToast(if (locked) "AE / AF LOCKED" else "AE / AF UNLOCKED")
+            Toast.makeText(this, if (locked) "AE / AF LOCKED" else "AE / AF UNLOCKED", Toast.LENGTH_SHORT).show()
         }
 
         txtSliderReadout.setOnClickListener {
@@ -928,7 +810,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     engine.setAutoFocus()
                 }
                 ProControlPanel.WB -> engine.setAutoWhiteBalance()
-                ProControlPanel.ZOOM -> { engine.setZoomRatio(1.0f); updateZoomReadoutUi() }
                 ProControlPanel.NONE -> {}
             }
             refreshSliderState()
@@ -1061,13 +942,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         txtSliderReadout.text = "${kelvin}K"
                         updateAutoButtonVisual(isManual = true)
                     }
-                    ProControlPanel.ZOOM -> {
-                        val minZ = engine.capabilities.minZoomRatio
-                        val maxZ = engine.capabilities.maxZoomRatio.coerceAtMost(10.0f)
-                        val ratio = minZ + ((maxZ - minZ) * (progress / 100f))
-                        engine.setZoomRatio(ratio)
-                        updateZoomReadoutUi()
-                    }
                     ProControlPanel.NONE -> {}
                 }
             }
@@ -1082,8 +956,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             pillIso to ProControlPanel.ISO,
             pillShutter to ProControlPanel.SHUTTER,
             pillWb to ProControlPanel.WB,
-            pillFocus to ProControlPanel.FOCUS,
-            pillZoom to ProControlPanel.ZOOM
+            pillFocus to ProControlPanel.FOCUS
         )
         pills.forEach { (view, p) ->
             view.setBackgroundResource(if (p == panel) R.drawable.bg_dock_pill_active else R.drawable.bg_hud_pill)
@@ -1098,7 +971,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnShutterUnit.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnSlider180.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         rackFocusRow.visibility = if (panel == ProControlPanel.FOCUS) View.VISIBLE else View.GONE
-        zoomRockerRow.visibility = if (panel == ProControlPanel.ZOOM) View.VISIBLE else View.GONE
         refreshSliderState()
     }
 
@@ -1150,36 +1022,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 txtSliderReadout.text = if (engine.isManualWb) "${engine.manualKelvin}K" else "AWB"
                 updateAutoButtonVisual(engine.isManualWb)
             }
-            ProControlPanel.ZOOM -> {
-                txtSliderTitle.text = "SERVO ZOOM"
-                proSeekBar.max = 100
-                updateZoomReadoutUi()
-            }
             ProControlPanel.NONE -> {}
         }
         suppressSeekCallback = false
-    }
-
-    private fun updateZoomReadoutUi() {
-        val z = engine.currentZoomRatio
-        val label = String.format(Locale.US, "%.1fx", z)
-        txtZoomVal.text = label
-        txtZoomVal.setTextColor(if (z > 1.05f) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
-        if (activePanel == ProControlPanel.ZOOM) {
-            txtSliderReadout.text = label
-            val minZ = engine.capabilities.minZoomRatio
-            val maxZ = engine.capabilities.maxZoomRatio.coerceAtMost(10.0f).coerceAtLeast(minZ + 0.1f)
-            suppressSeekCallback = true
-            proSeekBar.progress = (((z - minZ) / (maxZ - minZ)) * 100f).roundToInt().coerceIn(0, 100)
-            suppressSeekCallback = false
-            updateAutoButtonVisual(z > 1.05f)
-        }
-    }
-
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        enableImmersiveFullscreen()
-        textureView.post { configureTransform(lastPreviewSize) }
     }
 
     private fun updateAutoButtonVisual(isManual: Boolean) {
@@ -1237,47 +1082,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }.start()
     }
 
-    private fun showThrottledToast(msg: String) {
-        val now = System.currentTimeMillis()
-        if (msg == lastToastMsg && now - lastToastMs < 1800L) return
-        lastToastMsg = msg
-        lastToastMs = now
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-    }
-
-    private fun showCustomFpsDialog() {
-        val input = EditText(this).apply {
-            hint = "FPS (e.g. 24, 30, 60)"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF888888.toInt())
-            setPadding(36, 28, 36, 28)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Enter Custom Frame Rate (FPS)")
-            .setView(input)
-            .setPositiveButton("Apply") { _, _ ->
-                val fps = input.text.toString().trim().toIntOrNull()
-                if (fps == null || fps !in 15..120) {
-                    showThrottledToast("Enter FPS between 15 and 120")
-                    return@setPositiveButton
-                }
-                engine.targetFps = fps
-                btnFps.text = "$fps FPS"
-                engine.updateSettings(currentResolution, fps)
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
     private fun configureTransform(previewSize: Size) {
         val viewW = textureView.width.toFloat()
         val viewH = textureView.height.toFloat()
         if (viewW <= 0f || viewH <= 0f) return
 
         val matrix = Matrix()
-        val centerX = viewW / 2f
-        val centerY = viewH / 2f
+        val viewRect = RectF(0f, 0f, viewW, viewH)
+        val bufferRect = RectF(0f, 0f, previewSize.height.toFloat(), previewSize.width.toFloat())
+        val centerX = viewRect.centerX()
+        val centerY = viewRect.centerY()
 
         val rotation = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             display?.rotation ?: Surface.ROTATION_90
@@ -1286,21 +1100,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             windowManager.defaultDisplay.rotation
         }
 
-        val isRotated90or270 = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270
-        val bufW = if (isRotated90or270) previewSize.height.toFloat() else previewSize.width.toFloat()
-        val bufH = if (isRotated90or270) previewSize.width.toFloat() else previewSize.height.toFloat()
-
-        // Scale proportionally by aspect ratio to avoid portrait/landscape stretching
-        val viewRatio = viewW / viewH.coerceAtLeast(1f)
-        val bufRatio = bufW / bufH.coerceAtLeast(1f)
-        val scaleX = if (bufRatio > viewRatio) bufRatio / viewRatio else 1f
-        val scaleY = if (viewRatio > bufRatio) viewRatio / bufRatio else 1f
-
-        matrix.setScale(scaleX, scaleY, centerX, centerY)
-        if (rotation == Surface.ROTATION_90) {
-            matrix.postRotate(-90f, centerX, centerY)
-        } else if (rotation == Surface.ROTATION_270) {
-            matrix.postRotate(90f, centerX, centerY)
+        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
+            bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
+            matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
+            val scale = maxOf(
+                viewH / previewSize.height.toFloat(),
+                viewW / previewSize.width.toFloat()
+            )
+            matrix.postScale(scale, scale, centerX, centerY)
+            matrix.postRotate(90f * (rotation - 2), centerX, centerY)
         } else if (rotation == Surface.ROTATION_180) {
             matrix.postRotate(180f, centerX, centerY)
         }
@@ -1349,9 +1157,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         caps: CameraCapabilities
     ) {
         runOnUiThread {
-            lastPreviewSize = previewSize
             configureTransform(previewSize)
-            updateZoomReadoutUi()
             val resTag = if (activeRes.width >= 3840) "4K" else "${activeRes.height}P"
             btnResolution.text = resTag
             btnFps.text = "$activeFps FPS"
@@ -1433,8 +1239,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     override fun onPause() {
         rackAnimator?.cancel()
         uiHandler.removeCallbacks(timecodeRunnable)
-        zoomRockerDirection = 0
-        uiHandler.removeCallbacks(zoomRockerRunnable)
         uiHandler.removeCallbacks(analysisRunnable)
         stopAudioVuMonitor()
         engine.stopThread()
