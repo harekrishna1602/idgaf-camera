@@ -127,6 +127,7 @@ class CinemaCameraEngine(
     var targetBitrateMbps: Int = 35
     var micPreference: MicPreference = MicPreference.AUTO
     var toneProfile: ToneProfile = ToneProfile.STANDARD
+    private set
     var isRecording: Boolean = false
         private set
 
