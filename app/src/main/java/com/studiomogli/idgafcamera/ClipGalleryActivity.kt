@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.StatFs
 import android.provider.MediaStore
 import android.util.Size
 import android.view.Gravity
@@ -18,17 +19,28 @@ import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.zip.CRC32
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 data class RecordedClip(
     val id: Long,
@@ -39,6 +51,13 @@ data class RecordedClip(
     val folderName: String // "" for root Movies/IDGAF_Camera, or subfolder name
 )
 
+data class ZipArchiveItem(
+    val name: String,
+    val uri: Uri,
+    val sizeBytes: Long,
+    val legacyFile: File? = null
+)
+
 class ClipGalleryActivity : AppCompatActivity() {
 
     companion object {
@@ -46,17 +65,20 @@ class ClipGalleryActivity : AppCompatActivity() {
         private const val FOLDER_ROOT = ""
         private const val PREFS_NAME = "idgaf_vault_folders_v1"
         private const val KEY_FOLDERS = "custom_folders_set"
+        private const val ARCHIVE_SUBDIR = "IDGAF_Archives"
     }
 
     private lateinit var recycler: RecyclerView
     private lateinit var txtEmpty: TextView
     private lateinit var txtCount: TextView
     private lateinit var folderChipRow: LinearLayout
+    private lateinit var btnViewArchives: TextView
     private lateinit var btnNewFolder: TextView
     private lateinit var btnToggleSelect: TextView
     private lateinit var bulkActionBar: LinearLayout
     private lateinit var txtSelectedCount: TextView
     private lateinit var btnSelectAll: TextView
+    private lateinit var btnBulkZip: TextView
     private lateinit var btnBulkMove: TextView
     private lateinit var btnBulkShare: TextView
     private lateinit var btnBulkDelete: TextView
@@ -83,16 +105,22 @@ class ClipGalleryActivity : AppCompatActivity() {
         txtEmpty = findViewById(R.id.txtGalleryEmpty)
         txtCount = findViewById(R.id.txtGalleryCount)
         folderChipRow = findViewById(R.id.folderChipRow)
+        btnViewArchives = findViewById(R.id.btnViewArchives)
         btnNewFolder = findViewById(R.id.btnNewFolder)
         btnToggleSelect = findViewById(R.id.btnToggleSelect)
         bulkActionBar = findViewById(R.id.bulkActionBar)
         txtSelectedCount = findViewById(R.id.txtSelectedCount)
         btnSelectAll = findViewById(R.id.btnSelectAll)
+        btnBulkZip = findViewById(R.id.btnBulkZip)
         btnBulkMove = findViewById(R.id.btnBulkMove)
         btnBulkShare = findViewById(R.id.btnBulkShare)
         btnBulkDelete = findViewById(R.id.btnBulkDelete)
 
         findViewById<TextView>(R.id.btnGalleryBack).setOnClickListener { finish() }
+
+        btnViewArchives.setOnClickListener {
+            showSavedArchivesDialog()
+        }
 
         btnNewFolder.setOnClickListener {
             showCreateFolderDialog(moveSelectionAfterCreate = false)
@@ -111,6 +139,14 @@ class ClipGalleryActivity : AppCompatActivity() {
             }
             updateSelectionUi()
             adapter.notifyDataSetChanged()
+        }
+
+        btnBulkZip.setOnClickListener {
+            if (selectedIds.isEmpty()) {
+                Toast.makeText(this, "Select at least 1 clip to ZIP.", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            showZipOptionsDialog()
         }
 
         btnBulkMove.setOnClickListener {
@@ -154,6 +190,574 @@ class ClipGalleryActivity : AppCompatActivity() {
         loadClips()
     }
 
+    // ==================== PHASE 6.12: PRO ZERO-COMPRESSION ZIP ARCHIVER ====================
+
+    private fun showZipOptionsDialog() {
+        val targets = allClips.filter { it.id in selectedIds }
+        if (targets.isEmpty()) return
+
+        val totalBytes = targets.sumOf { it.sizeBytes.coerceAtLeast(0L) }
+        val totalMb = totalBytes / (1024f * 1024f)
+
+        // Check available device storage before creating archive (+12 MB safety buffer)
+        val freeBytes = try {
+            val stat = StatFs(Environment.getDataDirectory().path)
+            stat.availableBlocksLong * stat.blockSizeLong
+        } catch (_: Exception) {
+            Long.MAX_VALUE
+        }
+        if (totalBytes > 0L && freeBytes < totalBytes + (12L * 1024L * 1024L)) {
+            val needMb = (totalBytes / (1024f * 1024f)) + 12f
+            val availMb = freeBytes / (1024f * 1024f)
+            AlertDialog.Builder(this)
+                .setTitle("Not Enough Free Storage")
+                .setMessage(
+                    String.format(
+                        Locale.US,
+                        "Selected clips need ~%.1f MB of free space to build the archive, but only %.1f MB is available.\n\nSelect fewer clips or clear space first.",
+                        needMb,
+                        availMb
+                    )
+                )
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+        val folderPrefix = if (activeFolderFilter != FOLDER_ALL && activeFolderFilter.isNotEmpty()) {
+            sanitizeFolderName(activeFolderFilter).replace(" ", "_")
+        } else {
+            "Takes"
+        }
+        val defaultName = "IDGAF_${folderPrefix}_$timestamp"
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(20), dpToPx(12), dpToPx(20), dpToPx(4))
+        }
+
+        val info = TextView(this).apply {
+            text = String.format(
+                Locale.US,
+                "%d clip(s) • %.1f MB\nLossless 0-compression packaging (STORED) into Downloads/%s/.\n\n• ZIP & KEEP: Archives clips & keeps originals.\n• ZIP & CLEAR: Verifies archive integrity first, then deletes originals to free space.",
+                targets.size,
+                totalMb,
+                ARCHIVE_SUBDIR
+            )
+            textSize = 12f
+        }
+        val nameInput = EditText(this).apply {
+            setText(defaultName)
+            hint = "Archive filename (without .zip)"
+            setSingleLine(true)
+            setPadding(dpToPx(8), dpToPx(12), dpToPx(8), dpToPx(12))
+        }
+        container.addView(info)
+        container.addView(nameInput)
+
+        AlertDialog.Builder(this)
+            .setTitle("Create Lossless ZIP Archive")
+            .setView(container)
+            .setPositiveButton("ZIP & KEEP") { _, _ ->
+                val clean = sanitizeArchiveName(nameInput.text.toString(), defaultName)
+                startZipArchiveJob(targets, clean, clearOriginalsAfterVerify = false)
+            }
+            .setNeutralButton("ZIP & CLEAR") { _, _ ->
+                val clean = sanitizeArchiveName(nameInput.text.toString(), defaultName)
+                AlertDialog.Builder(this)
+                    .setTitle("Confirm Offload & Clear Originals?")
+                    .setMessage(
+                        "All ${targets.size} original .mp4 file(s) will be deleted ONLY AFTER the new $clean.zip archive passes 100% integrity verification.\n\nYou'll then get 1-tap SHARE ZIP & DELETE ZIP controls."
+                    )
+                    .setPositiveButton("ZIP & CLEAR") { _, _ ->
+                        startZipArchiveJob(targets, clean, clearOriginalsAfterVerify = true)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun sanitizeArchiveName(raw: String, fallback: String): String {
+        val stripped = raw.trim().removeSuffix(".zip").removeSuffix(".ZIP")
+        val clean = stripped
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .replace(Regex("_+"), "_")
+            .trim('_')
+            .take(48)
+        return clean.ifEmpty { fallback }
+    }
+
+    private fun startZipArchiveJob(
+        targets: List<RecordedClip>,
+        baseName: String,
+        clearOriginalsAfterVerify: Boolean
+    ) {
+        val zipFileName = "$baseName.zip"
+        val cancelled = AtomicBoolean(false)
+
+        // Build compact live progress dialog
+        val progressLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpToPx(22), dpToPx(16), dpToPx(22), dpToPx(10))
+        }
+        val txtStage = TextView(this).apply {
+            text = "Preparing ${targets.size} clip(s)..."
+            textSize = 13f
+        }
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dpToPx(12)
+                bottomMargin = dpToPx(8)
+            }
+        }
+        val txtBytes = TextView(this).apply {
+            text = "0.0 / 0.0 MB"
+            textSize = 11f
+        }
+        progressLayout.addView(txtStage)
+        progressLayout.addView(progressBar)
+        progressLayout.addView(txtBytes)
+
+        val progressDialog = AlertDialog.Builder(this)
+            .setTitle(if (clearOriginalsAfterVerify) "Archiving & Verifying..." else "Building ZIP Archive...")
+            .setView(progressLayout)
+            .setCancelable(false)
+            .setNegativeButton("CANCEL") { _, _ ->
+                cancelled.set(true)
+            }
+            .create()
+        progressDialog.show()
+
+        fun updateProgressUi(stage: String, pct: Int, doneBytes: Long, totalBytes: Long) {
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) {
+                    txtStage.text = stage
+                    progressBar.progress = pct.coerceIn(0, 100)
+                    txtBytes.text = String.format(
+                        Locale.US,
+                        "%.1f / %.1f MB (%d%%)",
+                        doneBytes / (1024f * 1024f),
+                        totalBytes.coerceAtLeast(1L) / (1024f * 1024f),
+                        pct.coerceIn(0, 100)
+                    )
+                }
+            }
+        }
+
+        Thread {
+            var createdUri: Uri? = null
+            var legacyZipFile: File? = null
+            val expectedEntrySizes = linkedMapOf<String, Long>()
+            val totalExpectedBytes = targets.sumOf { it.sizeBytes.coerceAtLeast(1L) }.coerceAtLeast(1L)
+            var processedWorkBytes = 0L
+            // Two passes per clip: CRC32 pass (weight 0.35) + STORED write pass (weight 0.65)
+            val totalWorkUnits = (totalExpectedBytes * 100L).coerceAtLeast(100L)
+
+            try {
+                // 1. Open destination ZIP output stream in Downloads/IDGAF_Archives/
+                val rawOut = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, zipFileName)
+                        put(MediaStore.Downloads.MIME_TYPE, "application/zip")
+                        put(
+                            MediaStore.Downloads.RELATIVE_PATH,
+                            "${Environment.DIRECTORY_DOWNLOADS}/$ARCHIVE_SUBDIR/"
+                        )
+                        put(MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        ?: throw IllegalStateException("Could not create archive in Downloads/$ARCHIVE_SUBDIR")
+                    createdUri = uri
+                    contentResolver.openOutputStream(uri)
+                        ?: throw IllegalStateException("Could not open archive stream")
+                } else {
+                    val dir = File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                        ARCHIVE_SUBDIR
+                    )
+                    if (!dir.exists()) dir.mkdirs()
+                    val outFile = File(dir, zipFileName)
+                    legacyZipFile = outFile
+                    createdUri = FileProvider.getUriForFile(this, "$packageName.fileprovider", outFile)
+                    FileOutputStream(outFile)
+                }
+
+                val usedNames = hashSetOf<String>()
+                val buf = ByteArray(65_536)
+
+                ZipOutputStream(BufferedOutputStream(rawOut, 65_536)).use { zos ->
+                    zos.setMethod(ZipOutputStream.STORED)
+
+                    for ((idx, clip) in targets.withIndex()) {
+                        if (cancelled.get()) throw InterruptedException("Cancelled by user")
+
+                        // Build unique entry path inside the ZIP (preserving subfolder name if present)
+                        val baseEntryName = if (clip.folderName.isNotEmpty()) {
+                            "${clip.folderName}/${clip.name}"
+                        } else {
+                            clip.name
+                        }
+                        var entryName = baseEntryName
+                        var dupSuffix = 2
+                        while (!usedNames.add(entryName)) {
+                            val dot = baseEntryName.lastIndexOf('.')
+                            entryName = if (dot > 0) {
+                                "${baseEntryName.substring(0, dot)}_$dupSuffix${baseEntryName.substring(dot)}"
+                            } else {
+                                "${baseEntryName}_$dupSuffix"
+                            }
+                            dupSuffix++
+                        }
+
+                        // Pass 1: Stream CRC32 + exact byte count (required for zero-compression STORED)
+                        val crc = CRC32()
+                        var exactSize = 0L
+                        contentResolver.openInputStream(clip.uri)?.use { ins ->
+                            var read: Int
+                            while (ins.read(buf).also { read = it } != -1) {
+                                if (cancelled.get()) throw InterruptedException("Cancelled by user")
+                                crc.update(buf, 0, read)
+                                exactSize += read
+                                processedWorkBytes += (read * 35L)
+                                val pct = ((processedWorkBytes * 100L) / totalWorkUnits).toInt()
+                                updateProgressUi(
+                                    "Checking clip ${idx + 1}/${targets.size}: ${clip.name}",
+                                    pct,
+                                    processedWorkBytes / 100L,
+                                    totalExpectedBytes
+                                )
+                            }
+                        } ?: throw IllegalStateException("Cannot read ${clip.name}")
+
+                        // Pass 2: Write raw STORED bytes directly into ZIP (no CPU re-compression!)
+                        val entry = ZipEntry(entryName).apply {
+                            method = ZipEntry.STORED
+                            size = exactSize
+                            compressedSize = exactSize
+                            this.crc = crc.value
+                            time = System.currentTimeMillis()
+                        }
+                        zos.putNextEntry(entry)
+                        var written = 0L
+                        contentResolver.openInputStream(clip.uri)?.use { ins ->
+                            var read: Int
+                            while (ins.read(buf).also { read = it } != -1) {
+                                if (cancelled.get()) throw InterruptedException("Cancelled by user")
+                                zos.write(buf, 0, read)
+                                written += read
+                                processedWorkBytes += (read * 65L)
+                                val pct = ((processedWorkBytes * 100L) / totalWorkUnits).toInt()
+                                updateProgressUi(
+                                    "Packing ${idx + 1}/${targets.size}: ${clip.name}",
+                                    pct,
+                                    processedWorkBytes / 100L,
+                                    totalExpectedBytes
+                                )
+                            }
+                        } ?: throw IllegalStateException("Cannot read ${clip.name} on write pass")
+                        zos.closeEntry()
+
+                        if (written != exactSize) {
+                            throw IllegalStateException("Short write on ${clip.name}: $written vs $exactSize")
+                        }
+                        expectedEntrySizes[entryName] = exactSize
+                    }
+                }
+
+                // Mark MediaStore item finished so it's visible & readable by verifier + Share sheet
+                val finalUri = createdUri ?: throw IllegalStateException("Archive URI missing")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val doneVals = ContentValues().apply {
+                        put(MediaStore.Downloads.IS_PENDING, 0)
+                    }
+                    contentResolver.update(finalUri, doneVals, null, null)
+                }
+
+                // 2. Verify archive integrity before touching any original files!
+                var clearedOriginalsCount = 0
+                if (clearOriginalsAfterVerify) {
+                    updateProgressUi("Verifying archive integrity...", 99, totalExpectedBytes, totalExpectedBytes)
+                    val verifiedOk = verifyZipArchiveIntegrity(finalUri, expectedEntrySizes, cancelled)
+                    if (!verifiedOk) {
+                        throw IllegalStateException("Archive verification failed — originals were NOT deleted.")
+                    }
+
+                    updateProgressUi("Clearing ${targets.size} original clip(s)...", 100, totalExpectedBytes, totalExpectedBytes)
+                    for (clip in targets) {
+                        try {
+                            if (contentResolver.delete(clip.uri, null, null) > 0) {
+                                clearedOriginalsCount++
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+
+                // Query final archive size in bytes
+                val finalZipBytes = queryUriSizeBytes(finalUri, legacyZipFile)
+                val archiveItem = ZipArchiveItem(
+                    name = zipFileName,
+                    uri = finalUri,
+                    sizeBytes = finalZipBytes,
+                    legacyFile = legacyZipFile
+                )
+
+                runOnUiThread {
+                    if (progressDialog.isShowing) progressDialog.dismiss()
+                    setMultiSelectMode(false)
+                    loadClips()
+                    showZipCompleteDialog(
+                        archive = archiveItem,
+                        clipCount = targets.size,
+                        originalsCleared = clearedOriginalsCount,
+                        clearRequested = clearOriginalsAfterVerify
+                    )
+                }
+            } catch (e: Exception) {
+                // Cleanup partial archive on cancel or failure
+                cleanupZipArchive(createdUri, legacyZipFile)
+                val wasCancelled = cancelled.get() || e is InterruptedException
+                runOnUiThread {
+                    if (progressDialog.isShowing) progressDialog.dismiss()
+                    Toast.makeText(
+                        this,
+                        if (wasCancelled) "ZIP cancelled." else "ZIP failed: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun verifyZipArchiveIntegrity(
+        zipUri: Uri,
+        expectedEntrySizes: Map<String, Long>,
+        cancelled: AtomicBoolean
+    ): Boolean {
+        val foundEntries = linkedMapOf<String, Long>()
+        val buf = ByteArray(65_536)
+        contentResolver.openInputStream(zipUri)?.use { rawIn ->
+            ZipInputStream(rawIn).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (cancelled.get()) return false
+                    var counted = 0L
+                    var read: Int
+                    while (zis.read(buf).also { read = it } != -1) {
+                        counted += read
+                    }
+                    foundEntries[entry.name] = counted
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+            }
+        } ?: return false
+
+        if (foundEntries.size != expectedEntrySizes.size) return false
+        for ((name, expectedBytes) in expectedEntrySizes) {
+            if (foundEntries[name] != expectedBytes) return false
+        }
+        return true
+    }
+
+    private fun queryUriSizeBytes(uri: Uri, legacyFile: File?): Long {
+        if (legacyFile != null && legacyFile.exists()) return legacyFile.length()
+        return try {
+            contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    private fun cleanupZipArchive(uri: Uri?, legacyFile: File?) {
+        try {
+            if (legacyFile != null && legacyFile.exists()) {
+                legacyFile.delete()
+            } else if (uri != null) {
+                contentResolver.delete(uri, null, null)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun showZipCompleteDialog(
+        archive: ZipArchiveItem,
+        clipCount: Int,
+        originalsCleared: Int,
+        clearRequested: Boolean
+    ) {
+        val mb = archive.sizeBytes / (1024f * 1024f)
+        val statusLine = if (clearRequested) {
+            "Verified & cleared $originalsCleared/$clipCount original clip(s) from device."
+        } else {
+            "All $clipCount original clip(s) kept in Clip Vault."
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Archive Ready")
+            .setMessage(
+                String.format(
+                    Locale.US,
+                    "%s\nSize: %.1f MB (Lossless STORED)\nSaved: Downloads/%s/\n\n%s\n\nTip: Tap SHARE ZIP to send via WhatsApp Document / Telegram / Drive, then tap DELETE ZIP here once sent to clear 100%% of storage.",
+                    archive.name,
+                    mb,
+                    ARCHIVE_SUBDIR,
+                    statusLine
+                )
+            )
+            .setPositiveButton("SHARE ZIP", null)
+            .setNeutralButton("DELETE ZIP", null)
+            .setNegativeButton("DONE", null)
+            .create()
+
+        // Keep dialog open after SHARE ZIP so user returns directly to 1-tap DELETE ZIP!
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                shareZipArchive(archive)
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                confirmDeleteZipArchive(archive) {
+                    dialog.dismiss()
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun shareZipArchive(archive: ZipArchiveItem) {
+        try {
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, archive.uri)
+                putExtra(Intent.EXTRA_SUBJECT, archive.name)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(shareIntent, "Share ${archive.name}"))
+        } catch (_: Exception) {
+            Toast.makeText(this, "Unable to share ZIP archive.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun confirmDeleteZipArchive(archive: ZipArchiveItem, onDeleted: (() -> Unit)? = null) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete ZIP Archive?")
+            .setMessage("Permanently remove ${archive.name} from Downloads/$ARCHIVE_SUBDIR?")
+            .setPositiveButton("Delete ZIP") { _, _ ->
+                cleanupZipArchive(archive.uri, archive.legacyFile)
+                Toast.makeText(this, "Deleted ${archive.name}", Toast.LENGTH_SHORT).show()
+                onDeleted?.invoke()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showSavedArchivesDialog() {
+        Thread {
+            val archives = mutableListOf<ZipArchiveItem>()
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val projection = arrayOf(
+                        MediaStore.Downloads._ID,
+                        MediaStore.Downloads.DISPLAY_NAME,
+                        MediaStore.Downloads.SIZE,
+                        MediaStore.Downloads.RELATIVE_PATH
+                    )
+                    contentResolver.query(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        projection,
+                        "${MediaStore.Downloads.RELATIVE_PATH} LIKE ? AND ${MediaStore.Downloads.DISPLAY_NAME} LIKE ?",
+                        arrayOf("%$ARCHIVE_SUBDIR%", "%.zip"),
+                        "${MediaStore.Downloads.DATE_ADDED} DESC"
+                    )?.use { cursor ->
+                        val idCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads._ID)
+                        val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME)
+                        val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads.SIZE)
+                        while (cursor.moveToNext()) {
+                            val id = cursor.getLong(idCol)
+                            val uri = ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id)
+                            archives.add(
+                                ZipArchiveItem(
+                                    name = cursor.getString(nameCol) ?: "archive.zip",
+                                    uri = uri,
+                                    sizeBytes = cursor.getLong(sizeCol)
+                                )
+                            )
+                        }
+                    }
+                } else {
+                    val dir = File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                        ARCHIVE_SUBDIR
+                    )
+                    dir.listFiles { f -> f.isFile && f.name.endsWith(".zip", ignoreCase = true) }
+                        ?.sortedByDescending { it.lastModified() }
+                        ?.forEach { file ->
+                            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+                            archives.add(ZipArchiveItem(file.name, uri, file.length(), file))
+                        }
+                }
+            } catch (_: Exception) {
+            }
+
+            runOnUiThread {
+                if (archives.isEmpty()) {
+                    Toast.makeText(
+                        this,
+                        "No ZIP archives yet. Tap SELECT → pick clips → ZIP.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@runOnUiThread
+                }
+                val labels = archives.map { a ->
+                    String.format(Locale.US, "%s (%.1f MB)", a.name, a.sizeBytes / (1024f * 1024f))
+                }.toTypedArray()
+
+                AlertDialog.Builder(this)
+                    .setTitle("Saved ZIP Archives (${archives.size})")
+                    .setItems(labels) { _, which ->
+                        val chosen = archives[which]
+                        val actDialog = AlertDialog.Builder(this)
+                            .setTitle(chosen.name)
+                            .setMessage(
+                                String.format(
+                                    Locale.US,
+                                    "Size: %.1f MB\nLocation: Downloads/%s/",
+                                    chosen.sizeBytes / (1024f * 1024f),
+                                    ARCHIVE_SUBDIR
+                                )
+                            )
+                            .setPositiveButton("SHARE ZIP", null)
+                            .setNeutralButton("DELETE ZIP", null)
+                            .setNegativeButton("Close", null)
+                            .create()
+                        actDialog.setOnShowListener {
+                            actDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                                shareZipArchive(chosen)
+                            }
+                            actDialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                                confirmDeleteZipArchive(chosen) {
+                                    actDialog.dismiss()
+                                }
+                            }
+                        }
+                        actDialog.show()
+                    }
+                    .setNegativeButton("Close", null)
+                    .show()
+            }
+        }.start()
+    }
+
+    // ==================== FOLDERS & MULTI-SELECT ====================
+
     private fun loadSavedFolders() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val saved = prefs.getStringSet(KEY_FOLDERS, emptySet()) ?: emptySet()
@@ -194,7 +798,7 @@ class ClipGalleryActivity : AppCompatActivity() {
     }
 
     private fun updateSelectionUi() {
-        txtSelectedCount.text = "${selectedIds.size} SELECTED"
+        txtSelectedCount.text = "${selectedIds.size} SEL"
         btnSelectAll.text = if (selectedIds.size == visibleClips.size && visibleClips.isNotEmpty()) "NONE" else "ALL"
     }
 

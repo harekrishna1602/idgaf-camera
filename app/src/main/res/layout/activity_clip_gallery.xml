@@ -40,6 +40,20 @@
             android:textStyle="bold" />
 
         <TextView
+            android:id="@+id/btnViewArchives"
+            android:layout_width="wrap_content"
+            android:layout_height="30dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/bg_hud_pill"
+            android:gravity="center"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:text="ZIPS"
+            android:textColor="#34C759"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <TextView
             android:id="@+id/btnNewFolder"
             android:layout_width="wrap_content"
             android:layout_height="30dp"
@@ -99,79 +113,108 @@
     <LinearLayout
         android:id="@+id/bulkActionBar"
         android:layout_width="match_parent"
-        android:layout_height="44dp"
+        android:layout_height="46dp"
         android:background="#1A202B"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="16dp"
-        android:paddingEnd="16dp"
+        android:paddingEnd="12dp"
         android:visibility="gone">
 
         <TextView
             android:id="@+id/txtSelectedCount"
-            android:layout_width="0dp"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
+            android:layout_marginEnd="12dp"
             android:fontFamily="monospace"
             android:text="0 SELECTED"
             android:textColor="#FF5F1F"
-            android:textSize="12sp"
+            android:textSize="11sp"
             android:textStyle="bold" />
 
-        <TextView
-            android:id="@+id/btnSelectAll"
-            android:layout_width="wrap_content"
-            android:layout_height="28dp"
-            android:layout_marginEnd="8dp"
-            android:background="@drawable/bg_hud_pill"
-            android:gravity="center"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:text="ALL"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp"
-            android:textStyle="bold" />
+        <HorizontalScrollView
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:fillViewport="true"
+            android:scrollbars="none">
 
-        <TextView
-            android:id="@+id/btnBulkMove"
-            android:layout_width="wrap_content"
-            android:layout_height="28dp"
-            android:layout_marginEnd="8dp"
-            android:background="@drawable/bg_lens_active"
-            android:gravity="center"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:text="MOVE TO FOLDER"
-            android:textColor="#0B0D10"
-            android:textSize="10sp"
-            android:textStyle="bold" />
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="end|center_vertical"
+                android:orientation="horizontal">
 
-        <TextView
-            android:id="@+id/btnBulkShare"
-            android:layout_width="wrap_content"
-            android:layout_height="28dp"
-            android:layout_marginEnd="8dp"
-            android:background="@drawable/bg_hud_pill"
-            android:gravity="center"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:text="SHARE"
-            android:textColor="#FF5F1F"
-            android:textSize="10sp"
-            android:textStyle="bold" />
+                <TextView
+                    android:id="@+id/btnSelectAll"
+                    android:layout_width="wrap_content"
+                    android:layout_height="28dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_hud_pill"
+                    android:gravity="center"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:text="ALL"
+                    android:textColor="#FFFFFF"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
 
-        <TextView
-            android:id="@+id/btnBulkDelete"
-            android:layout_width="wrap_content"
-            android:layout_height="28dp"
-            android:background="@drawable/bg_hud_pill"
-            android:gravity="center"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
-            android:text="DELETE"
-            android:textColor="#FF3B30"
-            android:textSize="10sp"
-            android:textStyle="bold" />
+                <TextView
+                    android:id="@+id/btnBulkZip"
+                    android:layout_width="wrap_content"
+                    android:layout_height="28dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_lens_active"
+                    android:gravity="center"
+                    android:paddingStart="11dp"
+                    android:paddingEnd="11dp"
+                    android:text="ZIP"
+                    android:textColor="#0B0D10"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/btnBulkMove"
+                    android:layout_width="wrap_content"
+                    android:layout_height="28dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_hud_pill"
+                    android:gravity="center"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:text="MOVE"
+                    android:textColor="#FFFFFF"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/btnBulkShare"
+                    android:layout_width="wrap_content"
+                    android:layout_height="28dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_hud_pill"
+                    android:gravity="center"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:text="SHARE"
+                    android:textColor="#FF5F1F"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/btnBulkDelete"
+                    android:layout_width="wrap_content"
+                    android:layout_height="28dp"
+                    android:background="@drawable/bg_hud_pill"
+                    android:gravity="center"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:text="DEL"
+                    android:textColor="#FF3B30"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </HorizontalScrollView>
     </LinearLayout>
 
     <TextView
