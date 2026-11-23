@@ -64,10 +64,10 @@
             android:textSize="13sp"
             android:textStyle="bold" />
 
-        <!-- Live Audio VU Meter + dB Badge (Tap to open Pro Audio Controller) -->
+        <!-- Live Audio VU Meter + dB Badge (Fixed width so box never shifts/jitters) -->
         <LinearLayout
             android:id="@+id/btnAudioPanelToggle"
-            android:layout_width="wrap_content"
+            android:layout_width="132dp"
             android:layout_height="30dp"
             android:layout_marginStart="6dp"
             android:background="@drawable/bg_hud_pill"
@@ -83,16 +83,18 @@
 
             <TextView
                 android:id="@+id/txtAudioDb"
-                android:layout_width="36dp"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="6dp"
+                android:layout_weight="1"
                 android:fontFamily="monospace"
                 android:gravity="end|center_vertical"
+                android:includeFontPadding="false"
                 android:maxLines="1"
                 android:singleLine="true"
-                android:text="-∞"
+                android:text="-∞dB"
                 android:textColor="#34C759"
-                android:textSize="9sp"
+                android:textSize="9dp"
                 android:textStyle="bold" />
         </LinearLayout>
 

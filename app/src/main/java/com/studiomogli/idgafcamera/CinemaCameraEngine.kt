@@ -425,7 +425,7 @@ class CinemaCameraEngine(
             manualShutterNs = if (isShutter180Locked) {
                 compute180ShutterNs(resolvedFpsRange.upper)
             } else {
-                liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, minOf(capabilities.exposureRangeNs.upper, 100_000_000L))
+                liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, maxOf(capabilities.exposureRangeNs.lower, minOf(capabilities.exposureRangeNs.upper, 100_000_000L)))
             }
             isManualExposure = true
         }
@@ -729,9 +729,9 @@ class CinemaCameraEngine(
      */
     private fun applyEffectiveIso(builder: CaptureRequest.Builder, effectiveIso: Int) {
         val analogMin = capabilities.isoRange.lower
-        val analogMax = capabilities.isoRange.upper
+        val analogMax = capabilities.isoRange.upper.coerceAtLeast(analogMin)
         val boostMin = capabilities.postRawBoostRange.lower.coerceAtLeast(100)
-        val boostMax = capabilities.postRawBoostRange.upper.coerceAtLeast(100)
+        val boostMax = capabilities.postRawBoostRange.upper.coerceAtLeast(boostMin)
 
         if (effectiveIso <= analogMax || !capabilities.supportsPostRawBoost || boostMax <= 100) {
             builder.set(CaptureRequest.SENSOR_SENSITIVITY, effectiveIso.coerceIn(analogMin, analogMax))
@@ -810,8 +810,8 @@ class CinemaCameraEngine(
                 chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
             } else null
             val maxDigital = chars.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 4.0f
-            val minZ = zoomRange?.lower ?: 1.0f
-            val maxZ = (zoomRange?.upper ?: maxDigital).coerceAtLeast(1.0f).coerceAtMost(10.0f)
+            val minZ = (zoomRange?.lower ?: 1.0f).coerceAtLeast(0.5f)
+            val maxZ = (zoomRange?.upper ?: maxDigital).coerceAtMost(10.0f).coerceAtLeast(minZ)
 
             val evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(-12, 12)
             val evStepRational = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
@@ -835,13 +835,22 @@ class CinemaCameraEngine(
                 targetResolution = supportedRes.lastOrNull { it.width <= 1920 } ?: supportedRes.first()
             }
 
-            val resolvedAnalogIso = isoRange ?: Range(100, 3200)
-            val resolvedBoost = boostRange ?: Range(100, 100)
-            val boostMax = resolvedBoost.upper.coerceAtLeast(100)
-            val effMaxIso = ((resolvedAnalogIso.upper.toLong() * boostMax.toLong()) / 100L)
-                .coerceIn(resolvedAnalogIso.upper.toLong(), 12800L)
-                .toInt()
-            val resolvedEffectiveIso = Range(resolvedAnalogIso.lower, effMaxIso)
+            val rawAnalog = isoRange ?: Range(100, 3200)
+            val analogLower = rawAnalog.lower.coerceAtLeast(1)
+            val analogUpper = rawAnalog.upper.coerceAtLeast(analogLower)
+            val resolvedAnalogIso = Range(analogLower, analogUpper)
+
+            val rawBoost = boostRange ?: Range(100, 100)
+            val boostLower = rawBoost.lower.coerceAtLeast(100)
+            val boostUpper = rawBoost.upper.coerceAtLeast(boostLower)
+            val resolvedBoost = Range(boostLower, boostUpper)
+
+            val boostMax = boostUpper
+            val boostedMaxLong = (analogUpper.toLong() * boostMax.toLong()) / 100L
+            // Never cap below the sensor's own native analog ISO ceiling!
+            val safeCap = maxOf(analogUpper.toLong(), 12800L).coerceAtMost(Int.MAX_VALUE.toLong())
+            val effMaxIso = boostedMaxLong.coerceIn(analogUpper.toLong(), safeCap).toInt()
+            val resolvedEffectiveIso = Range(analogLower, effMaxIso.coerceAtLeast(analogLower))
 
             capabilities = CameraCapabilities(
                 isoRange = resolvedAnalogIso,

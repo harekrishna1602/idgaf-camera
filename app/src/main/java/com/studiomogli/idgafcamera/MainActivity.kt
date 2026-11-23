@@ -934,8 +934,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.9"
-    } catch (_: Exception) { "0.6.9" }
+        info.versionName ?: "0.6.9.1"
+    } catch (_: Exception) { "0.6.9.1" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1042,7 +1042,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         val dbfs = if (adjusted < 4f) -60f else (20.0 * kotlin.math.log10((adjusted / 32767.0).coerceIn(0.0001, 1.0))).toFloat()
         val label = when {
             dbfs >= -1.0f -> "CLIP"
-            dbfs <= -55f -> "-∞"
+            dbfs <= -55f -> "-∞dB"
             else -> String.format(Locale.US, "%ddB", dbfs.roundToInt())
         }
         val color = when {
