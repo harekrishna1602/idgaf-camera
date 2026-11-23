@@ -93,6 +93,12 @@ enum class MicPreference(val label: String) {
     EXTERNAL("MIC: EXT")
 }
 
+enum class AudioPreampMode(val label: String, val audioSource: Int) {
+    CAMCORDER("CAM", MediaRecorder.AudioSource.CAMCORDER),
+    RAW_UNPROCESSED("RAW", MediaRecorder.AudioSource.UNPROCESSED),
+    VOICE_BOOST("BOOST", MediaRecorder.AudioSource.VOICE_RECOGNITION)
+}
+
 enum class ToneProfile(val label: String) {
     STANDARD("STD"),
     FLAT("FLAT"),
@@ -139,6 +145,9 @@ class CinemaCameraEngine(
     var targetCodec: CinemaCodec = CinemaCodec.H264
     var targetBitrateMbps: Int = 35
     var micPreference: MicPreference = MicPreference.AUTO
+    var audioPreampMode: AudioPreampMode = AudioPreampMode.CAMCORDER
+    var isAudioMuted: Boolean = false
+    var audioMonitorTrimDb: Int = 0
     var toneProfile: ToneProfile = ToneProfile.STANDARD
         private set
     var isRecording: Boolean = false
@@ -301,7 +310,7 @@ class CinemaCameraEngine(
 
     fun getRecordingMaxAmplitude(): Int {
         return try {
-            if (isRecording) mediaRecorder?.maxAmplitude ?: 0 else 0
+            if (isRecording && !isAudioMuted) mediaRecorder?.maxAmplitude ?: 0 else 0
         } catch (_: Exception) {
             0
         }
@@ -1050,7 +1059,9 @@ class CinemaCameraEngine(
             MediaRecorder()
         }
 
-        recorder.setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
+        if (!isAudioMuted) {
+            recorder.setAudioSource(audioPreampMode.audioSource)
+        }
         recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
         recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
 
@@ -1084,13 +1095,15 @@ class CinemaCameraEngine(
         recorder.setVideoFrameRate(targetFps.coerceIn(1, 60))
         recorder.setVideoSize(resolvedVideoSize.width, resolvedVideoSize.height)
         recorder.setVideoEncoder(targetCodec.encoder)
-        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-        recorder.setAudioEncodingBitRate(256_000)
-        recorder.setAudioSamplingRate(48_000)
+        if (!isAudioMuted) {
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioEncodingBitRate(256_000)
+            recorder.setAudioSamplingRate(48_000)
+        }
         recorder.setOrientationHint(computeOrientationHint(lens, displayRotation))
 
         // Route external USB/Wired mic if preferred or detected in AUTO mode (API 28+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
+        if (!isAudioMuted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
             val extMic = findExternalMicDevice()
             if (extMic != null) {
                 try {

@@ -97,8 +97,20 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var activeToast: Toast? = null
     private var micPrefIdx = 0
 
+    // Phase 6.8 Pro Audio Controller Drawer
+    private lateinit var btnAudioPanelToggle: LinearLayout
+    private lateinit var txtAudioDb: TextView
+    private lateinit var audioControlDrawer: LinearLayout
+    private lateinit var btnAudioMute: TextView
+    private lateinit var btnPreampCam: TextView
+    private lateinit var btnPreampRaw: TextView
+    private lateinit var btnPreampBoost: TextView
+    private lateinit var audioGainSeekBar: SeekBar
+    private lateinit var txtAudioTrimVal: TextView
+
     // Live Audio VU preview monitor (runs when idle; switches to MediaRecorder amplitude while recording)
     @Volatile private var audioMonitorRunning = false
+    @Volatile private var audioMonitorRestartNeeded = false
     private var audioMonitorThread: Thread? = null
 
     // Phase 3 Monitoring Toolbar
@@ -340,6 +352,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         focusReticle = findViewById(R.id.focusReticle)
         overlayView = findViewById(R.id.cinemaOverlayView)
         audioMeterView = findViewById(R.id.audioMeterView)
+        btnAudioPanelToggle = findViewById(R.id.btnAudioPanelToggle)
+        txtAudioDb = findViewById(R.id.txtAudioDb)
+        audioControlDrawer = findViewById(R.id.audioControlDrawer)
+        btnAudioMute = findViewById(R.id.btnAudioMute)
+        btnPreampCam = findViewById(R.id.btnPreampCam)
+        btnPreampRaw = findViewById(R.id.btnPreampRaw)
+        btnPreampBoost = findViewById(R.id.btnPreampBoost)
+        audioGainSeekBar = findViewById(R.id.audioGainSeekBar)
+        txtAudioTrimVal = findViewById(R.id.txtAudioTrimVal)
         btnProSettingsToggle = findViewById(R.id.btnProSettingsToggle)
         proSettingsBar = findViewById(R.id.proSettingsBar)
         btnProCodec = findViewById(R.id.btnProCodec)
@@ -420,6 +441,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         setupMonitoringTools()
         setupProAudioAndCodecBar()
         setupCinemaZoomRocker()
+        setupAudioControllerDrawer()
 
         findViewById<TextView>(R.id.btnBrandCredits).setOnClickListener {
             showStudioMogliCreditsDialog()
@@ -456,9 +478,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         textureView.setOnTouchListener { v, event ->
             scaleDetector.onTouchEvent(event)
             if (event.action == MotionEvent.ACTION_DOWN && event.pointerCount == 1 && !scaleDetector.isInProgress) {
-                if (activePanel != ProControlPanel.NONE || zoomPopoutDrawer.visibility == View.VISIBLE) {
+                if (activePanel != ProControlPanel.NONE || zoomPopoutDrawer.visibility == View.VISIBLE || audioControlDrawer.visibility == View.VISIBLE) {
                     selectPanel(ProControlPanel.NONE)
                     zoomPopoutDrawer.visibility = View.GONE
+                    audioControlDrawer.visibility = View.GONE
                 } else {
                     val normX = event.x / v.width.coerceAtLeast(1)
                     val normY = event.y / v.height.coerceAtLeast(1)
@@ -905,8 +928,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.7"
-    } catch (_: Exception) { "0.6.7" }
+        info.versionName ?: "0.6.8"
+    } catch (_: Exception) { "0.6.8" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -920,6 +943,111 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (l < c) return false
         }
         return false
+    }
+
+    private fun setupAudioControllerDrawer() {
+        btnAudioPanelToggle.setOnClickListener {
+            val showing = audioControlDrawer.visibility == View.VISIBLE
+            audioControlDrawer.visibility = if (showing) View.GONE else View.VISIBLE
+        }
+
+        btnAudioMute.setOnClickListener {
+            if (engine.isRecording) {
+                showSingleToast("Stop recording to toggle Mute")
+                return@setOnClickListener
+            }
+            engine.isAudioMuted = !engine.isAudioMuted
+            updateAudioDrawerUi()
+            showSingleToast(if (engine.isAudioMuted) "Audio MUTED (Video-Only Recording)" else "Audio LIVE")
+        }
+
+        btnPreampCam.setOnClickListener { selectAudioPreamp(AudioPreampMode.CAMCORDER) }
+        btnPreampRaw.setOnClickListener { selectAudioPreamp(AudioPreampMode.RAW_UNPROCESSED) }
+        btnPreampBoost.setOnClickListener { selectAudioPreamp(AudioPreampMode.VOICE_BOOST) }
+
+        audioGainSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                val db = progress - 12 // -12 dB .. +12 dB
+                engine.audioMonitorTrimDb = db
+                txtAudioTrimVal.text = if (db > 0) "+$db dB" else "$db dB"
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+
+        txtAudioTrimVal.setOnClickListener {
+            engine.audioMonitorTrimDb = 0
+            audioGainSeekBar.progress = 12
+            txtAudioTrimVal.text = "0 dB"
+        }
+
+        updateAudioDrawerUi()
+    }
+
+    private fun selectAudioPreamp(mode: AudioPreampMode) {
+        if (engine.isRecording) {
+            showSingleToast("Stop recording to switch preamp stage")
+            return
+        }
+        engine.audioPreampMode = mode
+        audioMonitorRestartNeeded = true
+        updateAudioDrawerUi()
+        showSingleToast(
+            when (mode) {
+                AudioPreampMode.CAMCORDER -> "Preamp: CAMCORDER (Balanced)"
+                AudioPreampMode.RAW_UNPROCESSED -> "Preamp: RAW UNPROCESSED (Zero AGC)"
+                AudioPreampMode.VOICE_BOOST -> "Preamp: VOICE BOOST (High Gain)"
+            }
+        )
+    }
+
+    private fun updateAudioDrawerUi() {
+        val muted = engine.isAudioMuted
+        btnAudioMute.text = if (muted) "MUTED" else "LIVE"
+        btnAudioMute.setBackgroundResource(if (muted) R.drawable.bg_shutter_stop else R.drawable.bg_hud_pill)
+        btnAudioMute.setTextColor(if (muted) 0xFFFFFFFF.toInt() else 0xFF34C759.toInt())
+
+        styleToolPill(btnPreampCam, engine.audioPreampMode == AudioPreampMode.CAMCORDER)
+        styleToolPill(btnPreampRaw, engine.audioPreampMode == AudioPreampMode.RAW_UNPROCESSED)
+        styleToolPill(btnPreampBoost, engine.audioPreampMode == AudioPreampMode.VOICE_BOOST)
+
+        if (muted) {
+            txtAudioDb.text = "MUTE"
+            txtAudioDb.setTextColor(0xFFFF3B30.toInt())
+            audioMeterView.updateLevel(0f)
+        }
+    }
+
+    private fun dispatchAudioMeterUi(rawPeak: Int) {
+        if (engine.isAudioMuted) {
+            audioMeterView.updateLevel(0f)
+            runOnUiThread {
+                txtAudioDb.text = "MUTE"
+                txtAudioDb.setTextColor(0xFFFF3B30.toInt())
+            }
+            return
+        }
+        val gainMul = Math.pow(10.0, engine.audioMonitorTrimDb / 20.0).toFloat()
+        val adjusted = (rawPeak * gainMul).coerceAtLeast(0f)
+        val norm = (adjusted / 24000f).coerceIn(0f, 1f)
+        audioMeterView.updateLevel(norm)
+
+        val dbfs = if (adjusted < 4f) -60f else (20.0 * kotlin.math.log10((adjusted / 32767.0).coerceIn(0.0001, 1.0))).toFloat()
+        val label = when {
+            dbfs >= -1.0f -> "CLIP"
+            dbfs <= -55f -> "-∞"
+            else -> String.format(Locale.US, "%ddB", dbfs.roundToInt())
+        }
+        val color = when {
+            dbfs >= -1.0f -> 0xFFFF3B30.toInt()
+            dbfs >= -9.0f -> 0xFFFFCC00.toInt()
+            else -> 0xFF34C759.toInt()
+        }
+        runOnUiThread {
+            txtAudioDb.text = label
+            txtAudioDb.setTextColor(color)
+        }
     }
 
     private fun startAudioVuMonitor() {
@@ -936,22 +1064,25 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val buffer = ShortArray(minBuf / 2)
 
             while (audioMonitorRunning) {
-                if (engine.isRecording) {
-                    // Release AudioRecord while MediaRecorder owns the mic, read MediaRecorder amplitude instead
+                if (engine.isRecording || engine.isAudioMuted) {
                     if (ar != null) {
                         try { ar.stop(); ar.release() } catch (_: Exception) {}
                         ar = null
                     }
-                    val amp = engine.getRecordingMaxAmplitude()
-                    val norm = (amp / 22000f).coerceIn(0f, 1f)
-                    audioMeterView.updateLevel(norm)
-                    try { Thread.sleep(70L) } catch (_: Exception) {}
+                    val amp = if (engine.isRecording && !engine.isAudioMuted) engine.getRecordingMaxAmplitude() else 0
+                    dispatchAudioMeterUi(amp)
+                    try { Thread.sleep(75L) } catch (_: Exception) {}
                 } else {
+                    if (audioMonitorRestartNeeded && ar != null) {
+                        try { ar.stop(); ar.release() } catch (_: Exception) {}
+                        ar = null
+                        audioMonitorRestartNeeded = false
+                    }
                     if (ar == null) {
                         try {
                             @SuppressLint("MissingPermission")
                             val rec = AudioRecord(
-                                MediaRecorder.AudioSource.MIC,
+                                engine.audioPreampMode.audioSource,
                                 sampleRate,
                                 AudioFormat.CHANNEL_IN_MONO,
                                 AudioFormat.ENCODING_PCM_16BIT,
@@ -976,8 +1107,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                                 val v = kotlin.math.abs(buffer[i].toInt())
                                 if (v > peak) peak = v
                             }
-                            val norm = (peak / 18000f).coerceIn(0f, 1f)
-                            audioMeterView.updateLevel(norm)
+                            dispatchAudioMeterUi(peak)
                         }
                     }
                 }

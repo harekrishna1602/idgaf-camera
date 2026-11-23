@@ -64,12 +64,34 @@
             android:textSize="13sp"
             android:textStyle="bold" />
 
-        <!-- Live Audio VU Meter -->
-        <com.studiomogli.idgafcamera.AudioMeterView
-            android:id="@+id/audioMeterView"
-            android:layout_width="76dp"
-            android:layout_height="12dp"
-            android:layout_marginStart="6dp" />
+        <!-- Live Audio VU Meter + dB Badge (Tap to open Pro Audio Controller) -->
+        <LinearLayout
+            android:id="@+id/btnAudioPanelToggle"
+            android:layout_width="wrap_content"
+            android:layout_height="30dp"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/bg_hud_pill"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp">
+
+            <com.studiomogli.idgafcamera.AudioMeterView
+                android:id="@+id/audioMeterView"
+                android:layout_width="68dp"
+                android:layout_height="11dp" />
+
+            <TextView
+                android:id="@+id/txtAudioDb"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:fontFamily="monospace"
+                android:text="-∞"
+                android:textColor="#34C759"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+        </LinearLayout>
 
         <!-- Live Battery % & Free Storage (GB) -->
         <TextView
@@ -415,6 +437,148 @@
             android:textColor="#FF5F1F"
             android:textSize="10sp"
             android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- FLOATING PRO AUDIO CONTROLLER DRAWER (Opened by tapping VU Meter) -->
+    <LinearLayout
+        android:id="@+id/audioControlDrawer"
+        android:layout_width="320dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="20dp"
+        android:layout_marginTop="56dp"
+        android:background="@drawable/bg_hud_pill"
+        android:orientation="vertical"
+        android:padding="10dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="monospace"
+                android:text="PRO AUDIO • 48kHz AAC"
+                android:textColor="#FF5F1F"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnAudioMute"
+                android:layout_width="wrap_content"
+                android:layout_height="24dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="LIVE"
+                android:textColor="#34C759"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Hardware Preamp Stage + Mic Routing -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:fontFamily="monospace"
+                android:text="STAGE"
+                android:textColor="#8E96A4"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnPreampCam"
+                android:layout_width="0dp"
+                android:layout_height="26dp"
+                android:layout_marginEnd="4dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_lens_active"
+                android:gravity="center"
+                android:text="CAM"
+                android:textColor="#0B0D10"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnPreampRaw"
+                android:layout_width="0dp"
+                android:layout_height="26dp"
+                android:layout_marginEnd="4dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="RAW"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnPreampBoost"
+                android:layout_width="0dp"
+                android:layout_height="26dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="BOOST"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Input Trim / Monitor Gain Slider (-12 dB to +12 dB) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="VU TRIM"
+                android:textColor="#8E96A4"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <SeekBar
+                android:id="@+id/audioGainSeekBar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:max="24"
+                android:progress="12"
+                android:progressTint="#FF5F1F"
+                android:thumbTint="#FFFFFF" />
+
+            <TextView
+                android:id="@+id/txtAudioTrimVal"
+                android:layout_width="44dp"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:gravity="end"
+                android:text="0 dB"
+                android:textColor="#FF5F1F"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- LEFT RAIL: DYNAMIC LENS SWITCHER -->

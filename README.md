@@ -1,12 +1,13 @@
-# IDGAF CAMERA (`v0.6.7` — Zoom Engine v2, Live Auto Sliders & Live AWB Kelvin)
+# IDGAF CAMERA (`v0.6.8` — Clip Vault v2 + Pro Audio Controller)
 
 Free, open, community-built Android cinema camera built on native **Kotlin + Camera2 API** by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's New in `v0.6.7`
-- **Zoom Engine v2 (`T` / `W` + Curves + Smooth Pulls):**
-  - Restored crisp **`T` / `W`** servo zoom rocker with faster **`SLOW / MED / FAST`** speeds.
-  - Selectable **Zoom Curves** inside the `1.0x` popout drawer: **`LIN`** (Linear), **`EXP`** (Exponential / Smooth Ease), and **`CRASH`** (high-speed snap crash zoom).
-  - **Smooth Preset Zooms (`1x / 2x / 5x / MAX`):** Tapping any preset glides smoothly using your active curve and duration.
-  - **A→B Motorized Zoom Pull:** Save Zoom Point **`A`**, save Zoom Point **`B`**, tap **`1.5s`** to set any custom duration (`0.2s–15.0s`), and tap **`A→B`** for repeatable cinema zoom pulls.
-- **Live Auto Sliders:** When the ISO, Shutter, Focus, or WB drawer is open in Auto mode, the slider thumb and readout now track live sensor values in real time instead of freezing.
-- **Live AWB Kelvin Readout:** The bottom `WB` pill and slider now display the live estimated Kelvin number (e.g., `5400K`) even in Auto White Balance (crisp white for Auto, Safety Orange for Manual).
+## What's New in `v0.6.8`
+- **Clip Vault v2 (Folders + Multi-Select):**
+  - **Custom Folders:** Tap **`+ FOLDER`** to create shoot folders (e.g., `Scene 01`, `B-Roll`) inside `Movies/IDGAF_Camera/`, and filter clips using the horizontal folder strip (`ALL`, `ROOT`, or any custom folder).
+  - **Multi-Select Mode:** Tap **`SELECT`** (or long-press any clip card) to pick multiple clips and **`MOVE TO FOLDER`**, bulk **`SHARE`**, or bulk **`DELETE`** in one tap.
+- **Pro Audio Controller Drawer (Tap the Live VU Meter):**
+  - **Hardware Preamp Stage:** Switch between **`CAM`** (Camcorder), **`RAW`** (`UNPROCESSED` zero-AGC flat feed), and **`BOOST`** (`VOICE_RECOGNITION` high-gain mic stage).
+  - **Live dBFS Readout + `CLIP` Warning:** Real-time decibel readout right beside the VU meter.
+  - **Hardware Mute Toggle (`LIVE` / `MUTED`):** Records clean silent video-only `.mp4` takes when muted.
+  - **VU Trim Slider (`-12 dB` to `+12 dB`):** Calibrate monitor headroom with 1-tap `0 dB` reset.
