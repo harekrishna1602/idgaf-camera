@@ -454,6 +454,9 @@ class CinemaCameraEngine(
             isManualExposure = false
             isShutter180Locked = false
         }
+        if (isAeAfLocked) {
+            isAeAfLocked = false
+        }
         pushUpdatedRepeatingRequest()
     }
 
@@ -669,10 +672,10 @@ class CinemaCameraEngine(
         g = g.coerceIn(40.0, 255.0)
         b = b.coerceIn(40.0, 255.0)
 
-        // Invert relative to daylight (~5600K) so warming slider makes image warmer
-        val rGain = (255.0 / b).toFloat().coerceIn(0.8f, 3.2f)
+        // Cinema WB physics: 2500K = Cool/Blue, 8500K = Warm/Amber
+        val rGain = (255.0 / r).toFloat().coerceIn(0.8f, 3.2f)
         val gGain = (255.0 / g).toFloat().coerceIn(0.9f, 1.4f)
-        val bGain = (255.0 / r).toFloat().coerceIn(0.8f, 3.2f)
+        val bGain = (255.0 / b).toFloat().coerceIn(0.8f, 3.2f)
 
         // Normalize green channel to 1.0
         return RggbChannelVector(
@@ -1055,7 +1058,7 @@ class CinemaCameraEngine(
             recorder.setOutputFile(outFile.absolutePath)
         }
 
-        val bitrateBps = targetBitrateMbps.coerceIn(10, 120) * 1_000_000
+        val bitrateBps = targetBitrateMbps.coerceIn(2, 120) * 1_000_000
         recorder.setVideoEncodingBitRate(bitrateBps)
         recorder.setVideoFrameRate(targetFps.coerceIn(1, 60))
         recorder.setVideoSize(resolvedVideoSize.width, resolvedVideoSize.height)

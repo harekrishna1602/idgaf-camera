@@ -89,8 +89,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var updateDownloadUrl: String? = null
     private var toneIdx = 0
     private var gridModeIdx = 0
-    private val bitrateOptions = listOf(24, 35, 50, 75, 100, 120)
-    private var bitrateIdx = 1
+    private val bitrateOptions = listOf(4, 8, 12, 24, 35, 50, 75, 100, 120)
+    private var bitrateIdx = 4
+    private var activeToast: Toast? = null
     private var micPrefIdx = 0
 
     // Live Audio VU preview monitor (runs when idle; switches to MediaRecorder amplitude while recording)
@@ -430,8 +431,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         @Suppress("DEPRECATION")
                         windowManager.defaultDisplay.rotation
                     }
-                    engine.triggerTapToFocus(normX, normY, rot)
-                    showFocusReticle(event.x, event.y)
+                    if (engine.isAeAfLocked) {
+                        showSingleToast("AE/AF Lock is ON — turn off LOCK to tap-focus")
+                    } else {
+                        engine.triggerTapToFocus(normX, normY, rot)
+                        showFocusReticle(event.x, event.y)
+                    }
                 }
             }
             true
@@ -866,8 +871,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.5"
-    } catch (_: Exception) { "0.6.5" }
+        info.versionName ?: "0.6.6"
+    } catch (_: Exception) { "0.6.6" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -972,7 +977,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         val input = EditText(this).apply {
             this.hint = hint
-            inputType = InputType.TYPE_CLASS_NUMBER
+            inputType = if (panel == ProControlPanel.EV) {
+                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+            } else {
+                InputType.TYPE_CLASS_NUMBER
+            }
             setTextColor(0xFFFFFFFF.toInt())
             setHintTextColor(0xFF888888.toInt())
             setPadding(36, 28, 36, 28)
@@ -983,7 +992,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             .setView(input)
             .setPositiveButton("Apply") { _, _ ->
                 val v = input.text.toString().trim().toIntOrNull()
-                if (v == null || v <= 0 && panel != ProControlPanel.FOCUS) {
+                if (v == null || (v <= 0 && panel != ProControlPanel.FOCUS && panel != ProControlPanel.EV)) {
                     Toast.makeText(this, "Enter a valid number", Toast.LENGTH_SHORT).show()
                     return@setPositiveButton
                 }
@@ -991,7 +1000,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     ProControlPanel.EV -> {
                         engine.setEvCompensation(v)
                         updateEvDisplay()
-                        }
+                        updateLockUi(engine.isAeAfLocked)
+                    }
                     ProControlPanel.ISO -> engine.setManualIso(v)
                     ProControlPanel.SHUTTER -> {
                         if (shutterInAngleMode) {
@@ -1134,6 +1144,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 }
                 currentResolution = chosen
                 btnResolution.text = chosen.label
+                val smartMbps = when (chosen) {
+                    CinemaResolution.SD_480P -> 4
+                    CinemaResolution.HD_720P -> 12
+                    CinemaResolution.FHD_1080P -> 24
+                    CinemaResolution.QHD_2K -> 50
+                    CinemaResolution.UHD_4K -> 75
+                }
+                engine.targetBitrateMbps = smartMbps
+                bitrateIdx = bitrateOptions.indexOf(smartMbps).takeIf { it >= 0 } ?: 3
+                btnProBitrate.text = "$smartMbps Mbps"
                 engine.updateSettings(currentResolution, currentFps)
             }
             .setNegativeButton("Cancel", null)
@@ -1166,7 +1186,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun showCustomFpsInputDialog() {
         val input = EditText(this).apply {
             hint = "Enter FPS (1 to 60, e.g. 1, 12, 24, 30, 60)"
-            inputType = InputType.TYPE_CLASS_NUMBER
+            inputType = if (panel == ProControlPanel.EV) {
+                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+            } else {
+                InputType.TYPE_CLASS_NUMBER
+            }
             setText(currentFps.toString())
             setTextColor(0xFFFFFFFF.toInt())
             setHintTextColor(0xFF888888.toInt())
@@ -1209,7 +1233,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         pillFocus.setOnClickListener {
             if (!engine.capabilities.supportsManualFocus) {
-                Toast.makeText(this, "This lens has fixed focus", Toast.LENGTH_SHORT).show()
+                showSingleToast("This lens has fixed focus")
                 return@setOnClickListener
             }
             selectPanel(if (activePanel == ProControlPanel.FOCUS) ProControlPanel.NONE else ProControlPanel.FOCUS)
@@ -1225,6 +1249,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnSliderAuto.setOnClickListener {
+            if (engine.isAeAfLocked) {
+                showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                return@setOnClickListener
+            }
             when (activePanel) {
                 ProControlPanel.EV -> {
                     engine.setEvCompensation(0)
@@ -1250,7 +1278,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnPullTime.setOnClickListener {
             val input = EditText(this).apply {
                 hint = "Seconds (e.g. 0.8, 1.5, 3.0)"
-                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                inputType = if (panel == ProControlPanel.EV) {
+                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+            } else {
+                InputType.TYPE_CLASS_NUMBER
+            } or InputType.TYPE_NUMBER_FLAG_DECIMAL
                 setTextColor(0xFFFFFFFF.toInt())
                 setHintTextColor(0xFF888888.toInt())
                 setPadding(36, 28, 36, 28)
@@ -1333,19 +1365,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         val idx = minEv + progress
                         engine.setEvCompensation(idx.coerceIn(minEv, maxEv))
                         updateEvDisplay()
+                        updateLockUi(engine.isAeAfLocked)
                         txtSliderReadout.text = formatEv(engine.getCurrentEvStops())
                         updateAutoButtonVisual(isManual = engine.evCompensationIndex != 0)
                     }
-                    ProControlPanel.EV -> {
-                txtSliderTitle.text = "EV COMP"
-                val minEv = engine.capabilities.evRange.lower
-                val maxEv = engine.capabilities.evRange.upper
-                proSeekBar.max = (maxEv - minEv).coerceAtLeast(1)
-                proSeekBar.progress = (engine.evCompensationIndex - minEv).coerceIn(0, proSeekBar.max)
-                txtSliderReadout.text = formatEv(engine.getCurrentEvStops())
-                updateAutoButtonVisual(isManual = engine.evCompensationIndex != 0)
-            }
-            ProControlPanel.ISO -> {
+                    ProControlPanel.ISO -> {
                         val minIso = engine.capabilities.isoRange.lower
                         val maxIso = engine.capabilities.isoRange.upper.coerceAtMost(6400)
                         val iso = minIso + ((maxIso - minIso) * (progress / 100f)).roundToInt()
@@ -1668,6 +1692,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             styleToolPill(btnProTorch, engine.isTorchEnabled)
             btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
             styleToolPill(btnProStab, engine.isStabilizationEnabled)
+            pillFocus.alpha = if (caps.supportsManualFocus) 1.0f else 0.45f
             if (activePanel != ProControlPanel.NONE) refreshSliderState()
         }
     }
@@ -1726,6 +1751,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     override fun onError(message: String) {
         runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
+    }
+
+    private fun showSingleToast(msg: String, length: Int = Toast.LENGTH_SHORT) {
+        activeToast?.cancel()
+        activeToast = Toast.makeText(this, msg, length)
+        activeToast?.show()
     }
 
     private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
