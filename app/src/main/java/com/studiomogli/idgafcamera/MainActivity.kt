@@ -39,6 +39,8 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.LinearInterpolator
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
@@ -53,6 +55,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 enum class ProControlPanel { NONE, EV, ISO, SHUTTER, FOCUS, WB }
+enum class ZoomCurve(val label: String) { LINEAR("LIN"), EXPONENTIAL("EXP"), CRASH("CRASH") }
 
 class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
@@ -129,12 +132,25 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnZoomPreset2x: TextView
     private lateinit var btnZoomPreset5x: TextView
     private lateinit var btnZoomPresetMax: TextView
+    private lateinit var btnZoomCurve: TextView
+    private lateinit var btnZoomTime: TextView
+    private lateinit var btnSetZoomA: TextView
+    private lateinit var btnSetZoomB: TextView
+    private lateinit var btnPullZoomAB: TextView
     private lateinit var zoomSeekBar: SeekBar
     private var suppressZoomSeek = false
     private lateinit var scaleDetector: ScaleGestureDetector
     private var zoomRockerDir: Int = 0 // +1 = Tele, -1 = Wide, 0 = Idle
-    private val zoomSpeedSteps = listOf("SLOW" to 0.018f, "MED" to 0.042f, "FAST" to 0.085f)
+    private var zoomHoldStartMs: Long = 0L
+    // Faster, cinema-grade zoom speeds (base step / multiplier per 16ms frame)
+    private val zoomSpeedSteps = listOf("SLOW" to 0.032f, "MED" to 0.095f, "FAST" to 0.24f)
     private var zoomSpeedIdx = 1
+    private var zoomCurve: ZoomCurve = ZoomCurve.EXPONENTIAL
+    private var zoomPullDurationMs: Long = 1500L
+    private var zoomPointA: Float? = null
+    private var zoomPointB: Float? = null
+    private var zoomGoingToB = true
+    private var zoomAnimator: ValueAnimator? = null
 
     // Phase 2 Pro Dock Pills
     private lateinit var pillEv: LinearLayout
@@ -168,6 +184,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private var activePanel: ProControlPanel = ProControlPanel.NONE
     private var suppressSeekCallback = false
+    private var isUserDraggingProSeek = false
+    private var lastTelemetry: LiveTelemetry? = null
 
     // Standard cinema shutter speeds (denominators)
     private val shutterDenoms = listOf(24, 30, 48, 50, 60, 100, 120, 180, 250, 500, 1000, 2000, 4000)
@@ -211,14 +229,28 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private val zoomRockerRunnable = object : Runnable {
         override fun run() {
             if (zoomRockerDir != 0) {
-                val step = zoomSpeedSteps[zoomSpeedIdx].second * zoomRockerDir
-                val nextZoom = (engine.currentZoomRatio + step).coerceIn(
-                    engine.capabilities.minZoom,
-                    engine.capabilities.maxZoom
-                )
+                val baseSpeed = zoomSpeedSteps[zoomSpeedIdx].second
+                val cur = engine.currentZoomRatio
+                val nextZoom = when (zoomCurve) {
+                    ZoomCurve.LINEAR -> {
+                        cur + (baseSpeed * zoomRockerDir)
+                    }
+                    ZoomCurve.EXPONENTIAL -> {
+                        // Multiplicative zoom feels constant-speed across 1x -> 10x
+                        val factor = 1.0f + (baseSpeed * 0.42f)
+                        if (zoomRockerDir > 0) cur * factor else cur / factor
+                    }
+                    ZoomCurve.CRASH -> {
+                        // Accelerates sharply the longer you hold for dramatic crash zooms
+                        val heldSec = ((System.currentTimeMillis() - zoomHoldStartMs) / 1000f).coerceIn(0f, 1.5f)
+                        val boost = 1.6f + (heldSec * 2.8f)
+                        val factor = 1.0f + (baseSpeed * 0.45f * boost)
+                        if (zoomRockerDir > 0) cur * factor else cur / factor
+                    }
+                }.coerceIn(engine.capabilities.minZoom, engine.capabilities.maxZoom)
+
                 engine.setZoomRatio(nextZoom)
                 updateZoomReadout()
-            updateEvDisplay()
                 uiHandler.postDelayed(this, 16L)
             }
         }
@@ -347,6 +379,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnZoomPreset2x = findViewById(R.id.btnZoomPreset2x)
         btnZoomPreset5x = findViewById(R.id.btnZoomPreset5x)
         btnZoomPresetMax = findViewById(R.id.btnZoomPresetMax)
+        btnZoomCurve = findViewById(R.id.btnZoomCurve)
+        btnZoomTime = findViewById(R.id.btnZoomTime)
+        btnSetZoomA = findViewById(R.id.btnSetZoomA)
+        btnSetZoomB = findViewById(R.id.btnSetZoomB)
+        btnPullZoomAB = findViewById(R.id.btnPullZoomAB)
         zoomSeekBar = findViewById(R.id.zoomSeekBar)
 
         // Pro Dock bindings
@@ -405,13 +442,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
+                zoomAnimator?.cancel()
                 val next = (engine.currentZoomRatio * detector.scaleFactor).coerceIn(
                     engine.capabilities.minZoom,
                     engine.capabilities.maxZoom
                 )
                 engine.setZoomRatio(next)
                 updateZoomReadout()
-            updateEvDisplay()
                 return true
             }
         })
@@ -529,21 +566,18 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             overlayView.showPeaking = !overlayView.showPeaking
             styleToolPill(btnToolPeak, overlayView.showPeaking)
             syncAnalysisLoop()
-        syncHorizonSensor()
         }
 
         btnToolZebra.setOnClickListener {
             overlayView.showZebras = !overlayView.showZebras
             styleToolPill(btnToolZebra, overlayView.showZebras)
             syncAnalysisLoop()
-        syncHorizonSensor()
         }
 
         btnToolHist.setOnClickListener {
             overlayView.showHistogram = !overlayView.showHistogram
             styleToolPill(btnToolHist, overlayView.showHistogram)
             syncAnalysisLoop()
-        syncHorizonSensor()
         }
 
         btnToolHorizon.setOnClickListener {
@@ -871,8 +905,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.6"
-    } catch (_: Exception) { "0.6.6" }
+        info.versionName ?: "0.6.7"
+    } catch (_: Exception) { "0.6.7" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1030,6 +1064,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnZoomTele.setOnTouchListener { v, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    zoomAnimator?.cancel()
+                    zoomHoldStartMs = System.currentTimeMillis()
                     zoomRockerDir = 1
                     v.setBackgroundResource(R.drawable.bg_lens_active)
                     btnZoomTele.setTextColor(0xFF0B0D10.toInt())
@@ -1049,6 +1085,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnZoomWide.setOnTouchListener { v, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    zoomAnimator?.cancel()
+                    zoomHoldStartMs = System.currentTimeMillis()
                     zoomRockerDir = -1
                     v.setBackgroundResource(R.drawable.bg_lens_active)
                     btnZoomWide.setTextColor(0xFF0B0D10.toInt())
@@ -1071,22 +1109,90 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (!showing) updateZoomReadout()
         }
 
-        btnZoomPreset1x.setOnClickListener { applyZoomPreset(1.0f) }
-        btnZoomPreset2x.setOnClickListener { applyZoomPreset(2.0f) }
-        btnZoomPreset5x.setOnClickListener { applyZoomPreset(5.0f) }
-        btnZoomPresetMax.setOnClickListener { applyZoomPreset(engine.capabilities.maxZoom) }
+        btnZoomPreset1x.setOnClickListener { animateZoomTo(1.0f) }
+        btnZoomPreset2x.setOnClickListener { animateZoomTo(2.0f) }
+        btnZoomPreset5x.setOnClickListener { animateZoomTo(5.0f) }
+        btnZoomPresetMax.setOnClickListener { animateZoomTo(engine.capabilities.maxZoom) }
+
+        btnZoomCurve.setOnClickListener {
+            val curves = ZoomCurve.values()
+            val nextIdx = (curves.indexOf(zoomCurve) + 1) % curves.size
+            zoomCurve = curves[nextIdx]
+            btnZoomCurve.text = zoomCurve.label
+            showSingleToast(
+                when (zoomCurve) {
+                    ZoomCurve.LINEAR -> "Zoom Curve: Linear"
+                    ZoomCurve.EXPONENTIAL -> "Zoom Curve: Smooth Ease (Exp)"
+                    ZoomCurve.CRASH -> "Zoom Curve: Crash Zoom"
+                }
+            )
+        }
+
+        btnZoomTime.setOnClickListener {
+            val input = EditText(this).apply {
+                hint = "Seconds (e.g. 0.4, 1.5, 4.0)"
+                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                setText(String.format(Locale.US, "%.1f", zoomPullDurationMs / 1000f))
+                setTextColor(0xFFFFFFFF.toInt())
+                setHintTextColor(0xFF888888.toInt())
+                setPadding(36, 28, 36, 28)
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Smooth Zoom Pull Duration (Seconds)")
+                .setView(input)
+                .setPositiveButton("Set") { _, _ ->
+                    val secs = input.text.toString().trim().toFloatOrNull()
+                    if (secs != null && secs in 0.2f..15.0f) {
+                        zoomPullDurationMs = (secs * 1000f).toLong()
+                        btnZoomTime.text = String.format(Locale.US, "%.1fs", secs)
+                    } else {
+                        showSingleToast("Enter 0.2 to 15.0 seconds")
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
+        btnSetZoomA.setOnClickListener {
+            zoomPointA = engine.currentZoomRatio
+            btnSetZoomA.setBackgroundResource(R.drawable.bg_lens_active)
+            btnSetZoomA.setTextColor(0xFF0B0D10.toInt())
+            showSingleToast(String.format(Locale.US, "Zoom Point A Saved (%.1fx)", zoomPointA))
+        }
+
+        btnSetZoomB.setOnClickListener {
+            zoomPointB = engine.currentZoomRatio
+            btnSetZoomB.setBackgroundResource(R.drawable.bg_lens_active)
+            btnSetZoomB.setTextColor(0xFF0B0D10.toInt())
+            showSingleToast(String.format(Locale.US, "Zoom Point B Saved (%.1fx)", zoomPointB))
+        }
+
+        btnPullZoomAB.setOnClickListener {
+            val a = zoomPointA
+            val b = zoomPointB
+            if (a == null || b == null) {
+                showSingleToast("Set Zoom A and B first!")
+                return@setOnClickListener
+            }
+            val target = if (zoomGoingToB) b else a
+            zoomGoingToB = !zoomGoingToB
+            btnPullZoomAB.text = if (zoomGoingToB) "B→A" else "A→B"
+            animateZoomTo(target)
+        }
 
         zoomSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (!fromUser || suppressZoomSeek) return
+                zoomAnimator?.cancel()
                 val minZ = engine.capabilities.minZoom
                 val maxZ = engine.capabilities.maxZoom.coerceAtLeast(minZ + 0.1f)
                 val target = minZ + (maxZ - minZ) * (progress / 100f)
                 engine.setZoomRatio(target)
                 updateZoomReadout()
-            updateEvDisplay()
             }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStartTrackingTouch(sb: SeekBar?) {
+                zoomAnimator?.cancel()
+            }
             override fun onStopTrackingTouch(sb: SeekBar?) {}
         })
 
@@ -1096,9 +1202,44 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
-    private fun applyZoomPreset(targetZoom: Float) {
-        engine.setZoomRatio(targetZoom)
-        updateZoomReadout()
+    private fun animateZoomTo(targetZoom: Float) {
+        val minZ = engine.capabilities.minZoom
+        val maxZ = engine.capabilities.maxZoom
+        val start = engine.currentZoomRatio.coerceIn(minZ, maxZ)
+        val end = targetZoom.coerceIn(minZ, maxZ)
+        zoomAnimator?.cancel()
+
+        if (kotlin.math.abs(end - start) < 0.02f) {
+            engine.setZoomRatio(end)
+            updateZoomReadout()
+            return
+        }
+
+        val durMs = when (zoomCurve) {
+            ZoomCurve.CRASH -> 280L
+            else -> zoomPullDurationMs
+        }
+
+        // For EXPONENTIAL curve, interpolate in log-zoom space so optical speed feels silky smooth
+        val useLogSpace = (zoomCurve == ZoomCurve.EXPONENTIAL || zoomCurve == ZoomCurve.CRASH) && start > 0.05f && end > 0.05f
+        val animStart = if (useLogSpace) kotlin.math.ln(start.toDouble()).toFloat() else start
+        val animEnd = if (useLogSpace) kotlin.math.ln(end.toDouble()).toFloat() else end
+
+        zoomAnimator = ValueAnimator.ofFloat(animStart, animEnd).apply {
+            duration = durMs
+            interpolator = when (zoomCurve) {
+                ZoomCurve.LINEAR -> LinearInterpolator()
+                ZoomCurve.EXPONENTIAL -> AccelerateDecelerateInterpolator()
+                ZoomCurve.CRASH -> DecelerateInterpolator(2.2f)
+            }
+            addUpdateListener { anim ->
+                val v = anim.animatedValue as Float
+                val z = if (useLogSpace) kotlin.math.exp(v.toDouble()).toFloat() else v
+                engine.setZoomRatio(z)
+                updateZoomReadout()
+            }
+            start()
+        }
     }
 
     private fun updateZoomReadout() {
@@ -1257,6 +1398,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 ProControlPanel.ISO, ProControlPanel.SHUTTER -> engine.setAutoExposure()
                 ProControlPanel.FOCUS -> {
                     rackAnimator?.cancel()
+        zoomAnimator?.cancel()
                     engine.setAutoFocus()
                 }
                 ProControlPanel.WB -> engine.setAutoWhiteBalance()
@@ -1324,6 +1466,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 return@setOnClickListener
             }
             rackAnimator?.cancel()
+        zoomAnimator?.cancel()
             val start = if (rackGoingToB) a else b
             val end = if (rackGoingToB) b else a
             rackGoingToB = !rackGoingToB
@@ -1390,6 +1533,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     }
                     ProControlPanel.FOCUS -> {
                         rackAnimator?.cancel()
+        zoomAnimator?.cancel()
                         val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
                         val diopters = (progress / 100f) * maxF
                         engine.setManualFocusDistance(diopters)
@@ -1405,8 +1549,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     ProControlPanel.NONE -> {}
                 }
             }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
-            override fun onStopTrackingTouch(sb: SeekBar?) {}
+            override fun onStartTrackingTouch(sb: SeekBar?) {
+                isUserDraggingProSeek = true
+            }
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                isUserDraggingProSeek = false
+            }
         })
     }
 
@@ -1437,6 +1585,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun refreshSliderState() {
         suppressSeekCallback = true
+        val live = lastTelemetry
         when (activePanel) {
             ProControlPanel.EV -> {
                 txtSliderTitle.text = "EV COMP"
@@ -1452,26 +1601,29 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 proSeekBar.max = 100
                 val minIso = engine.capabilities.isoRange.lower
                 val maxIso = engine.capabilities.isoRange.upper.coerceAtMost(6400).coerceAtLeast(minIso + 1)
-                val pct = (((engine.manualIso - minIso).toFloat() / (maxIso - minIso)) * 100f).roundToInt().coerceIn(0, 100)
+                val shownIso = if (engine.isManualExposure) engine.manualIso else (live?.iso ?: engine.manualIso)
+                val pct = (((shownIso - minIso).toFloat() / (maxIso - minIso)) * 100f).roundToInt().coerceIn(0, 100)
                 proSeekBar.progress = pct
-                txtSliderReadout.text = if (engine.isManualExposure) "ISO ${engine.manualIso}" else "AUTO"
+                txtSliderReadout.text = if (engine.isManualExposure) "ISO $shownIso" else "AUTO • $shownIso"
                 updateAutoButtonVisual(engine.isManualExposure)
             }
             ProControlPanel.SHUTTER -> {
+                val shownNs = if (engine.isManualExposure) engine.manualShutterNs else (live?.shutterNs ?: engine.manualShutterNs)
                 if (shutterInAngleMode) {
                     txtSliderTitle.text = "ANGLE"
                     proSeekBar.max = shutterAngles.lastIndex
                     val curAng = engine.getCurrentShutterAngle()
                     val closestIdx = shutterAngles.indices.minByOrNull { kotlin.math.abs(shutterAngles[it] - curAng) } ?: 7
                     proSeekBar.progress = closestIdx
-                    txtSliderReadout.text = if (engine.isManualExposure) String.format(Locale.US, "%.0f°", curAng) else "AUTO"
+                    val angStr = String.format(Locale.US, "%.0f°", curAng)
+                    txtSliderReadout.text = if (engine.isManualExposure) angStr else "AUTO • $angStr"
                 } else {
                     txtSliderTitle.text = "SHUTTER"
                     proSeekBar.max = shutterDenoms.lastIndex
-                    val curDenom = (1_000_000_000L / engine.manualShutterNs.coerceAtLeast(1L)).toInt()
+                    val curDenom = (1_000_000_000L / shownNs.coerceAtLeast(1L)).toInt()
                     val closestIdx = shutterDenoms.indices.minByOrNull { kotlin.math.abs(shutterDenoms[it] - curDenom) } ?: 4
                     proSeekBar.progress = closestIdx
-                    txtSliderReadout.text = if (engine.isManualExposure) "1/${curDenom}s" else "AUTO"
+                    txtSliderReadout.text = if (engine.isManualExposure) "1/${curDenom}s" else "AUTO • 1/${curDenom}s"
                 }
                 btnSlider180.setBackgroundResource(if (engine.isShutter180Locked) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
                 btnSlider180.setTextColor(if (engine.isShutter180Locked) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
@@ -1481,15 +1633,18 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 txtSliderTitle.text = "FOCUS"
                 proSeekBar.max = 100
                 val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
-                proSeekBar.progress = ((engine.manualFocusDistance / maxF) * 100f).roundToInt().coerceIn(0, 100)
-                txtSliderReadout.text = if (engine.isManualFocus) formatFocus(engine.manualFocusDistance, maxF) else "AF-C"
+                val shownDist = if (engine.isManualFocus) engine.manualFocusDistance else (live?.focusDistance ?: engine.manualFocusDistance)
+                proSeekBar.progress = ((shownDist / maxF) * 100f).roundToInt().coerceIn(0, 100)
+                val fStr = formatFocus(shownDist, maxF)
+                txtSliderReadout.text = if (engine.isManualFocus) fStr else "AF-C • $fStr"
                 updateAutoButtonVisual(engine.isManualFocus)
             }
             ProControlPanel.WB -> {
                 txtSliderTitle.text = "WHITE BAL"
                 proSeekBar.max = 100
-                proSeekBar.progress = ((engine.manualKelvin - 2500) / 60).coerceIn(0, 100)
-                txtSliderReadout.text = if (engine.isManualWb) "${engine.manualKelvin}K" else "AWB"
+                val shownK = if (engine.isManualWb) engine.manualKelvin else (live?.kelvin ?: engine.getLiveKelvin())
+                proSeekBar.progress = ((shownK - 2500) / 60).coerceIn(0, 100)
+                txtSliderReadout.text = if (engine.isManualWb) "${shownK}K" else "AWB • ${shownK}K"
                 updateAutoButtonVisual(engine.isManualWb)
             }
             ProControlPanel.NONE -> {}
@@ -1627,8 +1782,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             setOnClickListener {
                 if (!engine.isRecording) {
+                    zoomAnimator?.cancel()
                     focusPointA = null
                     focusPointB = null
+                    zoomPointA = null
+                    zoomPointB = null
                     if (engine.toggleFrontBackCamera()) {
                         val newIdx = lenses.indexOf(engine.getActiveLens()).coerceAtLeast(0)
                         renderLensRail(lenses, newIdx)
@@ -1655,8 +1813,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     }
                     setOnClickListener {
                         if (!engine.isRecording) {
+                            zoomAnimator?.cancel()
                             focusPointA = null
                             focusPointB = null
+                            zoomPointA = null
+                            zoomPointB = null
                             engine.selectLens(idx)
                             renderLensRail(lenses, idx)
                         }
@@ -1690,6 +1851,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     override fun onTelemetryUpdated(telemetry: LiveTelemetry) {
+        lastTelemetry = telemetry
         runOnUiThread {
             val orange = 0xFFFF5F1F.toInt()
             val white = 0xFFFFFFFF.toInt()
@@ -1704,12 +1866,26 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             txtShutterVal.setTextColor(if (telemetry.isManualExposure) orange else white)
 
-            txtWbVal.text = if (telemetry.isManualWb) "${telemetry.kelvin}K" else "AWB"
+            // Always show the live Kelvin number (white = AWB, Safety Orange = Manual WB)
+            txtWbVal.text = "${telemetry.kelvin}K"
             txtWbVal.setTextColor(if (telemetry.isManualWb) orange else white)
 
             val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
             txtFocusVal.text = if (telemetry.isManualFocus) formatFocus(telemetry.focusDistance, maxF) else "AF-C"
             txtFocusVal.setTextColor(if (telemetry.isManualFocus) orange else white)
+
+            // Live-sync the open Pro Slider thumb & readout when running in Auto mode
+            if (activePanel != ProControlPanel.NONE && !isUserDraggingProSeek) {
+                val shouldSync = when (activePanel) {
+                    ProControlPanel.ISO, ProControlPanel.SHUTTER -> !telemetry.isManualExposure
+                    ProControlPanel.FOCUS -> !telemetry.isManualFocus
+                    ProControlPanel.WB -> !telemetry.isManualWb
+                    ProControlPanel.EV, ProControlPanel.NONE -> false
+                }
+                if (shouldSync) {
+                    refreshSliderState()
+                }
+            }
         }
     }
 
@@ -1771,6 +1947,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     override fun onPause() {
         rackAnimator?.cancel()
+        zoomAnimator?.cancel()
         uiHandler.removeCallbacks(timecodeRunnable)
         zoomRockerDir = 0
         uiHandler.removeCallbacks(zoomRockerRunnable)

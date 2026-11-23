@@ -184,6 +184,8 @@ class CinemaCameraEngine(
     private var liveIso: Int = 200
     private var liveShutterNs: Long = 16_666_666L
     private var liveFocusDistance: Float = 0f
+    private var liveKelvin: Int = 5600
+    private var smoothedLiveKelvin: Float = 5600f
     private var lastTelemetryDispatchMs: Long = 0L
 
     private var resolvedVideoSize: Size = Size(1920, 1080)
@@ -199,16 +201,21 @@ class CinemaCameraEngine(
             result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { liveIso = it }
             result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { liveShutterNs = it }
             result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { liveFocusDistance = it }
+            result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { gains ->
+                val estK = rggbGainsToKelvin(gains)
+                smoothedLiveKelvin = smoothedLiveKelvin * 0.78f + estK * 0.22f
+                liveKelvin = ((smoothedLiveKelvin / 50f).toInt() * 50).coerceIn(2500, 8500)
+            }
 
             val now = System.currentTimeMillis()
-            if (now - lastTelemetryDispatchMs >= 160L) {
+            if (now - lastTelemetryDispatchMs >= 140L) {
                 lastTelemetryDispatchMs = now
                 listener.onTelemetryUpdated(
                     LiveTelemetry(
                         iso = if (isManualExposure) manualIso else liveIso,
                         shutterNs = if (isManualExposure) manualShutterNs else liveShutterNs,
                         focusDistance = if (isManualFocus) manualFocusDistance else liveFocusDistance,
-                        kelvin = manualKelvin,
+                        kelvin = if (isManualWb) manualKelvin else liveKelvin,
                         isManualExposure = isManualExposure,
                         isManualFocus = isManualFocus,
                         isManualWb = isManualWb,
@@ -491,6 +498,8 @@ class CinemaCameraEngine(
         pushUpdatedRepeatingRequest()
     }
 
+    fun getLiveKelvin(): Int = liveKelvin
+
     fun toggleAeAfLock(): Boolean {
         isAeAfLocked = !isAeAfLocked
         if (isAeAfLocked && !isManualExposure && capabilities.supportsManualExposure) {
@@ -684,6 +693,18 @@ class CinemaCameraEngine(
             1.0f,
             (bGain / gGain).coerceIn(0.7f, 3.0f)
         )
+    }
+
+    /**
+     * Estimates live scene color temperature (Kelvin) from Camera2 AWB RGGB channel gains.
+     */
+    private fun rggbGainsToKelvin(gains: RggbChannelVector): Int {
+        val g = ((gains.greenEven + gains.greenOdd) * 0.5f).coerceAtLeast(0.01f)
+        val rn = (gains.red / g).coerceAtLeast(0.2f)
+        val bn = (gains.blue / g).coerceAtLeast(0.2f)
+        val ratio = (rn / bn).toDouble().coerceIn(0.35, 3.0)
+        val k = 5200.0 + 3800.0 * ln(ratio)
+        return k.toInt().coerceIn(2500, 8500)
     }
 
     @SuppressLint("MissingPermission")

@@ -427,10 +427,10 @@
         android:gravity="center_horizontal"
         android:orientation="vertical" />
 
-    <!-- FLOATING ZOOM POPOUT DRAWER (Opened by tapping 1.0x in Zoom Rocker) -->
+    <!-- FLOATING ZOOM ENGINE v2 POPOUT DRAWER (Presets, Curves, A/B Smooth Pull + Slider) -->
     <LinearLayout
         android:id="@+id/zoomPopoutDrawer"
-        android:layout_width="210dp"
+        android:layout_width="256dp"
         android:layout_height="wrap_content"
         android:layout_gravity="end|center_vertical"
         android:layout_marginEnd="156dp"
@@ -439,6 +439,7 @@
         android:padding="8dp"
         android:visibility="gone">
 
+        <!-- Row 1: Smooth Preset Zooms (1x / 2x / 5x / MAX) -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -497,6 +498,84 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
+        <!-- Row 2: Zoom Curve (LIN / EXP / CRASH) + Smooth Pull Duration + A/B Zoom Pull -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/btnZoomCurve"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/bg_lens_active"
+                android:gravity="center"
+                android:paddingStart="7dp"
+                android:paddingEnd="7dp"
+                android:text="EXP"
+                android:textColor="#0B0D10"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnZoomTime"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:paddingStart="7dp"
+                android:paddingEnd="7dp"
+                android:text="1.5s"
+                android:textColor="#CCCCCC"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnSetZoomA"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:paddingStart="7dp"
+                android:paddingEnd="7dp"
+                android:text="A"
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnSetZoomB"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:paddingStart="7dp"
+                android:paddingEnd="7dp"
+                android:text="B"
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnPullZoomAB"
+                android:layout_width="0dp"
+                android:layout_height="26dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="A→B"
+                android:textColor="#FF5F1F"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Row 3: Compact Direct Zoom Slider -->
         <SeekBar
             android:id="@+id/zoomSeekBar"
             android:layout_width="match_parent"
@@ -507,10 +586,10 @@
             android:thumbTint="#FFFFFF" />
     </LinearLayout>
 
-    <!-- SLEEK PRO ZOOM ROCKER (+ / 1.0x / − + Speed) -->
+    <!-- SLEEK PRO ZOOM ROCKER (T / 1.0x / W + Speed) -->
     <LinearLayout
         android:id="@+id/zoomRockerContainer"
-        android:layout_width="44dp"
+        android:layout_width="46dp"
         android:layout_height="wrap_content"
         android:layout_gravity="end|center_vertical"
         android:layout_marginEnd="104dp"
@@ -522,12 +601,12 @@
         <TextView
             android:id="@+id/btnZoomTele"
             android:layout_width="match_parent"
-            android:layout_height="32dp"
+            android:layout_height="34dp"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center"
-            android:text="+"
+            android:text="T"
             android:textColor="#FFFFFF"
-            android:textSize="15sp"
+            android:textSize="13sp"
             android:textStyle="bold" />
 
         <TextView
@@ -546,12 +625,12 @@
         <TextView
             android:id="@+id/btnZoomWide"
             android:layout_width="match_parent"
-            android:layout_height="32dp"
+            android:layout_height="34dp"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center"
-            android:text="−"
+            android:text="W"
             android:textColor="#FFFFFF"
-            android:textSize="15sp"
+            android:textSize="13sp"
             android:textStyle="bold" />
 
         <TextView
