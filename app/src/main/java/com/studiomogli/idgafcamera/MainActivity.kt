@@ -139,6 +139,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnResolution: TextView
     private lateinit var btnFps: TextView
     private lateinit var lensRail: LinearLayout
+    private lateinit var btnAutoPilot: TextView
     private lateinit var btnShutterInner: View
     private lateinit var btnLastClip: TextView
 
@@ -477,6 +478,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnResolution = findViewById(R.id.btnResolution)
         btnFps = findViewById(R.id.btnFps)
         lensRail = findViewById(R.id.lensRail)
+        btnAutoPilot = findViewById(R.id.btnAutoPilot)
         btnShutterInner = findViewById(R.id.btnShutterInner)
         btnLastClip = findViewById(R.id.btnLastClip)
         btnZoomTele = findViewById(R.id.btnZoomTele)
@@ -593,6 +595,25 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun setupTopAndRightControls() {
+        btnAutoPilot.setOnClickListener {
+            when (engine.autoPilotState) {
+                AutoPilotState.OFF -> triggerAutoPilotRescue()
+                AutoPilotState.METERING -> {
+                    engine.disengageAutoPilot()
+                    showSingleToast("Auto Pilot cancelled")
+                }
+                AutoPilotState.LOCKED -> {
+                    engine.disengageAutoPilot()
+                    showSingleToast("Auto Pilot OFF (Standard Auto)")
+                }
+            }
+        }
+
+        btnAutoPilot.setOnLongClickListener {
+            triggerAutoPilotRescue()
+            true
+        }
+
         findViewById<View>(R.id.btnShutterOuter).setOnClickListener {
             if (txtTimerCountdown.visibility == View.VISIBLE) {
                 uiHandler.removeCallbacks(countdownRunnable)
@@ -1221,8 +1242,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.12"
-    } catch (_: Exception) { "0.6.12" }
+        info.versionName ?: "0.6.13"
+    } catch (_: Exception) { "0.6.13" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -2367,6 +2388,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             styleToolPill(btnProTorch, engine.isTorchEnabled)
             btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
             styleToolPill(btnProStab, engine.isStabilizationEnabled)
+            updateAutoPilotUi(engine.autoPilotState)
             pillFocus.alpha = if (caps.supportsManualFocus) 1.0f else 0.45f
             if (activePanel != ProControlPanel.NONE) refreshSliderState()
         }
@@ -2406,6 +2428,74 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 if (shouldSync) {
                     refreshSliderState()
                 }
+            }
+        }
+    }
+
+    private fun triggerAutoPilotRescue() {
+        // 1. Clean UI & cancel competing animations or self-timer countdowns
+        closeAllDrawers()
+        rackAnimator?.cancel()
+        zoomAnimator?.cancel()
+        uiHandler.removeCallbacks(countdownRunnable)
+        txtTimerCountdown.visibility = View.GONE
+        timerIdx = 0
+        btnProTimer.text = "TMR: OFF"
+        styleToolPill(btnProTimer, false)
+
+        // 2. Rescue Audio (unmute + balanced CAM preamp + 0 dB trim) when idle so sound is guaranteed live
+        if (!engine.isRecording) {
+            engine.isAudioMuted = false
+            engine.audioPreampMode = AudioPreampMode.CAMCORDER
+            engine.audioMonitorTrimDb = 0
+            audioGainSeekBar.progress = 12
+            txtAudioTrimVal.text = "0 dB"
+            audioMonitorRestartNeeded = true
+            updateAudioDrawerUi()
+        }
+
+        // 3. Rescue Tone & Stabilization pills + Lock & EV readouts
+        toneIdx = 0
+        btnProTone.text = ToneProfile.STANDARD.label
+        styleToolPill(btnProTone, false)
+        styleToolPill(btnProStab, true)
+        updateLockUi(false)
+
+        // 4. Launch two-stage scene meter & lock in Camera2 engine (does NOT start recording)
+        engine.engageAutoPilot()
+        updateEvDisplay()
+        showSingleToast("Auto Pilot metering scene...")
+    }
+
+    private fun updateAutoPilotUi(state: AutoPilotState) {
+        when (state) {
+            AutoPilotState.OFF -> {
+                btnAutoPilot.text = "PILOT"
+                btnAutoPilot.setBackgroundResource(R.drawable.bg_hud_pill)
+                btnAutoPilot.setTextColor(0xFF34C759.toInt())
+            }
+            AutoPilotState.METERING -> {
+                btnAutoPilot.text = "SYNC…"
+                btnAutoPilot.setBackgroundResource(R.drawable.bg_dock_pill_active)
+                btnAutoPilot.setTextColor(0xFFFFCC00.toInt())
+            }
+            AutoPilotState.LOCKED -> {
+                btnAutoPilot.text = "PILOT"
+                btnAutoPilot.setBackgroundResource(R.drawable.bg_pilot_active)
+                btnAutoPilot.setTextColor(0xFF0B0D10.toInt())
+            }
+        }
+    }
+
+    override fun onAutoPilotStateChanged(state: AutoPilotState, summary: String?) {
+        runOnUiThread {
+            updateAutoPilotUi(state)
+            updateLockUi(engine.isAeAfLocked)
+            updateEvDisplay()
+            if (activePanel != ProControlPanel.NONE) refreshSliderState()
+            if (state == AutoPilotState.LOCKED && !summary.isNullOrBlank()) {
+                val audioTag = if (engine.isAudioMuted) "MUTED" else "Audio LIVE"
+                showSingleToast("$summary • $audioTag", Toast.LENGTH_LONG)
             }
         }
     }

@@ -109,6 +109,12 @@ enum class ToneProfile(val label: String) {
     CINEMA("CINE")
 }
 
+enum class AutoPilotState {
+    OFF,
+    METERING,
+    LOCKED
+}
+
 interface CinemaEngineListener {
     fun onLensesReady(lenses: List<CinemaLens>, activeIndex: Int)
     fun onCameraReady(
@@ -121,6 +127,7 @@ interface CinemaEngineListener {
     fun onTelemetryUpdated(telemetry: LiveTelemetry)
     fun onRecordingStarted()
     fun onRecordingStopped(savedUri: Uri?, filePathLabel: String)
+    fun onAutoPilotStateChanged(state: AutoPilotState, summary: String? = null)
     fun onError(message: String)
 }
 
@@ -193,6 +200,11 @@ class CinemaCameraEngine(
     var isAeAfLocked: Boolean = false
         private set
 
+    var autoPilotState: AutoPilotState = AutoPilotState.OFF
+        private set
+    private var autoPilotStartMs: Long = 0L
+    private var autoPilotFramesSeen: Int = 0
+
     var currentZoomRatio: Float = 1.0f
         private set
     var isTorchEnabled: Boolean = false
@@ -237,7 +249,11 @@ class CinemaCameraEngine(
                 }
                 result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { gains ->
                     val estK = rggbGainsToKelvin(gains)
-                    smoothedLiveKelvin = smoothedLiveKelvin * 0.78f + estK * 0.22f
+                    smoothedLiveKelvin = if (!hasCalibratedWbAnchor) {
+                        estK.toFloat()
+                    } else {
+                        smoothedLiveKelvin * 0.78f + estK * 0.22f
+                    }
                     liveKelvin = ((smoothedLiveKelvin / 50f).toInt() * 50).coerceIn(2500, 8500)
 
                     // Anchor neutral 5600K reference gains to this sensor's real AWB calibration
@@ -258,6 +274,27 @@ class CinemaCameraEngine(
                         refNeutralGreenOdd = refNeutralGreenOdd * 0.85f + gOdd * 0.15f
                         refNeutralBlueGain = refNeutralBlueGain * 0.85f + bNeutral * 0.15f
                     }
+                }
+            }
+
+            // Stage 2 of Auto Pilot: lock exposure + WB cleanly once AE & AWB settle on the visible scene
+            if (autoPilotState == AutoPilotState.METERING) {
+                autoPilotFramesSeen++
+                val elapsed = System.currentTimeMillis() - autoPilotStartMs
+                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                val awbState = result.get(CaptureResult.CONTROL_AWB_STATE)
+                val aeReady = aeState == null ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_LOCKED
+                val awbReady = awbState == null ||
+                    awbState == CaptureResult.CONTROL_AWB_STATE_CONVERGED ||
+                    awbState == CaptureResult.CONTROL_AWB_STATE_LOCKED
+
+                val minSettleMet = elapsed >= 520L && autoPilotFramesSeen >= 8 && aeReady && awbReady
+                val timedOut = elapsed >= 1250L
+                if (minSettleMet || timedOut) {
+                    finalizeAutoPilotSceneLock()
                 }
             }
 
@@ -402,6 +439,7 @@ class CinemaCameraEngine(
         isTorchEnabled = false
         lastAwbTransform = null
         hasCalibratedWbAnchor = false
+        clearAutoPilotSilently()
         closeCamera()
         openActiveCamera()
     }
@@ -417,9 +455,104 @@ class CinemaCameraEngine(
         openActiveCamera()
     }
 
+    // ==================== AUTO PILOT (1-TAP SCENE RESCUE & STABLE LOCK) ====================
+
+    /**
+     * Stage 1: Instantly rescues buried/broken exposure, WB, tint, EV, focus, lock, tone & stabilization,
+     * lets the sensor meter the real visible scene, then Stage 2 locks Exposure + WB steadily while
+     * keeping continuous autofocus (AF-C) active. Does NOT start recording automatically.
+     */
+    fun engageAutoPilot() {
+        isAeAfLocked = false
+        evCompensationIndex = 0
+        isManualExposure = false
+        isShutter180Locked = false
+        isManualWb = false
+        manualTint = 0
+        isManualFocus = false
+        isStabilizationEnabled = true
+        toneProfile = ToneProfile.STANDARD
+        hasCalibratedWbAnchor = false
+
+        autoPilotState = AutoPilotState.METERING
+        autoPilotStartMs = System.currentTimeMillis()
+        autoPilotFramesSeen = 0
+        listener.onAutoPilotStateChanged(AutoPilotState.METERING, null)
+
+        val session = captureSession
+        val builder = activeBuilder
+        if (session != null && builder != null) {
+            backgroundHandler?.post {
+                try {
+                    applyCinemaControls(builder)
+                    // Clear any stale custom tap-to-focus metering region so the whole frame meters cleanly
+                    val resetRegion = arrayOf(MeteringRectangle(0, 0, 0, 0, MeteringRectangle.METERING_WEIGHT_DONT_CARE))
+                    builder.set(CaptureRequest.CONTROL_AF_REGIONS, resetRegion)
+                    builder.set(CaptureRequest.CONTROL_AE_REGIONS, resetRegion)
+                    builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START)
+                    session.capture(builder.build(), captureCallback, backgroundHandler)
+
+                    builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE)
+                    session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
+                } catch (_: Exception) {
+                    pushUpdatedRepeatingRequest()
+                }
+            }
+        }
+    }
+
+    /**
+     * Disengages Auto Pilot and releases Exposure & WB back to standard Auto (keeps AF-C active).
+     */
+    fun disengageAutoPilot() {
+        if (autoPilotState == AutoPilotState.OFF) return
+        autoPilotState = AutoPilotState.OFF
+        isManualExposure = false
+        isShutter180Locked = false
+        isManualWb = false
+        manualTint = 0
+        isManualFocus = false
+        isAeAfLocked = false
+        pushUpdatedRepeatingRequest()
+        listener.onAutoPilotStateChanged(AutoPilotState.OFF, null)
+    }
+
+    private fun clearAutoPilotSilently() {
+        if (autoPilotState != AutoPilotState.OFF) {
+            autoPilotState = AutoPilotState.OFF
+            listener.onAutoPilotStateChanged(AutoPilotState.OFF, null)
+        }
+    }
+
+    private fun finalizeAutoPilotSceneLock() {
+        if (autoPilotState != AutoPilotState.METERING) return
+
+        // Freeze exact converged Exposure & White Balance so the shot stays rock-steady without pumping
+        if (capabilities.supportsManualExposure && liveIso > 0 && liveShutterNs > 0L) {
+            manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
+            manualShutterNs = liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+            isManualExposure = true
+            isShutter180Locked = false
+        }
+        manualKelvin = liveKelvin.coerceIn(2500, 8500)
+        manualTint = 0
+        isManualWb = true
+        // Keep Focus LIVE in AF-C so moving subjects remain sharp automatically!
+        isManualFocus = false
+        isAeAfLocked = false
+
+        autoPilotState = AutoPilotState.LOCKED
+        pushUpdatedRepeatingRequest()
+
+        val denom = (1_000_000_000.0 / manualShutterNs.coerceAtLeast(1L).toDouble()).toInt().coerceAtLeast(1)
+        val summary = "PILOT LOCKED • ISO $manualIso • 1/${denom}s • ${manualKelvin}K • AF-C"
+        listener.onAutoPilotStateChanged(AutoPilotState.LOCKED, summary)
+    }
+
     // ==================== PRO MANUAL CONTROLS API ====================
 
     fun setManualIso(iso: Int) {
+        clearAutoPilotSilently()
         if (!capabilities.supportsManualExposure) return
         if (!isManualExposure) {
             manualShutterNs = if (isShutter180Locked) {
@@ -434,6 +567,7 @@ class CinemaCameraEngine(
     }
 
     fun setManualShutterNs(shutterNs: Long) {
+        clearAutoPilotSilently()
         if (!capabilities.supportsManualExposure) return
         if (!isManualExposure) {
             manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
@@ -445,6 +579,7 @@ class CinemaCameraEngine(
     }
 
     fun setManualShutterAngle(angleDegrees: Float) {
+        clearAutoPilotSilently()
         if (!capabilities.supportsManualExposure) return
         if (!isManualExposure) {
             manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
@@ -502,6 +637,7 @@ class CinemaCameraEngine(
     }
 
     fun toggleShutter180Rule(): Boolean {
+        clearAutoPilotSilently()
         if (!capabilities.supportsManualExposure) return false
         isShutter180Locked = !isShutter180Locked
         if (isShutter180Locked) {
@@ -517,6 +653,7 @@ class CinemaCameraEngine(
 
     fun setEvCompensation(index: Int): Boolean {
         if (isAeAfLocked) return false
+        clearAutoPilotSilently()
         val clamped = index.coerceIn(capabilities.evRange.lower, capabilities.evRange.upper)
         evCompensationIndex = clamped
         if (isManualExposure) {
@@ -530,12 +667,14 @@ class CinemaCameraEngine(
     fun getCurrentEvStops(): Float = evCompensationIndex * capabilities.evStep
 
     fun setAutoExposure() {
+        clearAutoPilotSilently()
         isManualExposure = false
         isShutter180Locked = false
         pushUpdatedRepeatingRequest()
     }
 
     fun setManualFocusDistance(diopters: Float) {
+        clearAutoPilotSilently()
         if (!capabilities.supportsManualFocus) return
         isManualFocus = true
         manualFocusDistance = diopters.coerceIn(0f, capabilities.minFocusDistance)
@@ -548,12 +687,14 @@ class CinemaCameraEngine(
     }
 
     fun setManualWhiteBalanceKelvin(kelvin: Int) {
+        clearAutoPilotSilently()
         isManualWb = true
         manualKelvin = kelvin.coerceIn(2500, 8500)
         pushUpdatedRepeatingRequest()
     }
 
     fun setManualWhiteBalanceTint(tint: Int) {
+        clearAutoPilotSilently()
         if (!isManualWb) {
             manualKelvin = liveKelvin.coerceIn(2500, 8500)
             isManualWb = true
@@ -563,6 +704,7 @@ class CinemaCameraEngine(
     }
 
     fun setAutoWhiteBalance() {
+        clearAutoPilotSilently()
         isManualWb = false
         manualTint = 0
         pushUpdatedRepeatingRequest()
@@ -571,6 +713,7 @@ class CinemaCameraEngine(
     fun getLiveKelvin(): Int = liveKelvin
 
     fun toggleAeAfLock(): Boolean {
+        clearAutoPilotSilently()
         isAeAfLocked = !isAeAfLocked
         if (isAeAfLocked && !isManualExposure && capabilities.supportsManualExposure) {
             // Freeze exact current exposure (including post-RAW boost) to eliminate any ISP drift
@@ -604,7 +747,10 @@ class CinemaCameraEngine(
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper))
         } else {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-            builder.set(CaptureRequest.CONTROL_AE_LOCK, isAeAfLocked || lockAutoForRecordStart)
+            builder.set(
+                CaptureRequest.CONTROL_AE_LOCK,
+                isAeAfLocked || lockAutoForRecordStart || autoPilotState == AutoPilotState.LOCKED
+            )
             builder.set(
                 CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
                 evCompensationIndex.coerceIn(capabilities.evRange.lower, capabilities.evRange.upper)
@@ -1254,6 +1400,7 @@ class CinemaCameraEngine(
 
     fun closeCamera() {
         if (isRecording) stopRecording()
+        if (autoPilotState == AutoPilotState.METERING) clearAutoPilotSilently()
         closeSession()
         try {
             cameraDevice?.close()
