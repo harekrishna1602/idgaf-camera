@@ -1186,7 +1186,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun showCustomFpsInputDialog() {
         val input = EditText(this).apply {
             hint = "Enter FPS (1 to 60, e.g. 1, 12, 24, 30, 60)"
-            inputType = if (panel == ProControlPanel.EV) {
+            inputType = InputType.TYPE_CLASS_NUMBER {
                 InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
             } else {
                 InputType.TYPE_CLASS_NUMBER
@@ -1278,7 +1278,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnPullTime.setOnClickListener {
             val input = EditText(this).apply {
                 hint = "Seconds (e.g. 0.8, 1.5, 3.0)"
-                inputType = if (panel == ProControlPanel.EV) {
+                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                {
                 InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
             } else {
                 InputType.TYPE_CLASS_NUMBER
