@@ -5,6 +5,7 @@ import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
@@ -30,6 +31,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.util.Size
 import android.view.Gravity
@@ -41,6 +43,7 @@ import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
@@ -52,6 +55,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 
 enum class ProControlPanel { NONE, EV, ISO, SHUTTER, FOCUS, WB }
@@ -113,15 +117,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     @Volatile private var audioMonitorRestartNeeded = false
     private var audioMonitorThread: Thread? = null
 
-    // Phase 3 Monitoring Toolbar
+    // Phase 3 / 6.10 Monitoring Toolbar
     private lateinit var btnMonitorToggle: TextView
-    private lateinit var monitorToolsBar: LinearLayout
+    private lateinit var monitorToolsBar: HorizontalScrollView
     private lateinit var btnToolGrid: TextView
     private lateinit var btnToolFrame: TextView
     private lateinit var btnToolPeak: TextView
     private lateinit var btnToolZebra: TextView
+    private lateinit var btnToolFalseColor: TextView
     private lateinit var btnToolHist: TextView
     private lateinit var btnToolHorizon: TextView
+    private lateinit var btnToolMonConfig: TextView
     private var sensorManager: SensorManager? = null
     private var smoothedRoll = 0f
     private var frameGuideIdx = 0
@@ -218,25 +224,67 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private var recStartMs: Long = 0L
     private val uiHandler = Handler(Looper.getMainLooper())
+    private var analysisThread: HandlerThread? = null
+    private var analysisHandler: Handler? = null
+    private val isAnalyzingFrame = AtomicBoolean(false)
+    private var captureSampleBitmap: Bitmap? = null
+
+    private fun startAnalysisThread() {
+        if (analysisThread == null) {
+            analysisThread = HandlerThread("IdgafMonitorWorker").also { it.start() }
+            analysisHandler = Handler(analysisThread!!.looper)
+        }
+    }
+
+    private fun stopAnalysisThread() {
+        stopAnalysisThread()
+        analysisHandler?.removeCallbacksAndMessages(null)
+        analysisThread?.quitSafely()
+        try {
+            analysisThread?.join(300)
+        } catch (_: Exception) {
+        }
+        analysisThread = null
+        analysisHandler = null
+        isAnalyzingFrame.set(false)
+        captureSampleBitmap = null
+    }
+
     private val analysisRunnable = object : Runnable {
         override fun run() {
-            if (overlayView.needsFrameAnalysis() && textureView.isAvailable) {
-                try {
-                    val bmp = textureView.getBitmap(160, 90)
-                    if (bmp != null) {
-                        overlayView.analyzeFrame(bmp)
-                        bmp.recycle()
+            if (!overlayView.needsFrameAnalysis()) return
+            if (textureView.isAvailable && isAnalyzingFrame.compareAndSet(false, true)) {
+                val worker = analysisHandler
+                if (worker == null) {
+                    isAnalyzingFrame.set(false)
+                } else {
+                    try {
+                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 160 && it.height == 90 }
+                            ?: Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
+                        textureView.getBitmap(reusable)
+                        worker.post {
+                            try {
+                                if (!reusable.isRecycled) {
+                                    overlayView.analyzeFrame(reusable)
+                                }
+                            } catch (_: Exception) {
+                            } finally {
+                                isAnalyzingFrame.set(false)
+                            }
+                        }
+                    } catch (_: Exception) {
+                        isAnalyzingFrame.set(false)
                     }
-                } catch (_: Exception) {
                 }
-                uiHandler.postDelayed(this, 120L)
             }
+            uiHandler.postDelayed(this, 90L)
         }
     }
 
     private fun syncAnalysisLoop() {
         uiHandler.removeCallbacks(analysisRunnable)
         if (overlayView.needsFrameAnalysis()) {
+            startAnalysisThread()
             uiHandler.post(analysisRunnable)
         }
     }
@@ -276,14 +324,20 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (!overlayView.showHorizon) return
             val x = event.values[0]
             val y = event.values[1]
-            // Landscape roll angle in degrees
-            val rawAngle = Math.toDegrees(kotlin.math.atan2(y.toDouble(), x.toDouble())).toFloat()
-            val normalized = when {
-                rawAngle > 90f -> rawAngle - 180f
-                rawAngle < -90f -> rawAngle + 180f
-                else -> rawAngle
+            val rot = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                display?.rotation ?: Surface.ROTATION_90
+            } else {
+                @Suppress("DEPRECATION")
+                windowManager.defaultDisplay.rotation
             }
-            smoothedRoll = smoothedRoll * 0.80f + normalized * 0.20f
+            // Account for standard landscape (ROTATION_90) vs reverse landscape (ROTATION_270)
+            val rawAngle = if (rot == Surface.ROTATION_270) {
+                Math.toDegrees(kotlin.math.atan2((-y).toDouble(), (-x).toDouble())).toFloat()
+            } else {
+                Math.toDegrees(kotlin.math.atan2(y.toDouble(), x.toDouble())).toFloat()
+            }
+            val clamped = rawAngle.coerceIn(-45f, 45f)
+            smoothedRoll = smoothedRoll * 0.78f + clamped * 0.22f
             overlayView.horizonRollDegrees = smoothedRoll
         }
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -384,8 +438,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnToolFrame = findViewById(R.id.btnToolFrame)
         btnToolPeak = findViewById(R.id.btnToolPeak)
         btnToolZebra = findViewById(R.id.btnToolZebra)
+        btnToolFalseColor = findViewById(R.id.btnToolFalseColor)
         btnToolHist = findViewById(R.id.btnToolHist)
         btnToolHorizon = findViewById(R.id.btnToolHorizon)
+        btnToolMonConfig = findViewById(R.id.btnToolMonConfig)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         txtTimecode = findViewById(R.id.txtTimecode)
         viewRecDot = findViewById(R.id.viewRecDot)
@@ -593,13 +649,29 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         btnToolPeak.setOnClickListener {
             overlayView.showPeaking = !overlayView.showPeaking
-            styleToolPill(btnToolPeak, overlayView.showPeaking)
+            updateMonitorPillLabels()
             syncAnalysisLoop()
+        }
+
+        btnToolPeak.setOnLongClickListener {
+            showPeakingConfigDialog()
+            true
         }
 
         btnToolZebra.setOnClickListener {
             overlayView.showZebras = !overlayView.showZebras
-            styleToolPill(btnToolZebra, overlayView.showZebras)
+            updateMonitorPillLabels()
+            syncAnalysisLoop()
+        }
+
+        btnToolZebra.setOnLongClickListener {
+            showZebraConfigDialog()
+            true
+        }
+
+        btnToolFalseColor.setOnClickListener {
+            overlayView.showFalseColor = !overlayView.showFalseColor
+            styleToolPill(btnToolFalseColor, overlayView.showFalseColor)
             syncAnalysisLoop()
         }
 
@@ -614,6 +686,113 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             styleToolPill(btnToolHorizon, overlayView.showHorizon)
             syncHorizonSensor()
         }
+
+        btnToolMonConfig.setOnClickListener {
+            showMonitorConfigDialog()
+        }
+    }
+
+    private fun updateMonitorPillLabels() {
+        btnToolPeak.text = if (overlayView.showPeaking) {
+            "PEAK:${overlayView.peakingSensitivity.shortLabel}"
+        } else {
+            "PEAK"
+        }
+        styleToolPill(btnToolPeak, overlayView.showPeaking)
+
+        btnToolZebra.text = if (overlayView.showZebras) {
+            "ZEB:${overlayView.zebraMode.shortLabel}"
+        } else {
+            "ZEBRA"
+        }
+        styleToolPill(btnToolZebra, overlayView.showZebras)
+    }
+
+    private fun showMonitorConfigDialog() {
+        val items = arrayOf(
+            "Peaking Color: ${overlayView.peakingColor.label}",
+            "Peaking Sensitivity: ${overlayView.peakingSensitivity.label}",
+            "Zebra Level: ${overlayView.zebraMode.label}"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Monitor Tools Configuration")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> showPeakingColorDialog()
+                    1 -> showPeakingSensitivityDialog()
+                    2 -> showZebraConfigDialog()
+                }
+            }
+            .setNegativeButton("Done", null)
+            .show()
+    }
+
+    private fun showPeakingConfigDialog() {
+        val items = arrayOf(
+            "Peaking Color (${overlayView.peakingColor.label})",
+            "Peaking Sensitivity (${overlayView.peakingSensitivity.label})"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Focus Peaking Settings")
+            .setItems(items) { _, which ->
+                if (which == 0) showPeakingColorDialog() else showPeakingSensitivityDialog()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showPeakingColorDialog() {
+        val colors = PeakingColor.values()
+        val labels = colors.map { c ->
+            if (c == overlayView.peakingColor) "✓ ${c.label}" else c.label
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Focus Peaking Color")
+            .setItems(labels) { _, which ->
+                overlayView.peakingColor = colors[which]
+                if (!overlayView.showPeaking) overlayView.showPeaking = true
+                updateMonitorPillLabels()
+                syncAnalysisLoop()
+                showSingleToast("Peaking Color: ${colors[which].label}")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showPeakingSensitivityDialog() {
+        val levels = PeakingSensitivity.values()
+        val labels = levels.map { s ->
+            if (s == overlayView.peakingSensitivity) "✓ ${s.label}" else s.label
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Focus Peaking Sensitivity")
+            .setItems(labels) { _, which ->
+                overlayView.peakingSensitivity = levels[which]
+                if (!overlayView.showPeaking) overlayView.showPeaking = true
+                updateMonitorPillLabels()
+                syncAnalysisLoop()
+                showSingleToast("Peaking Sensitivity: ${levels[which].label}")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showZebraConfigDialog() {
+        val modes = ZebraMode.values()
+        val labels = modes.map { m ->
+            if (m == overlayView.zebraMode) "✓ ${m.label}" else m.label
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Zebra IRE Threshold")
+            .setItems(labels) { _, which ->
+                overlayView.zebraMode = modes[which]
+                if (!overlayView.showZebras) overlayView.showZebras = true
+                updateMonitorPillLabels()
+                syncAnalysisLoop()
+                showSingleToast("Zebra Level: ${modes[which].label}")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun syncHorizonSensor() {
@@ -934,8 +1113,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.9.1"
-    } catch (_: Exception) { "0.6.9.1" }
+        info.versionName ?: "0.6.10"
+    } catch (_: Exception) { "0.6.10" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
