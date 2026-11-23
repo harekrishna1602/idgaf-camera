@@ -110,6 +110,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnZoomWide: TextView
     private lateinit var txtZoomReadout: TextView
     private lateinit var btnZoomSpeed: TextView
+    private lateinit var zoomPopoutDrawer: LinearLayout
+    private lateinit var btnZoomPreset1x: TextView
+    private lateinit var btnZoomPreset2x: TextView
+    private lateinit var btnZoomPreset5x: TextView
+    private lateinit var btnZoomPresetMax: TextView
+    private lateinit var zoomSeekBar: SeekBar
+    private var suppressZoomSeek = false
     private lateinit var scaleDetector: ScaleGestureDetector
     private var zoomRockerDir: Int = 0 // +1 = Tele, -1 = Wide, 0 = Idle
     private val zoomSpeedSteps = listOf("SLOW" to 0.018f, "MED" to 0.042f, "FAST" to 0.085f)
@@ -155,8 +162,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var rackGoingToB = true
     private var rackAnimator: ValueAnimator? = null
 
-    private val fpsOptions = listOf(24, 30, 60)
-    private var currentFpsIdx = 1
+    private val fpsOptions = listOf(20, 24, 30, 60)
+    private var currentFps: Int = 30
     private var currentResolution = CinemaResolution.FHD_1080P
     private var lastSavedUri: Uri? = null
 
@@ -282,6 +289,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnZoomWide = findViewById(R.id.btnZoomWide)
         txtZoomReadout = findViewById(R.id.txtZoomReadout)
         btnZoomSpeed = findViewById(R.id.btnZoomSpeed)
+        zoomPopoutDrawer = findViewById(R.id.zoomPopoutDrawer)
+        btnZoomPreset1x = findViewById(R.id.btnZoomPreset1x)
+        btnZoomPreset2x = findViewById(R.id.btnZoomPreset2x)
+        btnZoomPreset5x = findViewById(R.id.btnZoomPreset5x)
+        btnZoomPresetMax = findViewById(R.id.btnZoomPresetMax)
+        zoomSeekBar = findViewById(R.id.zoomSeekBar)
 
         // Pro Dock bindings
         pillIso = findViewById(R.id.pillIso)
@@ -350,8 +363,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         textureView.setOnTouchListener { v, event ->
             scaleDetector.onTouchEvent(event)
             if (event.action == MotionEvent.ACTION_DOWN && event.pointerCount == 1 && !scaleDetector.isInProgress) {
-                if (activePanel != ProControlPanel.NONE) {
+                if (activePanel != ProControlPanel.NONE || zoomPopoutDrawer.visibility == View.VISIBLE) {
                     selectPanel(ProControlPanel.NONE)
+                    zoomPopoutDrawer.visibility = View.GONE
                 } else {
                     val normX = event.x / v.width.coerceAtLeast(1)
                     val normY = event.y / v.height.coerceAtLeast(1)
@@ -386,21 +400,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         btnResolution.setOnClickListener {
             if (engine.isRecording) return@setOnClickListener
-            currentResolution = if (currentResolution == CinemaResolution.FHD_1080P) {
-                CinemaResolution.UHD_4K
-            } else {
-                CinemaResolution.FHD_1080P
-            }
-            btnResolution.text = currentResolution.label
-            engine.updateSettings(currentResolution, fpsOptions[currentFpsIdx])
+            showResolutionPickerDialog()
         }
 
         btnFps.setOnClickListener {
             if (engine.isRecording) return@setOnClickListener
-            currentFpsIdx = (currentFpsIdx + 1) % fpsOptions.size
-            val fps = fpsOptions[currentFpsIdx]
-            btnFps.text = "$fps FPS"
-            engine.updateSettings(currentResolution, fps)
+            showFpsPickerDialog()
+        }
+
+        btnFps.setOnLongClickListener {
+            if (!engine.isRecording) showCustomFpsInputDialog()
+            true
         }
 
         btnLastClip.setOnClickListener {
@@ -576,7 +586,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 val preset = CameraPreset(
                     name = name,
                     resolutionName = currentResolution.name,
-                    fps = fpsOptions[currentFpsIdx],
+                    fps = currentFps,
                     codecName = engine.targetCodec.name,
                     bitrateMbps = engine.targetBitrateMbps,
                     micPrefName = engine.micPreference.name,
@@ -606,7 +616,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             return
         }
         currentResolution = try { CinemaResolution.valueOf(p.resolutionName) } catch (_: Exception) { CinemaResolution.FHD_1080P }
-        currentFpsIdx = fpsOptions.indexOf(p.fps).takeIf { it >= 0 } ?: 1
+        currentFps = p.fps.coerceIn(1, 60)
         engine.targetCodec = try { CinemaCodec.valueOf(p.codecName) } catch (_: Exception) { CinemaCodec.H264 }
         engine.targetBitrateMbps = p.bitrateMbps
         bitrateIdx = bitrateOptions.indexOf(p.bitrateMbps).takeIf { it >= 0 } ?: 1
@@ -759,8 +769,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.2"
-    } catch (_: Exception) { "0.6.2" }
+        info.versionName ?: "0.6.4"
+    } catch (_: Exception) { "0.6.4" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -944,9 +954,28 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         txtZoomReadout.setOnClickListener {
-            engine.resetZoom()
-            updateZoomReadout()
+            val showing = zoomPopoutDrawer.visibility == View.VISIBLE
+            zoomPopoutDrawer.visibility = if (showing) View.GONE else View.VISIBLE
+            if (!showing) updateZoomReadout()
         }
+
+        btnZoomPreset1x.setOnClickListener { applyZoomPreset(1.0f) }
+        btnZoomPreset2x.setOnClickListener { applyZoomPreset(2.0f) }
+        btnZoomPreset5x.setOnClickListener { applyZoomPreset(5.0f) }
+        btnZoomPresetMax.setOnClickListener { applyZoomPreset(engine.capabilities.maxZoom) }
+
+        zoomSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser || suppressZoomSeek) return
+                val minZ = engine.capabilities.minZoom
+                val maxZ = engine.capabilities.maxZoom.coerceAtLeast(minZ + 0.1f)
+                val target = minZ + (maxZ - minZ) * (progress / 100f)
+                engine.setZoomRatio(target)
+                updateZoomReadout()
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
 
         btnZoomSpeed.setOnClickListener {
             zoomSpeedIdx = (zoomSpeedIdx + 1) % zoomSpeedSteps.size
@@ -954,8 +983,111 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
+    private fun applyZoomPreset(targetZoom: Float) {
+        engine.setZoomRatio(targetZoom)
+        updateZoomReadout()
+    }
+
     private fun updateZoomReadout() {
-        txtZoomReadout.text = String.format(Locale.US, "%.1fx", engine.currentZoomRatio)
+        val z = engine.currentZoomRatio
+        txtZoomReadout.text = String.format(Locale.US, "%.1fx", z)
+
+        val minZ = engine.capabilities.minZoom
+        val maxZ = engine.capabilities.maxZoom.coerceAtLeast(minZ + 0.1f)
+        btnZoomPresetMax.text = String.format(Locale.US, "%.0fx", maxZ)
+        btnZoomPreset5x.visibility = if (maxZ >= 4.5f) View.VISIBLE else View.GONE
+        btnZoomPreset2x.visibility = if (maxZ >= 1.8f) View.VISIBLE else View.GONE
+
+        suppressZoomSeek = true
+        zoomSeekBar.progress = (((z - minZ) / (maxZ - minZ)) * 100f).roundToInt().coerceIn(0, 100)
+        suppressZoomSeek = false
+
+        styleToolPill(btnZoomPreset1x, kotlin.math.abs(z - 1.0f) < 0.15f)
+        styleToolPill(btnZoomPreset2x, kotlin.math.abs(z - 2.0f) < 0.25f)
+        styleToolPill(btnZoomPreset5x, kotlin.math.abs(z - 5.0f) < 0.35f)
+        styleToolPill(btnZoomPresetMax, kotlin.math.abs(z - maxZ) < 0.35f && maxZ > 5.2f)
+    }
+
+    private fun showResolutionPickerDialog() {
+        val allRes = CinemaResolution.values()
+        val supported = engine.capabilities.supportedResolutions
+        val labels = allRes.map { res ->
+            val ok = res in supported
+            val suffix = if (ok) " (${res.width}x${res.height})" else " — Not Supported"
+            "${res.label}$suffix"
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("Select Video Resolution")
+            .setItems(labels) { _, which ->
+                val chosen = allRes[which]
+                if (chosen !in supported) {
+                    Toast.makeText(
+                        this,
+                        "${chosen.label} is not supported by this camera lens hardware.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@setItems
+                }
+                currentResolution = chosen
+                btnResolution.text = chosen.label
+                engine.updateSettings(currentResolution, currentFps)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showFpsPickerDialog() {
+        val options = arrayOf(
+            "20 FPS",
+            "24 FPS (Cinema)",
+            "30 FPS (Standard)",
+            "60 FPS (Smooth)",
+            "Custom FPS (Type 1–60)..."
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Select Frame Rate (Current: $currentFps FPS)")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> applySelectedFps(20)
+                    1 -> applySelectedFps(24)
+                    2 -> applySelectedFps(30)
+                    3 -> applySelectedFps(60)
+                    4 -> showCustomFpsInputDialog()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showCustomFpsInputDialog() {
+        val input = EditText(this).apply {
+            hint = "Enter FPS (1 to 60, e.g. 1, 12, 24, 30, 60)"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(currentFps.toString())
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF888888.toInt())
+            setPadding(36, 28, 36, 28)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Custom Frame Rate (1–60 FPS)")
+            .setView(input)
+            .setPositiveButton("Apply") { _, _ ->
+                val typed = input.text.toString().trim().toIntOrNull()
+                if (typed == null || typed !in 1..60) {
+                    Toast.makeText(this, "Enter a value between 1 and 60 FPS", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                applySelectedFps(typed)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun applySelectedFps(fps: Int) {
+        currentFps = fps.coerceIn(1, 60)
+        btnFps.text = "$currentFps FPS"
+        engine.updateSettings(currentResolution, currentFps)
     }
 
     private fun setupProDockAndDrawer() {
@@ -1306,29 +1438,63 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun renderLensRail(lenses: List<CinemaLens>, activeIndex: Int) {
         lensRail.removeAllViews()
-        lenses.forEachIndexed { idx, lens ->
-            val pill = TextView(this).apply {
-                text = lens.label
-                textSize = 12f
-                gravity = Gravity.CENTER
-                setPadding(16, 12, 16, 12)
-                val isActive = idx == activeIndex
-                setBackgroundResource(if (isActive) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
-                setTextColor(if (isActive) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
-                val lp = LinearLayout.LayoutParams(dpToPx(48), dpToPx(38)).apply {
-                    bottomMargin = dpToPx(8)
-                }
-                layoutParams = lp
-                setOnClickListener {
-                    if (!engine.isRecording) {
-                        focusPointA = null
-                        focusPointB = null
-                        engine.selectLens(idx)
-                        renderLensRail(lenses, idx)
+        val active = lenses.getOrNull(activeIndex)
+
+        // Clean Lens Switcher at top of left rail using focal length in mm
+        val otherLens = if (active?.isFront == true) {
+            lenses.firstOrNull { !it.isFront && it.eqFocalMm in 21..30 } ?: lenses.firstOrNull { !it.isFront }
+        } else {
+            lenses.firstOrNull { it.isFront }
+        }
+        val flipPill = TextView(this).apply {
+            text = if (otherLens != null) "⇄ ${otherLens.label}" else "FLIP"
+            textSize = 10f
+            gravity = Gravity.CENTER
+            setPadding(8, 10, 8, 10)
+            setBackgroundResource(R.drawable.bg_hud_pill)
+            setTextColor(0xFFFF5F1F.toInt())
+            layoutParams = LinearLayout.LayoutParams(dpToPx(52), dpToPx(36)).apply {
+                bottomMargin = dpToPx(10)
+            }
+            setOnClickListener {
+                if (!engine.isRecording) {
+                    focusPointA = null
+                    focusPointB = null
+                    if (engine.toggleFrontBackCamera()) {
+                        val newIdx = lenses.indexOf(engine.getActiveLens()).coerceAtLeast(0)
+                        renderLensRail(lenses, newIdx)
                     }
                 }
             }
-            lensRail.addView(pill)
+        }
+        lensRail.addView(flipPill)
+
+        // Show physical back lenses (e.g. 0.5x / 1x / 2x) only if more than 1 back lens exists
+        val backLenses = lenses.mapIndexedNotNull { idx, l -> if (!l.isFront) idx to l else null }
+        if (backLenses.size > 1 && active?.isFront == false) {
+            backLenses.forEach { (idx, lens) ->
+                val pill = TextView(this).apply {
+                    text = lens.label
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    setPadding(8, 10, 8, 10)
+                    val isActive = idx == activeIndex
+                    setBackgroundResource(if (isActive) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                    setTextColor(if (isActive) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(52), dpToPx(34)).apply {
+                        bottomMargin = dpToPx(6)
+                    }
+                    setOnClickListener {
+                        if (!engine.isRecording) {
+                            focusPointA = null
+                            focusPointB = null
+                            engine.selectLens(idx)
+                            renderLensRail(lenses, idx)
+                        }
+                    }
+                }
+                lensRail.addView(pill)
+            }
         }
     }
 
@@ -1341,8 +1507,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     ) {
         runOnUiThread {
             configureTransform(previewSize)
-            val resTag = if (activeRes.width >= 3840) "4K" else "${activeRes.height}P"
-            btnResolution.text = resTag
+            currentResolution = engine.targetResolution
+            btnResolution.text = currentResolution.label
             btnFps.text = "$activeFps FPS"
             updateZoomReadout()
             styleToolPill(btnProTorch, engine.isTorchEnabled)

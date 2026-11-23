@@ -13,6 +13,7 @@ import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.TonemapCurve
@@ -42,6 +43,7 @@ data class CinemaLens(
     val label: String,
     val isFront: Boolean,
     val focalLength: Float,
+    val eqFocalMm: Int,
     val sensorOrientation: Int
 )
 
@@ -55,7 +57,8 @@ data class CameraCapabilities(
     val maxZoom: Float = 4.0f,
     val hasFlash: Boolean = false,
     val supportsEis: Boolean = false,
-    val supportsOis: Boolean = false
+    val supportsOis: Boolean = false,
+    val supportedResolutions: List<CinemaResolution> = listOf(CinemaResolution.FHD_1080P)
 )
 
 data class LiveTelemetry(
@@ -70,7 +73,10 @@ data class LiveTelemetry(
 )
 
 enum class CinemaResolution(val label: String, val width: Int, val height: Int) {
+    SD_480P("480P", 854, 480),
+    HD_720P("720P", 1280, 720),
     FHD_1080P("1080P", 1920, 1080),
+    QHD_2K("2K", 2560, 1440),
     UHD_4K("4K", 3840, 2160)
 }
 
@@ -132,7 +138,7 @@ class CinemaCameraEngine(
     var targetBitrateMbps: Int = 35
     var micPreference: MicPreference = MicPreference.AUTO
     var toneProfile: ToneProfile = ToneProfile.STANDARD
-    private set
+        private set
     var isRecording: Boolean = false
         private set
 
@@ -244,12 +250,18 @@ class CinemaCameraEngine(
 
                 val focals = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
                 val focal = focals?.firstOrNull() ?: 4.0f
+                val sensorSize = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+                val eqMm = if (sensorSize != null && sensorSize.width > 0.5f) {
+                    ((focal * 36.0f) / sensorSize.width).toInt().coerceIn(10, 200)
+                } else {
+                    (focal * 5.5f).toInt().coerceIn(12, 120)
+                }
                 val orientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
 
                 if (facing == CameraCharacteristics.LENS_FACING_BACK) {
-                    backCandidates.add(CinemaLens(id, "1x", false, focal, orientation))
+                    backCandidates.add(CinemaLens(id, "${eqMm}mm", false, focal, eqMm, orientation))
                 } else if (facing == CameraCharacteristics.LENS_FACING_FRONT && frontLens == null) {
-                    frontLens = CinemaLens(id, "FR", true, focal, orientation)
+                    frontLens = CinemaLens(id, "${eqMm}mm", true, focal, eqMm, orientation)
                 }
             }
         } catch (e: Exception) {
@@ -260,31 +272,16 @@ class CinemaCameraEngine(
             .distinctBy { "%.1f".format(Locale.US, it.focalLength) }
             .sortedBy { it.focalLength }
 
-        val labeledBack = when (sortedBack.size) {
-            0 -> emptyList()
-            1 -> listOf(sortedBack[0].copy(label = "1x"))
-            2 -> {
-                if (sortedBack[0].focalLength < 2.8f) {
-                    listOf(sortedBack[0].copy(label = "0.5x"), sortedBack[1].copy(label = "1x"))
-                } else {
-                    listOf(sortedBack[0].copy(label = "1x"), sortedBack[1].copy(label = "2x"))
-                }
-            }
-            else -> {
-                val list = mutableListOf<CinemaLens>()
-                list.add(sortedBack.first().copy(label = "0.5x"))
-                list.add(sortedBack[1].copy(label = "1x"))
-                list.add(sortedBack.last().copy(label = "2x"))
-                list
-            }
-        }
+        val labeledBack = sortedBack.take(3).map { it.copy(label = "${it.eqFocalMm}mm") }
 
         val combined = mutableListOf<CinemaLens>()
         combined.addAll(labeledBack)
         if (frontLens != null) combined.add(frontLens)
 
         lenses = combined
-        val defaultIdx = lenses.indexOfFirst { it.label == "1x" }.takeIf { it >= 0 } ?: 0
+        // Pick standard wide lens (~22-28mm) as default, or first back lens
+        val defaultIdx = lenses.indexOfFirst { !it.isFront && it.eqFocalMm in 21..30 }
+            .takeIf { it >= 0 } ?: lenses.indexOfFirst { !it.isFront }.coerceAtLeast(0)
         activeLensIndex = defaultIdx
         listener.onLensesReady(lenses, activeLensIndex)
     }
@@ -313,6 +310,22 @@ class CinemaCameraEngine(
     fun attachSurfaceAndOpen(texture: SurfaceTexture) {
         surfaceTexture = texture
         openActiveCamera()
+    }
+
+    fun toggleFrontBackCamera(): Boolean {
+        if (isRecording || lenses.isEmpty()) return false
+        val current = getActiveLens() ?: return false
+        val targetIdx = if (current.isFront) {
+            lenses.indexOfFirst { !it.isFront && it.eqFocalMm in 21..30 }
+                .takeIf { it >= 0 } ?: lenses.indexOfFirst { !it.isFront }
+        } else {
+            lenses.indexOfFirst { it.isFront }
+        }
+        if (targetIdx >= 0 && targetIdx != activeLensIndex) {
+            selectLens(targetIdx)
+            return true
+        }
+        return false
     }
 
     fun selectLens(index: Int) {
@@ -507,12 +520,21 @@ class CinemaCameraEngine(
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
         }
 
-        // 3. White Balance (Kelvin RGGB Gains vs Locked AWB vs Auto WB)
+        // 3. White Balance (Kelvin RGGB Gains + Identity ColorSpaceTransform vs Locked AWB vs Auto WB)
         if (isManualWb) {
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
             builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
             builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToRggbGains(manualKelvin))
+            val identityTransform = ColorSpaceTransform(
+                intArrayOf(
+                    1, 1, 0, 1, 0, 1,
+                    0, 1, 1, 1, 0, 1,
+                    0, 1, 0, 1, 1, 1
+                )
+            )
+            builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, identityTransform)
         } else {
+            builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AWB_LOCK, isAeAfLocked || lockAutoForRecordStart)
         }
@@ -672,6 +694,19 @@ class CinemaCameraEngine(
             val supportsEis = eisModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON)
             val supportsOis = oisModes.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON)
 
+            val videoSizes = map.getOutputSizes(MediaRecorder::class.java) ?: emptyArray()
+            val maxHardwareW = videoSizes.maxOfOrNull { it.width } ?: 1920
+            val maxHardwareH = videoSizes.maxOfOrNull { it.height } ?: 1080
+
+            val supportedRes = CinemaResolution.values().filter { res ->
+                videoSizes.any { s -> s.width >= res.width - 100 && s.height >= res.height - 60 } ||
+                    (res.width <= maxHardwareW && res.height <= maxHardwareH)
+            }.ifEmpty { listOf(CinemaResolution.FHD_1080P) }
+
+            if (targetResolution !in supportedRes) {
+                targetResolution = supportedRes.lastOrNull { it.width <= 1920 } ?: supportedRes.first()
+            }
+
             capabilities = CameraCapabilities(
                 isoRange = isoRange ?: Range(100, 3200),
                 exposureRangeNs = expRange ?: Range(125_000L, 100_000_000L),
@@ -682,12 +717,12 @@ class CinemaCameraEngine(
                 maxZoom = maxZ,
                 hasFlash = hasFlash,
                 supportsEis = supportsEis,
-                supportsOis = supportsOis
+                supportsOis = supportsOis,
+                supportedResolutions = supportedRes
             )
             if (!hasFlash) isTorchEnabled = false
             currentZoomRatio = currentZoomRatio.coerceIn(minZ, maxZ)
 
-            val videoSizes = map.getOutputSizes(MediaRecorder::class.java) ?: emptyArray()
             resolvedVideoSize = chooseClosest16x9Size(videoSizes, targetResolution.width, targetResolution.height)
 
             val previewSizes = map.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray()
@@ -746,7 +781,7 @@ class CinemaCameraEngine(
                             listener.onCameraReady(
                                 resolvedPreviewSize,
                                 resolvedVideoSize,
-                                resolvedFpsRange.upper,
+                                targetFps,
                                 lens,
                                 capabilities
                             )
@@ -807,18 +842,36 @@ class CinemaCameraEngine(
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
                 session.capture(builder.build(), captureCallback, backgroundHandler)
 
-                // 2. Apply AF/AE regions and trigger single-shot focus lock
+                // 2. Apply AF/AE regions and trigger immediate AF + AE precapture re-metering
                 builder.set(CaptureRequest.CONTROL_AF_REGIONS, metering)
-                if (!isManualExposure) {
-                    builder.set(CaptureRequest.CONTROL_AE_REGIONS, metering)
-                }
                 builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+
+                if (!isManualExposure) {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                    builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
+                    builder.set(CaptureRequest.CONTROL_AE_REGIONS, metering)
+                    builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START)
+                }
                 session.capture(builder.build(), captureCallback, backgroundHandler)
 
-                // 3. Keep repeating request locked on that region without re-triggering
+                // 3. Keep repeating request active on the tapped metering region
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
+                if (!isManualExposure) {
+                    builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE)
+                }
                 session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
+
+                // 4. After 2.5s, smoothly resume continuous video AF so Auto stays responsive
+                backgroundHandler?.postDelayed({
+                    if (!isManualFocus && !isAeAfLocked && captureSession == session) {
+                        try {
+                            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                            session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }, 2500L)
             } catch (_: Exception) {
             }
         }
@@ -937,7 +990,7 @@ class CinemaCameraEngine(
 
     private fun createAndPrepareMediaRecorder(lens: CinemaLens, displayRotation: Int): MediaRecorder {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val fileName = "IDGAF_${resolvedVideoSize.height}p_${resolvedFpsRange.upper}fps_$timestamp.mp4"
+        val fileName = "IDGAF_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
         activeFileLabel = "Movies/IDGAF_Camera/$fileName"
 
         val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -978,7 +1031,7 @@ class CinemaCameraEngine(
 
         val bitrateBps = targetBitrateMbps.coerceIn(10, 120) * 1_000_000
         recorder.setVideoEncodingBitRate(bitrateBps)
-        recorder.setVideoFrameRate(resolvedFpsRange.upper)
+        recorder.setVideoFrameRate(targetFps.coerceIn(1, 60))
         recorder.setVideoSize(resolvedVideoSize.width, resolvedVideoSize.height)
         recorder.setVideoEncoder(targetCodec.encoder)
         recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
