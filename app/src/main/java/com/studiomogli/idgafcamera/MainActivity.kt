@@ -193,6 +193,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnPullFocusAB: TextView
     private var focusPullDurationMs: Long = 1200L
     private lateinit var proSeekBar: SeekBar
+    private lateinit var wbTintRow: LinearLayout
+    private lateinit var wbTintSeekBar: SeekBar
+    private lateinit var txtWbTintVal: TextView
 
     private var activePanel: ProControlPanel = ProControlPanel.NONE
     private var suppressSeekCallback = false
@@ -433,6 +436,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnPullTime = findViewById(R.id.btnPullTime)
         btnPullFocusAB = findViewById(R.id.btnPullFocusAB)
         proSeekBar = findViewById(R.id.proSeekBar)
+        wbTintRow = findViewById(R.id.wbTintRow)
+        wbTintSeekBar = findViewById(R.id.wbTintSeekBar)
+        txtWbTintVal = findViewById(R.id.txtWbTintVal)
 
         engine = CinemaCameraEngine(this, this)
 
@@ -928,8 +934,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.8"
-    } catch (_: Exception) { "0.6.8" }
+        info.versionName ?: "0.6.9"
+    } catch (_: Exception) { "0.6.9" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1160,11 +1166,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     Toast.makeText(this, "Enter a valid number", Toast.LENGTH_SHORT).show()
                     return@setPositiveButton
                 }
+                if (engine.isAeAfLocked && (panel == ProControlPanel.EV || panel == ProControlPanel.ISO || panel == ProControlPanel.SHUTTER)) {
+                    showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                    return@setPositiveButton
+                }
                 when (panel) {
                     ProControlPanel.EV -> {
-                        engine.setEvCompensation(v)
-                        updateEvDisplay()
-                        updateLockUi(engine.isAeAfLocked)
+                        if (engine.setEvCompensation(v)) {
+                            updateEvDisplay()
+                        } else {
+                            showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                        }
                     }
                     ProControlPanel.ISO -> engine.setManualIso(v)
                     ProControlPanel.SHUTTER -> {
@@ -1620,24 +1632,55 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
+        wbTintSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser || suppressSeekCallback) return
+                val tint = progress - 50 // -50 (Green) .. +50 (Magenta)
+                engine.setManualWhiteBalanceTint(tint)
+                updateTintDisplay(tint)
+                txtSliderReadout.text = "${engine.manualKelvin}K"
+                updateAutoButtonVisual(isManual = true)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {
+                isUserDraggingProSeek = true
+            }
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                isUserDraggingProSeek = false
+            }
+        })
+
+        txtWbTintVal.setOnClickListener {
+            engine.setManualWhiteBalanceTint(0)
+            suppressSeekCallback = true
+            wbTintSeekBar.progress = 50
+            suppressSeekCallback = false
+            updateTintDisplay(0)
+        }
+
         proSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (!fromUser || suppressSeekCallback) return
+                if (engine.isAeAfLocked && (activePanel == ProControlPanel.EV || activePanel == ProControlPanel.ISO || activePanel == ProControlPanel.SHUTTER)) {
+                    showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                    refreshSliderState()
+                    return
+                }
                 when (activePanel) {
                     ProControlPanel.EV -> {
                         val minEv = engine.capabilities.evRange.lower
                         val maxEv = engine.capabilities.evRange.upper
                         val idx = minEv + progress
-                        engine.setEvCompensation(idx.coerceIn(minEv, maxEv))
-                        updateEvDisplay()
-                        updateLockUi(engine.isAeAfLocked)
-                        txtSliderReadout.text = formatEv(engine.getCurrentEvStops())
-                        updateAutoButtonVisual(isManual = engine.evCompensationIndex != 0)
+                        if (engine.setEvCompensation(idx.coerceIn(minEv, maxEv))) {
+                            updateEvDisplay()
+                            txtSliderReadout.text = formatEv(engine.getCurrentEvStops())
+                            updateAutoButtonVisual(isManual = engine.evCompensationIndex != 0)
+                        } else {
+                            showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                            refreshSliderState()
+                        }
                     }
                     ProControlPanel.ISO -> {
-                        val minIso = engine.capabilities.isoRange.lower
-                        val maxIso = engine.capabilities.isoRange.upper.coerceAtMost(6400)
-                        val iso = minIso + ((maxIso - minIso) * (progress / 100f)).roundToInt()
+                        val iso = progressToLogIso(progress)
                         engine.setManualIso(iso)
                         txtSliderReadout.text = "ISO $iso"
                         updateAutoButtonVisual(isManual = true)
@@ -1663,7 +1706,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     }
                     ProControlPanel.FOCUS -> {
                         rackAnimator?.cancel()
-        zoomAnimator?.cancel()
                         val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
                         val diopters = (progress / 100f) * maxF
                         engine.setManualFocusDistance(diopters)
@@ -1710,6 +1752,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnShutterUnit.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnSlider180.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         rackFocusRow.visibility = if (panel == ProControlPanel.FOCUS) View.VISIBLE else View.GONE
+        wbTintRow.visibility = if (panel == ProControlPanel.WB) View.VISIBLE else View.GONE
         refreshSliderState()
     }
 
@@ -1729,11 +1772,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             ProControlPanel.ISO -> {
                 txtSliderTitle.text = "ISO"
                 proSeekBar.max = 100
-                val minIso = engine.capabilities.isoRange.lower
-                val maxIso = engine.capabilities.isoRange.upper.coerceAtMost(6400).coerceAtLeast(minIso + 1)
                 val shownIso = if (engine.isManualExposure) engine.manualIso else (live?.iso ?: engine.manualIso)
-                val pct = (((shownIso - minIso).toFloat() / (maxIso - minIso)) * 100f).roundToInt().coerceIn(0, 100)
-                proSeekBar.progress = pct
+                proSeekBar.progress = logIsoToProgress(shownIso)
                 txtSliderReadout.text = if (engine.isManualExposure) "ISO $shownIso" else "AUTO • $shownIso"
                 updateAutoButtonVisual(engine.isManualExposure)
             }
@@ -1763,10 +1803,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 txtSliderTitle.text = "FOCUS"
                 proSeekBar.max = 100
                 val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
-                val shownDist = if (engine.isManualFocus) engine.manualFocusDistance else (live?.focusDistance ?: engine.manualFocusDistance)
-                proSeekBar.progress = ((shownDist / maxF) * 100f).roundToInt().coerceIn(0, 100)
-                val fStr = formatFocus(shownDist, maxF)
-                txtSliderReadout.text = if (engine.isManualFocus) fStr else "AF-C • $fStr"
+                if (engine.isManualFocus) {
+                    proSeekBar.progress = ((engine.manualFocusDistance / maxF) * 100f).roundToInt().coerceIn(0, 100)
+                    txtSliderReadout.text = formatFocus(engine.manualFocusDistance, maxF)
+                } else {
+                    // Keep AF-C slider parked calmly so micro-hunting never causes jittery jumps
+                    proSeekBar.progress = ((engine.manualFocusDistance / maxF) * 100f).roundToInt().coerceIn(0, 100)
+                    txtSliderReadout.text = "AF-C (AUTO)"
+                }
                 updateAutoButtonVisual(engine.isManualFocus)
             }
             ProControlPanel.WB -> {
@@ -1775,6 +1819,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 val shownK = if (engine.isManualWb) engine.manualKelvin else (live?.kelvin ?: engine.getLiveKelvin())
                 proSeekBar.progress = ((shownK - 2500) / 60).coerceIn(0, 100)
                 txtSliderReadout.text = if (engine.isManualWb) "${shownK}K" else "AWB • ${shownK}K"
+                wbTintSeekBar.progress = (engine.manualTint + 50).coerceIn(0, 100)
+                updateTintDisplay(engine.manualTint)
                 updateAutoButtonVisual(engine.isManualWb)
             }
             ProControlPanel.NONE -> {}
@@ -1791,6 +1837,37 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnAeAfLock.text = if (locked) "LOCKED" else "LOCK"
         btnAeAfLock.setBackgroundResource(if (locked) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
         btnAeAfLock.setTextColor(if (locked) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+    }
+
+    private fun progressToLogIso(progress: Int): Int {
+        val minIso = engine.capabilities.effectiveIsoRange.lower.coerceAtLeast(25).toDouble()
+        val maxIso = engine.capabilities.effectiveIsoRange.upper.coerceAtLeast(minIso.toInt() + 1).toDouble()
+        val raw = minIso * Math.pow(maxIso / minIso, progress.coerceIn(0, 100) / 100.0)
+        // Round to clean steps for tactile feel
+        return when {
+            raw < 200.0 -> (raw / 5.0).roundToInt() * 5
+            raw < 1000.0 -> (raw / 10.0).roundToInt() * 10
+            else -> (raw / 25.0).roundToInt() * 25
+        }.coerceIn(engine.capabilities.effectiveIsoRange.lower, engine.capabilities.effectiveIsoRange.upper)
+    }
+
+    private fun logIsoToProgress(iso: Int): Int {
+        val minIso = engine.capabilities.effectiveIsoRange.lower.coerceAtLeast(25).toDouble()
+        val maxIso = engine.capabilities.effectiveIsoRange.upper.coerceAtLeast(minIso.toInt() + 1).toDouble()
+        val clamped = iso.toDouble().coerceIn(minIso, maxIso)
+        val denom = kotlin.math.ln(maxIso / minIso).coerceAtLeast(0.001)
+        return ((kotlin.math.ln(clamped / minIso) / denom) * 100.0).roundToInt().coerceIn(0, 100)
+    }
+
+    private fun updateTintDisplay(tint: Int) {
+        txtWbTintVal.text = if (tint > 0) "+$tint" else "$tint"
+        txtWbTintVal.setTextColor(
+            when {
+                tint > 0 -> 0xFFE879F9.toInt() // Magenta
+                tint < 0 -> 0xFF34C759.toInt() // Green
+                else -> 0xFFFFFFFF.toInt()
+            }
+        )
     }
 
     private fun formatEv(stops: Float): String {
@@ -2008,9 +2085,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (activePanel != ProControlPanel.NONE && !isUserDraggingProSeek) {
                 val shouldSync = when (activePanel) {
                     ProControlPanel.ISO, ProControlPanel.SHUTTER -> !telemetry.isManualExposure
-                    ProControlPanel.FOCUS -> !telemetry.isManualFocus
                     ProControlPanel.WB -> !telemetry.isManualWb
-                    ProControlPanel.EV, ProControlPanel.NONE -> false
+                    ProControlPanel.FOCUS, ProControlPanel.EV, ProControlPanel.NONE -> false
                 }
                 if (shouldSync) {
                     refreshSliderState()

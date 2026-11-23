@@ -35,6 +35,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.pow
 
@@ -49,6 +50,9 @@ data class CinemaLens(
 
 data class CameraCapabilities(
     val isoRange: Range<Int> = Range(100, 3200),
+    val effectiveIsoRange: Range<Int> = Range(100, 6400),
+    val postRawBoostRange: Range<Int> = Range(100, 100),
+    val supportsPostRawBoost: Boolean = false,
     val exposureRangeNs: Range<Long> = Range(125_000L, 100_000_000L),
     val minFocusDistance: Float = 0f,
     val supportsManualExposure: Boolean = false,
@@ -175,6 +179,16 @@ class CinemaCameraEngine(
         private set
     var manualKelvin: Int = 5600
         private set
+    var manualTint: Int = 0 // -50 (Green) .. +50 (Magenta)
+        private set
+
+    // Calibrated ISP color pipeline anchor captured from live AWB (eliminates green cast!)
+    private var lastAwbTransform: ColorSpaceTransform? = null
+    private var refNeutralRedGain: Float = 1.75f
+    private var refNeutralGreenEven: Float = 1.0f
+    private var refNeutralGreenOdd: Float = 1.0f
+    private var refNeutralBlueGain: Float = 1.65f
+    private var hasCalibratedWbAnchor: Boolean = false
 
     var isAeAfLocked: Boolean = false
         private set
@@ -207,13 +221,44 @@ class CinemaCameraEngine(
             request: CaptureRequest,
             result: TotalCaptureResult
         ) {
-            result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { liveIso = it }
+            val rawSens = result.get(CaptureResult.SENSOR_SENSITIVITY)
+            val rawBoost = result.get(CaptureResult.CONTROL_POST_RAW_SENSITIVITY_BOOST) ?: 100
+            if (rawSens != null) {
+                liveIso = ((rawSens.toLong() * rawBoost.coerceAtLeast(100).toLong()) / 100L)
+                    .toInt()
+                    .coerceAtLeast(1)
+            }
             result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { liveShutterNs = it }
             result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { liveFocusDistance = it }
-            result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { gains ->
-                val estK = rggbGainsToKelvin(gains)
-                smoothedLiveKelvin = smoothedLiveKelvin * 0.78f + estK * 0.22f
-                liveKelvin = ((smoothedLiveKelvin / 50f).toInt() * 50).coerceIn(2500, 8500)
+
+            if (!isManualWb) {
+                result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { tf ->
+                    lastAwbTransform = tf
+                }
+                result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { gains ->
+                    val estK = rggbGainsToKelvin(gains)
+                    smoothedLiveKelvin = smoothedLiveKelvin * 0.78f + estK * 0.22f
+                    liveKelvin = ((smoothedLiveKelvin / 50f).toInt() * 50).coerceIn(2500, 8500)
+
+                    // Anchor neutral 5600K reference gains to this sensor's real AWB calibration
+                    val (rCurve, bCurve) = kelvinCurveMultipliers(liveKelvin)
+                    val gEven = gains.greenEven.coerceIn(0.5f, 2.5f)
+                    val gOdd = gains.greenOdd.coerceIn(0.5f, 2.5f)
+                    val rNeutral = (gains.red / rCurve).coerceIn(0.5f, 4.5f)
+                    val bNeutral = (gains.blue / bCurve).coerceIn(0.5f, 4.5f)
+                    if (!hasCalibratedWbAnchor) {
+                        refNeutralRedGain = rNeutral
+                        refNeutralGreenEven = gEven
+                        refNeutralGreenOdd = gOdd
+                        refNeutralBlueGain = bNeutral
+                        hasCalibratedWbAnchor = true
+                    } else {
+                        refNeutralRedGain = refNeutralRedGain * 0.85f + rNeutral * 0.15f
+                        refNeutralGreenEven = refNeutralGreenEven * 0.85f + gEven * 0.15f
+                        refNeutralGreenOdd = refNeutralGreenOdd * 0.85f + gOdd * 0.15f
+                        refNeutralBlueGain = refNeutralBlueGain * 0.85f + bNeutral * 0.15f
+                    }
+                }
             }
 
             val now = System.currentTimeMillis()
@@ -355,6 +400,8 @@ class CinemaCameraEngine(
         isManualFocus = false
         currentZoomRatio = 1.0f
         isTorchEnabled = false
+        lastAwbTransform = null
+        hasCalibratedWbAnchor = false
         closeCamera()
         openActiveCamera()
     }
@@ -378,18 +425,18 @@ class CinemaCameraEngine(
             manualShutterNs = if (isShutter180Locked) {
                 compute180ShutterNs(resolvedFpsRange.upper)
             } else {
-                liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, minOf(capabilities.exposureRangeNs.upper, 40_000_000L))
+                liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, minOf(capabilities.exposureRangeNs.upper, 100_000_000L))
             }
             isManualExposure = true
         }
-        manualIso = iso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+        manualIso = iso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
         pushUpdatedRepeatingRequest()
     }
 
     fun setManualShutterNs(shutterNs: Long) {
         if (!capabilities.supportsManualExposure) return
         if (!isManualExposure) {
-            manualIso = liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+            manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
             isManualExposure = true
         }
         isShutter180Locked = false
@@ -400,7 +447,7 @@ class CinemaCameraEngine(
     fun setManualShutterAngle(angleDegrees: Float) {
         if (!capabilities.supportsManualExposure) return
         if (!isManualExposure) {
-            manualIso = liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+            manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
             isManualExposure = true
         }
         val clampedAngle = angleDegrees.coerceIn(11.25f, 360f)
@@ -454,7 +501,7 @@ class CinemaCameraEngine(
         isShutter180Locked = !isShutter180Locked
         if (isShutter180Locked) {
             if (!isManualExposure) {
-                manualIso = liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+                manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
                 isManualExposure = true
             }
             manualShutterNs = compute180ShutterNs(resolvedFpsRange.upper)
@@ -463,17 +510,16 @@ class CinemaCameraEngine(
         return isShutter180Locked
     }
 
-    fun setEvCompensation(index: Int) {
+    fun setEvCompensation(index: Int): Boolean {
+        if (isAeAfLocked) return false
         val clamped = index.coerceIn(capabilities.evRange.lower, capabilities.evRange.upper)
         evCompensationIndex = clamped
         if (isManualExposure) {
             isManualExposure = false
             isShutter180Locked = false
         }
-        if (isAeAfLocked) {
-            isAeAfLocked = false
-        }
         pushUpdatedRepeatingRequest()
+        return true
     }
 
     fun getCurrentEvStops(): Float = evCompensationIndex * capabilities.evStep
@@ -502,8 +548,18 @@ class CinemaCameraEngine(
         pushUpdatedRepeatingRequest()
     }
 
+    fun setManualWhiteBalanceTint(tint: Int) {
+        if (!isManualWb) {
+            manualKelvin = liveKelvin.coerceIn(2500, 8500)
+            isManualWb = true
+        }
+        manualTint = tint.coerceIn(-50, 50)
+        pushUpdatedRepeatingRequest()
+    }
+
     fun setAutoWhiteBalance() {
         isManualWb = false
+        manualTint = 0
         pushUpdatedRepeatingRequest()
     }
 
@@ -512,8 +568,8 @@ class CinemaCameraEngine(
     fun toggleAeAfLock(): Boolean {
         isAeAfLocked = !isAeAfLocked
         if (isAeAfLocked && !isManualExposure && capabilities.supportsManualExposure) {
-            // Freeze exact current exposure to eliminate any ISP drift
-            manualIso = liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper)
+            // Freeze exact current exposure (including post-RAW boost) to eliminate any ISP drift
+            manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
             manualShutterNs = liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
         }
         pushUpdatedRepeatingRequest()
@@ -531,15 +587,15 @@ class CinemaCameraEngine(
         builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, resolvedFpsRange)
         builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)
 
-        // 1. Exposure (Manual ISO/Shutter vs Locked Auto vs Auto)
+        // 1. Exposure (Manual ISO/Shutter + Extended Post-RAW Boost vs Locked Auto vs Auto)
         if (isManualExposure && capabilities.supportsManualExposure) {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-            builder.set(CaptureRequest.SENSOR_SENSITIVITY, manualIso)
+            applyEffectiveIso(builder, manualIso)
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualShutterNs)
         } else if ((isAeAfLocked || lockAutoForRecordStart) && capabilities.supportsManualExposure && liveIso > 0 && liveShutterNs > 0L) {
-            // Anti-burst lock: freeze exact live ISO & shutter so REC never flashes bright
+            // Anti-burst lock: freeze exact live effective ISO & shutter so REC never flashes or dims
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-            builder.set(CaptureRequest.SENSOR_SENSITIVITY, liveIso.coerceIn(capabilities.isoRange.lower, capabilities.isoRange.upper))
+            applyEffectiveIso(builder, liveIso)
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper))
         } else {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
@@ -561,19 +617,19 @@ class CinemaCameraEngine(
             builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
         }
 
-        // 3. White Balance (Kelvin RGGB Gains + Identity ColorSpaceTransform vs Locked AWB vs Auto WB)
+        // 3. White Balance (Calibrated ISP Color Matrix + Sensor-Anchored Kelvin/Tint Gains vs AWB)
         if (isManualWb) {
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
             builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
-            builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToRggbGains(manualKelvin))
-            val identityTransform = ColorSpaceTransform(
+            builder.set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinAndTintToRggbGains(manualKelvin, manualTint))
+            val calibratedMatrix = lastAwbTransform ?: ColorSpaceTransform(
                 intArrayOf(
                     1, 1, 0, 1, 0, 1,
                     0, 1, 1, 1, 0, 1,
                     0, 1, 0, 1, 1, 1
                 )
             )
-            builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, identityTransform)
+            builder.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, calibratedMatrix)
         } else {
             builder.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_FAST)
             builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
@@ -668,40 +724,55 @@ class CinemaCameraEngine(
     }
 
     /**
-     * Converts color temperature in Kelvin (2500K-8500K) to Camera2 RGGB channel gains.
+     * Splits effective ISO into analog SENSOR_SENSITIVITY + hardware CONTROL_POST_RAW_SENSITIVITY_BOOST,
+     * allowing manual mode to reach full Auto low-light brightness above the analog ISO ceiling.
      */
-    private fun kelvinToRggbGains(kelvin: Int): RggbChannelVector {
-        val temp = kelvin.coerceIn(2500, 8500) / 100.0
-        var r: Double
-        var g: Double
-        var b: Double
+    private fun applyEffectiveIso(builder: CaptureRequest.Builder, effectiveIso: Int) {
+        val analogMin = capabilities.isoRange.lower
+        val analogMax = capabilities.isoRange.upper
+        val boostMin = capabilities.postRawBoostRange.lower.coerceAtLeast(100)
+        val boostMax = capabilities.postRawBoostRange.upper.coerceAtLeast(100)
 
-        if (temp <= 66.0) {
-            r = 255.0
-            g = 99.4708025861 * ln(temp) - 161.1195681661
-            b = if (temp <= 19.0) 0.0 else 138.5177312231 * ln(temp - 10.0) - 305.0447927307
+        if (effectiveIso <= analogMax || !capabilities.supportsPostRawBoost || boostMax <= 100) {
+            builder.set(CaptureRequest.SENSOR_SENSITIVITY, effectiveIso.coerceIn(analogMin, analogMax))
+            if (capabilities.supportsPostRawBoost) {
+                builder.set(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, 100.coerceIn(boostMin, boostMax))
+            }
         } else {
-            r = 329.698727446 * (temp - 60.0).pow(-0.1332047592)
-            g = 288.1221695283 * (temp - 60.0).pow(-0.0755148492)
-            b = 255.0
+            val neededBoost = ((effectiveIso * 100.0) / analogMax.toDouble()).toInt().coerceIn(boostMin, boostMax)
+            builder.set(CaptureRequest.SENSOR_SENSITIVITY, analogMax)
+            builder.set(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, neededBoost)
         }
+    }
 
-        r = r.coerceIn(40.0, 255.0)
-        g = g.coerceIn(40.0, 255.0)
-        b = b.coerceIn(40.0, 255.0)
+    /**
+     * Perceptually balanced log-Kelvin curve relative to 5600K daylight:
+     * 2500K = Cool Blue (low R, high B), 5600K = Neutral (1.0, 1.0), 8500K = Warm Amber (high R, low B).
+     */
+    private fun kelvinCurveMultipliers(kelvin: Int): Pair<Float, Float> {
+        val k = kelvin.coerceIn(2500, 8500).toDouble()
+        val delta = ln(k / 5600.0)
+        val rMul = exp(0.68 * delta).toFloat()
+        val bMul = exp(-0.78 * delta).toFloat()
+        return rMul to bMul
+    }
 
-        // Cinema WB physics: 2500K = Cool/Blue, 8500K = Warm/Amber
-        val rGain = (255.0 / r).toFloat().coerceIn(0.8f, 3.2f)
-        val gGain = (255.0 / g).toFloat().coerceIn(0.9f, 1.4f)
-        val bGain = (255.0 / b).toFloat().coerceIn(0.8f, 3.2f)
+    /**
+     * Computes sensor-calibrated RGGB gains anchored to the phone's real AWB calibration.
+     * Matching manualKelvin to liveKelvin with tint=0 reproduces AWB's exact color with zero green cast.
+     */
+    private fun kelvinAndTintToRggbGains(kelvin: Int, tint: Int): RggbChannelVector {
+        val (rCurve, bCurve) = kelvinCurveMultipliers(kelvin)
+        val clampedTint = tint.coerceIn(-50, 50).toDouble()
+        val greenScale = exp(-0.005 * clampedTint).toFloat()
+        val rbScale = exp(0.0025 * clampedTint).toFloat()
 
-        // Normalize green channel to 1.0
-        return RggbChannelVector(
-            (rGain / gGain).coerceIn(0.7f, 3.0f),
-            1.0f,
-            1.0f,
-            (bGain / gGain).coerceIn(0.7f, 3.0f)
-        )
+        val rGain = (refNeutralRedGain * rCurve * rbScale).coerceIn(0.4f, 6.0f)
+        val gEven = (refNeutralGreenEven * greenScale).coerceIn(0.4f, 3.0f)
+        val gOdd = (refNeutralGreenOdd * greenScale).coerceIn(0.4f, 3.0f)
+        val bGain = (refNeutralBlueGain * bCurve * rbScale).coerceIn(0.4f, 6.0f)
+
+        return RggbChannelVector(rGain, gEven, gOdd, bGain)
     }
 
     /**
@@ -730,6 +801,7 @@ class CinemaCameraEngine(
             }
 
             val isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+            val boostRange = chars.get(CameraCharacteristics.CONTROL_POST_RAW_SENSITIVITY_BOOST_RANGE)
             val expRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
             val minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
             sensorActiveArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
@@ -763,8 +835,19 @@ class CinemaCameraEngine(
                 targetResolution = supportedRes.lastOrNull { it.width <= 1920 } ?: supportedRes.first()
             }
 
+            val resolvedAnalogIso = isoRange ?: Range(100, 3200)
+            val resolvedBoost = boostRange ?: Range(100, 100)
+            val boostMax = resolvedBoost.upper.coerceAtLeast(100)
+            val effMaxIso = ((resolvedAnalogIso.upper.toLong() * boostMax.toLong()) / 100L)
+                .coerceIn(resolvedAnalogIso.upper.toLong(), 12800L)
+                .toInt()
+            val resolvedEffectiveIso = Range(resolvedAnalogIso.lower, effMaxIso)
+
             capabilities = CameraCapabilities(
-                isoRange = isoRange ?: Range(100, 3200),
+                isoRange = resolvedAnalogIso,
+                effectiveIsoRange = resolvedEffectiveIso,
+                postRawBoostRange = resolvedBoost,
+                supportsPostRawBoost = (boostRange != null && boostMax > 100),
                 exposureRangeNs = expRange ?: Range(125_000L, 100_000_000L),
                 minFocusDistance = minFocus,
                 supportsManualExposure = (isoRange != null && expRange != null),
