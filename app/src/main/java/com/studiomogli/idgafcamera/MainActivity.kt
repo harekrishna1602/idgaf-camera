@@ -1186,11 +1186,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun showCustomFpsInputDialog() {
         val input = EditText(this).apply {
             hint = "Enter FPS (1 to 60, e.g. 1, 12, 24, 30, 60)"
-            inputType = InputType.TYPE_CLASS_NUMBER {
-                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
-            } else {
-                InputType.TYPE_CLASS_NUMBER
-            }
+            inputType = InputType.TYPE_CLASS_NUMBER
             setText(currentFps.toString())
             setTextColor(0xFFFFFFFF.toInt())
             setHintTextColor(0xFF888888.toInt())
@@ -1279,11 +1275,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val input = EditText(this).apply {
                 hint = "Seconds (e.g. 0.8, 1.5, 3.0)"
                 inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                {
-                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
-            } else {
-                InputType.TYPE_CLASS_NUMBER
-            } or InputType.TYPE_NUMBER_FLAG_DECIMAL
                 setTextColor(0xFFFFFFFF.toInt())
                 setHintTextColor(0xFF888888.toInt())
                 setPadding(36, 28, 36, 28)
