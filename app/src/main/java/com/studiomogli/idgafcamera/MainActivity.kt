@@ -958,6 +958,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         if (panel == ProControlPanel.NONE) return
 
         val (title, hint) = when (panel) {
+            ProControlPanel.EV -> "Enter EV Steps" to "e.g. -6 to +6 (0 = Reset)"
             ProControlPanel.ISO -> "Enter Exact ISO" to "e.g. 100, 400, 800, 1600"
             ProControlPanel.SHUTTER -> if (shutterInAngleMode) {
                 "Enter Shutter Angle (Degrees)" to "11 to 360 (e.g. 180, 90, 270)"
@@ -987,6 +988,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     return@setPositiveButton
                 }
                 when (panel) {
+                    ProControlPanel.EV -> {
+                        engine.setEvCompensation(v)
+                        updateEvDisplay()
+                        }
                     ProControlPanel.ISO -> engine.setManualIso(v)
                     ProControlPanel.SHUTTER -> {
                         if (shutterInAngleMode) {
