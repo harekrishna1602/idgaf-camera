@@ -11,18 +11,28 @@ data class CameraPreset(
     val codecName: String = CinemaCodec.H264.name,
     val bitrateMbps: Int = 35,
     val micPrefName: String = MicPreference.AUTO.name,
+    val audioPreampModeName: String = AudioPreampMode.CAMCORDER.name,
+    val isAudioMuted: Boolean = false,
+    val isStabilizationEnabled: Boolean = true,
     val toneProfileName: String = ToneProfile.STANDARD.name,
+    val evCompensationIndex: Int = 0,
     val isManualExposure: Boolean = false,
     val manualIso: Int = 200,
     val manualShutterNs: Long = 16_666_666L,
     val isShutter180Locked: Boolean = false,
     val isManualWb: Boolean = false,
     val manualKelvin: Int = 5600,
+    val manualTint: Int = 0,
     val isManualFocus: Boolean = false,
     val manualFocusDistance: Float = 0f,
     val focusPullMs: Long = 1200L,
+    val zoomCurveName: String = ZoomCurve.EXPONENTIAL.name,
+    val zoomPullDurationMs: Long = 1500L,
     val gridModeName: String = GridMode.OFF.name,
-    val aspectGuideName: String = AspectGuide.OFF.name
+    val aspectGuideName: String = AspectGuide.OFF.name,
+    val peakingColorName: String = PeakingColor.GREEN.name,
+    val peakingSensitivityName: String = PeakingSensitivity.MED.name,
+    val zebraModeName: String = ZebraMode.IRE_92.name
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("name", name)
@@ -31,18 +41,28 @@ data class CameraPreset(
         put("codecName", codecName)
         put("bitrateMbps", bitrateMbps)
         put("micPrefName", micPrefName)
+        put("audioPreampModeName", audioPreampModeName)
+        put("isAudioMuted", isAudioMuted)
+        put("isStabilizationEnabled", isStabilizationEnabled)
         put("toneProfileName", toneProfileName)
+        put("evCompensationIndex", evCompensationIndex)
         put("isManualExposure", isManualExposure)
         put("manualIso", manualIso)
         put("manualShutterNs", manualShutterNs)
         put("isShutter180Locked", isShutter180Locked)
         put("isManualWb", isManualWb)
         put("manualKelvin", manualKelvin)
+        put("manualTint", manualTint)
         put("isManualFocus", isManualFocus)
         put("manualFocusDistance", manualFocusDistance.toDouble())
         put("focusPullMs", focusPullMs)
+        put("zoomCurveName", zoomCurveName)
+        put("zoomPullDurationMs", zoomPullDurationMs)
         put("gridModeName", gridModeName)
         put("aspectGuideName", aspectGuideName)
+        put("peakingColorName", peakingColorName)
+        put("peakingSensitivityName", peakingSensitivityName)
+        put("zebraModeName", zebraModeName)
     }
 
     companion object {
@@ -53,18 +73,28 @@ data class CameraPreset(
             codecName = obj.optString("codecName", CinemaCodec.H264.name),
             bitrateMbps = obj.optInt("bitrateMbps", 35),
             micPrefName = obj.optString("micPrefName", MicPreference.AUTO.name),
+            audioPreampModeName = obj.optString("audioPreampModeName", AudioPreampMode.CAMCORDER.name),
+            isAudioMuted = obj.optBoolean("isAudioMuted", false),
+            isStabilizationEnabled = obj.optBoolean("isStabilizationEnabled", true),
             toneProfileName = obj.optString("toneProfileName", ToneProfile.STANDARD.name),
+            evCompensationIndex = obj.optInt("evCompensationIndex", 0),
             isManualExposure = obj.optBoolean("isManualExposure", false),
             manualIso = obj.optInt("manualIso", 200),
             manualShutterNs = obj.optLong("manualShutterNs", 16_666_666L),
             isShutter180Locked = obj.optBoolean("isShutter180Locked", false),
             isManualWb = obj.optBoolean("isManualWb", false),
             manualKelvin = obj.optInt("manualKelvin", 5600),
+            manualTint = obj.optInt("manualTint", 0),
             isManualFocus = obj.optBoolean("isManualFocus", false),
             manualFocusDistance = obj.optDouble("manualFocusDistance", 0.0).toFloat(),
             focusPullMs = obj.optLong("focusPullMs", 1200L),
+            zoomCurveName = obj.optString("zoomCurveName", ZoomCurve.EXPONENTIAL.name),
+            zoomPullDurationMs = obj.optLong("zoomPullDurationMs", 1500L),
             gridModeName = obj.optString("gridModeName", GridMode.OFF.name),
-            aspectGuideName = obj.optString("aspectGuideName", AspectGuide.OFF.name)
+            aspectGuideName = obj.optString("aspectGuideName", AspectGuide.OFF.name),
+            peakingColorName = obj.optString("peakingColorName", PeakingColor.GREEN.name),
+            peakingSensitivityName = obj.optString("peakingSensitivityName", PeakingSensitivity.MED.name),
+            zebraModeName = obj.optString("zebraModeName", ZebraMode.IRE_92.name)
         )
     }
 }

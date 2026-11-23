@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -55,6 +56,14 @@ class CinemaOverlayView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     private val renderLock = Any()
+    private val previewTransform = Matrix()
+
+    fun setPreviewTransform(matrix: Matrix) {
+        synchronized(renderLock) {
+            previewTransform.set(matrix)
+        }
+        postInvalidate()
+    }
 
     @Volatile var gridMode: GridMode = GridMode.OFF
         set(value) {
@@ -126,16 +135,29 @@ class CinemaOverlayView @JvmOverloads constructor(
     private var falseColorFront: Bitmap? = null
     private var falseColorBack: Bitmap? = null
 
-    // Reusable analysis buffers (allocated once per sample resolution -> zero GC churn)
+    // Reusable analysis buffers (zero per-frame allocations)
     private var bufLen: Int = 0
     private var samplePixels = IntArray(0)
     private var lumaBuf = IntArray(0)
     private var peakPixels = IntArray(0)
     private var zebraPixels = IntArray(0)
     private var falseColorPixels = IntArray(0)
-    private val rawBins = IntArray(64)
-    private val workHistogramBins = FloatArray(64)
-    private val frontHistogramBins = FloatArray(64)
+
+    // 3-Channel RGB + Luma Histogram buffers
+    private val rawBinsR = IntArray(64)
+    private val rawBinsG = IntArray(64)
+    private val rawBinsB = IntArray(64)
+    private val rawBinsY = IntArray(64)
+
+    private val workBinsR = FloatArray(64)
+    private val workBinsG = FloatArray(64)
+    private val workBinsB = FloatArray(64)
+    private val workBinsY = FloatArray(64)
+
+    private val frontBinsR = FloatArray(64)
+    private val frontBinsG = FloatArray(64)
+    private val frontBinsB = FloatArray(64)
+    private val frontBinsY = FloatArray(64)
     private var hasHighlightClip = false
 
     // Precomputed 256-level ARRI/SmallHD-inspired Rec.709 IRE False Color LUT
@@ -202,7 +224,7 @@ class CinemaOverlayView @JvmOverloads constructor(
     }
 
     private val histBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(190, 11, 13, 16)
+        color = Color.argb(195, 11, 13, 16)
         style = Paint.Style.FILL
     }
 
@@ -218,9 +240,25 @@ class CinemaOverlayView @JvmOverloads constructor(
         style = Paint.Style.STROKE
     }
 
-    private val histFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(215, 255, 95, 31)
+    private val histRedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(120, 255, 59, 48)
         style = Paint.Style.FILL
+    }
+
+    private val histGreenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(115, 52, 199, 89)
+        style = Paint.Style.FILL
+    }
+
+    private val histBluePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(120, 59, 130, 246)
+        style = Paint.Style.FILL
+    }
+
+    private val histLumaStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(215, 255, 255, 255)
+        strokeWidth = 1.3f
+        style = Paint.Style.STROKE
     }
 
     private val clipDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -238,7 +276,10 @@ class CinemaOverlayView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
-    private val histPath = Path()
+    private val histPathR = Path()
+    private val histPathG = Path()
+    private val histPathB = Path()
+    private val histPathY = Path()
     private val overlayPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val destRect = RectF()
     private val histRect = RectF()
@@ -274,7 +315,10 @@ class CinemaOverlayView @JvmOverloads constructor(
         sample.getPixels(samplePixels, 0, w, 0, 0, w, h)
 
         if (doHist) {
-            rawBins.fill(0)
+            rawBinsR.fill(0)
+            rawBinsG.fill(0)
+            rawBinsB.fill(0)
+            rawBinsY.fill(0)
         }
         var clippedCount = 0
 
@@ -286,8 +330,11 @@ class CinemaOverlayView @JvmOverloads constructor(
             val y = (r * 77 + g * 150 + b * 29) shr 8
             lumaBuf[i] = y
             if (doHist) {
-                rawBins[y shr 2]++
-                if (y >= 252) clippedCount++
+                rawBinsR[r shr 2]++
+                rawBinsG[g shr 2]++
+                rawBinsB[b shr 2]++
+                rawBinsY[y shr 2]++
+                if (r >= 252 || g >= 252 || b >= 252) clippedCount++
             }
             if (doFalse) {
                 falseColorPixels[i] = falseColorLut[y]
@@ -296,14 +343,25 @@ class CinemaOverlayView @JvmOverloads constructor(
 
         if (doHist) {
             var maxBin = 1
-            for (b in rawBins) if (b > maxBin) maxBin = b
+            for (i in 0 until 64) {
+                if (rawBinsR[i] > maxBin) maxBin = rawBinsR[i]
+                if (rawBinsG[i] > maxBin) maxBin = rawBinsG[i]
+                if (rawBinsB[i] > maxBin) maxBin = rawBinsB[i]
+                if (rawBinsY[i] > maxBin) maxBin = rawBinsY[i]
+            }
             val invMax = 1f / maxBin.toFloat()
             for (i in 0 until 64) {
-                workHistogramBins[i] = rawBins[i] * invMax
+                workBinsR[i] = rawBinsR[i] * invMax
+                workBinsG[i] = rawBinsG[i] * invMax
+                workBinsB[i] = rawBinsB[i] * invMax
+                workBinsY[i] = rawBinsY[i] * invMax
             }
-            val clipAlert = clippedCount > (total / 50) // > 2% clipped highlights
+            val clipAlert = clippedCount > (total / 40) // > 2.5% channel highlight clipping
             synchronized(renderLock) {
-                System.arraycopy(workHistogramBins, 0, frontHistogramBins, 0, 64)
+                System.arraycopy(workBinsR, 0, frontBinsR, 0, 64)
+                System.arraycopy(workBinsG, 0, frontBinsG, 0, 64)
+                System.arraycopy(workBinsB, 0, frontBinsB, 0, 64)
+                System.arraycopy(workBinsY, 0, frontBinsY, 0, 64)
                 hasHighlightClip = clipAlert
             }
         }
@@ -389,20 +447,21 @@ class CinemaOverlayView @JvmOverloads constructor(
         val dp = resources.displayMetrics.density
         destRect.set(0f, 0f, w, h)
 
+        // Draw frame-derived scopes using TextureView's EXACT transform matrix so they lock pixel-for-pixel!
         synchronized(renderLock) {
-            // 1. False Color Exposure Map (drawn under peaking/zebras/guides)
-            if (showFalseColor) {
-                falseColorFront?.let { canvas.drawBitmap(it, null, destRect, overlayPaint) }
-            }
-
-            // 2. Focus Peaking overlay
-            if (showPeaking) {
-                peakingFront?.let { canvas.drawBitmap(it, null, destRect, overlayPaint) }
-            }
-
-            // 3. Overexposure / Skin Zebras overlay
-            if (showZebras) {
-                zebraFront?.let { canvas.drawBitmap(it, null, destRect, overlayPaint) }
+            if (showFalseColor || showPeaking || showZebras) {
+                canvas.save()
+                canvas.concat(previewTransform)
+                if (showFalseColor) {
+                    falseColorFront?.let { canvas.drawBitmap(it, null, destRect, overlayPaint) }
+                }
+                if (showPeaking) {
+                    peakingFront?.let { canvas.drawBitmap(it, null, destRect, overlayPaint) }
+                }
+                if (showZebras) {
+                    zebraFront?.let { canvas.drawBitmap(it, null, destRect, overlayPaint) }
+                }
+                canvas.restore()
             }
         }
 
@@ -467,7 +526,6 @@ class CinemaOverlayView @JvmOverloads constructor(
             canvas.drawLine(cx + gap, cy, cx + halfSpan, cy, activePaint)
             canvas.restore()
 
-            // Compact live degree readout pill right below center gap
             val degLabel = if (abs(roll) < 0.15f) "0.0°" else String.format(Locale.US, "%+.1f°", roll)
             horizonTextPaint.textSize = 10f * dp
             horizonTextPaint.color = if (isLevel) Color.parseColor("#34C759") else Color.parseColor("#FF5F1F")
@@ -484,10 +542,10 @@ class CinemaOverlayView @JvmOverloads constructor(
             drawFalseColorLegend(canvas, w, h, dp)
         }
 
-        // 8. Live Luma Histogram (Top-Right below HUD bar — clear of Audio Drawer, MON/PRO bars & Shutter)
+        // 8. 3-Channel RGB + Luma Overlay Histogram (Top-Right clear of all drawers)
         if (showHistogram) {
-            val boxW = 128f * dp
-            val boxH = 52f * dp
+            val boxW = 132f * dp
+            val boxH = 56f * dp
             val left = w - boxW - 18f * dp
             val top = 58f * dp
             histRect.set(left, top, left + boxW, top + boxH)
@@ -497,37 +555,53 @@ class CinemaOverlayView @JvmOverloads constructor(
 
             val pad = 4f * dp
             val innerW = boxW - pad * 2f
-            val innerH = boxH - pad * 2f - 8f * dp
+            val innerH = boxH - pad * 2f - 9f * dp
             val baseY = top + boxH - pad
 
-            // Quarter-stop reference lines (25% / 50% / 75%)
+            // Quarter-stop vertical guide lines (25% / 50% / 75%)
             for (q in 1..3) {
                 val gx = left + pad + (q * 0.25f) * innerW
-                canvas.drawLine(gx, top + 10f * dp, gx, baseY, histGuidePaint)
+                canvas.drawLine(gx, top + 11f * dp, gx, baseY, histGuidePaint)
             }
 
             var clipAlert = false
             synchronized(renderLock) {
                 clipAlert = hasHighlightClip
-                histPath.reset()
-                histPath.moveTo(left + pad, baseY)
+                buildFilledHistPath(histPathR, frontBinsR, left + pad, baseY, innerW, innerH)
+                buildFilledHistPath(histPathG, frontBinsG, left + pad, baseY, innerW, innerH)
+                buildFilledHistPath(histPathB, frontBinsB, left + pad, baseY, innerW, innerH)
+
+                histPathY.reset()
                 for (i in 0 until 64) {
                     val px = left + pad + (i / 63f) * innerW
-                    val py = baseY - (frontHistogramBins[i] * innerH)
-                    histPath.lineTo(px, py)
+                    val py = baseY - (frontBinsY[i] * innerH)
+                    if (i == 0) histPathY.moveTo(px, py) else histPathY.lineTo(px, py)
                 }
-                histPath.lineTo(left + pad + innerW, baseY)
-                histPath.close()
             }
-            canvas.drawPath(histPath, histFillPaint)
+            canvas.drawPath(histPathR, histRedPaint)
+            canvas.drawPath(histPathG, histGreenPaint)
+            canvas.drawPath(histPathB, histBluePaint)
+            canvas.drawPath(histPathY, histLumaStrokePaint)
 
             badgeTextPaint.textSize = 7.5f * dp
             badgeTextPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText("LUMA", left + 6f * dp, top + 10f * dp, badgeTextPaint)
+            canvas.drawText("RGB", left + 6f * dp, top + 10f * dp, badgeTextPaint)
             if (clipAlert) {
                 canvas.drawCircle(left + boxW - 8f * dp, top + 7.5f * dp, 3f * dp, clipDotPaint)
             }
         }
+    }
+
+    private fun buildFilledHistPath(path: Path, bins: FloatArray, startX: Float, baseY: Float, innerW: Float, innerH: Float) {
+        path.reset()
+        path.moveTo(startX, baseY)
+        for (i in 0 until 64) {
+            val px = startX + (i / 63f) * innerW
+            val py = baseY - (bins[i] * innerH)
+            path.lineTo(px, py)
+        }
+        path.lineTo(startX + innerW, baseY)
+        path.close()
     }
 
     private fun drawFalseColorLegend(canvas: Canvas, w: Float, h: Float, dp: Float) {

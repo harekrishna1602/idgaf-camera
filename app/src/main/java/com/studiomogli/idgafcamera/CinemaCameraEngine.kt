@@ -491,6 +491,11 @@ class CinemaCameraEngine(
         return isStabilizationEnabled
     }
 
+    fun setStabilizationEnabled(enabled: Boolean) {
+        isStabilizationEnabled = enabled
+        pushUpdatedRepeatingRequest()
+    }
+
     fun setToneProfile(profile: ToneProfile) {
         toneProfile = profile
         pushUpdatedRepeatingRequest()
@@ -848,7 +853,7 @@ class CinemaCameraEngine(
             val boostMax = boostUpper
             val boostedMaxLong = (analogUpper.toLong() * boostMax.toLong()) / 100L
             // Never cap below the sensor's own native analog ISO ceiling!
-            val safeCap = maxOf(analogUpper.toLong(), 12800L).coerceAtMost(Int.MAX_VALUE.toLong())
+            val safeCap = maxOf(analogUpper.toLong(), 32000L).coerceAtMost(Int.MAX_VALUE.toLong())
             val effMaxIso = boostedMaxLong.coerceIn(analogUpper.toLong(), safeCap).toInt()
             val resolvedEffectiveIso = Range(analogLower, effMaxIso.coerceAtLeast(analogLower))
 

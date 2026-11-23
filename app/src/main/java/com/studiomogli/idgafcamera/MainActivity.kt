@@ -17,6 +17,8 @@ import android.text.InputType
 import android.widget.EditText
 import androidx.appcompat.app.AlertDialog
 import android.content.Context
+import android.content.res.Configuration
+import android.hardware.display.DisplayManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -76,7 +78,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     // Phase 4 Pro Audio / Codec / Bitrate Bar
     private lateinit var btnProSettingsToggle: TextView
-    private lateinit var proSettingsBar: LinearLayout
+    private lateinit var proSettingsBar: HorizontalScrollView
     private lateinit var btnProCodec: TextView
     private lateinit var btnProBitrate: TextView
     private lateinit var btnProMic: TextView
@@ -221,6 +223,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var currentFps: Int = 30
     private var currentResolution = CinemaResolution.FHD_1080P
     private var lastSavedUri: Uri? = null
+    private var lastPreviewSize: Size? = null
+    private var lastDisplayRotation: Int = Surface.ROTATION_90
+    private var displayManager: DisplayManager? = null
 
     private var recStartMs: Long = 0L
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -236,8 +241,29 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
+    private val displayRotationListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {
+            val curRot = getCurrentDisplayRotation()
+            if (curRot != lastDisplayRotation) {
+                lastDisplayRotation = curRot
+                lastPreviewSize?.let { configureTransform(it) }
+            }
+        }
+    }
+
+    private fun getCurrentDisplayRotation(): Int {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display?.rotation ?: Surface.ROTATION_90
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.rotation
+        }
+    }
+
     private fun stopAnalysisThread() {
-        stopAnalysisThread()
+        uiHandler.removeCallbacks(analysisRunnable)
         analysisHandler?.removeCallbacksAndMessages(null)
         analysisThread?.quitSafely()
         try {
@@ -259,8 +285,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     isAnalyzingFrame.set(false)
                 } else {
                     try {
-                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 160 && it.height == 90 }
-                            ?: Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
+                        // Symmetric 144x144 raw buffer avoids directional bias when rotated 90 deg by previewTransform
+                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 144 && it.height == 144 }
+                            ?: Bitmap.createBitmap(144, 144, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
                         textureView.getBitmap(reusable)
                         worker.post {
                             try {
@@ -443,6 +470,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnToolHorizon = findViewById(R.id.btnToolHorizon)
         btnToolMonConfig = findViewById(R.id.btnToolMonConfig)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        displayManager = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        lastDisplayRotation = getCurrentDisplayRotation()
         txtTimecode = findViewById(R.id.txtTimecode)
         viewRecDot = findViewById(R.id.viewRecDot)
         btnResolution = findViewById(R.id.btnResolution)
@@ -540,10 +569,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         textureView.setOnTouchListener { v, event ->
             scaleDetector.onTouchEvent(event)
             if (event.action == MotionEvent.ACTION_DOWN && event.pointerCount == 1 && !scaleDetector.isInProgress) {
-                if (activePanel != ProControlPanel.NONE || zoomPopoutDrawer.visibility == View.VISIBLE || audioControlDrawer.visibility == View.VISIBLE) {
-                    selectPanel(ProControlPanel.NONE)
-                    zoomPopoutDrawer.visibility = View.GONE
-                    audioControlDrawer.visibility = View.GONE
+                if (hasAnyOpenDrawer()) {
+                    closeAllDrawers()
                 } else {
                     val normX = event.x / v.width.coerceAtLeast(1)
                     val normY = event.y / v.height.coerceAtLeast(1)
@@ -621,10 +648,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun setupMonitoringTools() {
         btnMonitorToggle.setOnClickListener {
             val showing = monitorToolsBar.visibility == View.VISIBLE
-            if (!showing && proSettingsBar.visibility == View.VISIBLE) {
-                proSettingsBar.visibility = View.GONE
-                styleToolPill(btnProSettingsToggle, false)
-            }
+            if (!showing) closeTopDrawers(except = "MON")
             monitorToolsBar.visibility = if (showing) View.GONE else View.VISIBLE
             styleToolPill(btnMonitorToggle, !showing)
         }
@@ -807,6 +831,57 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
+    private fun hasAnyOpenDrawer(): Boolean {
+        return activePanel != ProControlPanel.NONE ||
+            zoomPopoutDrawer.visibility == View.VISIBLE ||
+            audioControlDrawer.visibility == View.VISIBLE ||
+            monitorToolsBar.visibility == View.VISIBLE ||
+            proSettingsBar.visibility == View.VISIBLE
+    }
+
+    private fun closeTopDrawers(except: String? = null) {
+        if (except != "MON" && monitorToolsBar.visibility == View.VISIBLE) {
+            monitorToolsBar.visibility = View.GONE
+            styleToolPill(btnMonitorToggle, false)
+        }
+        if (except != "PRO" && proSettingsBar.visibility == View.VISIBLE) {
+            proSettingsBar.visibility = View.GONE
+            styleToolPill(btnProSettingsToggle, false)
+        }
+        if (except != "AUDIO" && audioControlDrawer.visibility == View.VISIBLE) {
+            audioControlDrawer.visibility = View.GONE
+            btnAudioPanelToggle.setBackgroundResource(R.drawable.bg_hud_pill)
+        }
+    }
+
+    private fun closeAllDrawers() {
+        closeTopDrawers(except = null)
+        selectPanel(ProControlPanel.NONE)
+        zoomPopoutDrawer.visibility = View.GONE
+    }
+
+    private fun resetFocusAndZoomABPoints() {
+        rackAnimator?.cancel()
+        zoomAnimator?.cancel()
+        focusPointA = null
+        focusPointB = null
+        rackGoingToB = true
+        btnSetFocusA.setBackgroundResource(R.drawable.bg_hud_pill)
+        btnSetFocusA.setTextColor(0xFFFFFFFF.toInt())
+        btnSetFocusB.setBackgroundResource(R.drawable.bg_hud_pill)
+        btnSetFocusB.setTextColor(0xFFFFFFFF.toInt())
+        btnPullFocusAB.text = "PULL A→B"
+
+        zoomPointA = null
+        zoomPointB = null
+        zoomGoingToB = true
+        btnSetZoomA.setBackgroundResource(R.drawable.bg_hud_pill)
+        btnSetZoomA.setTextColor(0xFFFFFFFF.toInt())
+        btnSetZoomB.setBackgroundResource(R.drawable.bg_hud_pill)
+        btnSetZoomB.setTextColor(0xFFFFFFFF.toInt())
+        btnPullZoomAB.text = "A→B"
+    }
+
     private fun styleToolPill(view: TextView, active: Boolean) {
         view.setBackgroundResource(if (active) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
         view.setTextColor(if (active) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
@@ -815,10 +890,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun setupProAudioAndCodecBar() {
         btnProSettingsToggle.setOnClickListener {
             val showing = proSettingsBar.visibility == View.VISIBLE
-            if (!showing && monitorToolsBar.visibility == View.VISIBLE) {
-                monitorToolsBar.visibility = View.GONE
-                styleToolPill(btnMonitorToggle, false)
-            }
+            if (!showing) closeTopDrawers(except = "PRO")
             proSettingsBar.visibility = if (showing) View.GONE else View.VISIBLE
             styleToolPill(btnProSettingsToggle, !showing)
         }
@@ -844,6 +916,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             micPrefIdx = (micPrefIdx + 1) % prefs.size
             val selected = prefs[micPrefIdx]
             engine.micPreference = selected
+            audioMonitorRestartNeeded = true
             val extFound = engine.findExternalMicDevice() != null
             btnProMic.text = if (selected == MicPreference.EXTERNAL && !extFound) {
                 "MIC: NO EXT"
@@ -934,18 +1007,28 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     codecName = engine.targetCodec.name,
                     bitrateMbps = engine.targetBitrateMbps,
                     micPrefName = engine.micPreference.name,
+                    audioPreampModeName = engine.audioPreampMode.name,
+                    isAudioMuted = engine.isAudioMuted,
+                    isStabilizationEnabled = engine.isStabilizationEnabled,
                     toneProfileName = engine.toneProfile.name,
+                    evCompensationIndex = engine.evCompensationIndex,
                     isManualExposure = engine.isManualExposure,
                     manualIso = engine.manualIso,
                     manualShutterNs = engine.manualShutterNs,
                     isShutter180Locked = engine.isShutter180Locked,
                     isManualWb = engine.isManualWb,
                     manualKelvin = engine.manualKelvin,
+                    manualTint = engine.manualTint,
                     isManualFocus = engine.isManualFocus,
                     manualFocusDistance = engine.manualFocusDistance,
                     focusPullMs = focusPullDurationMs,
+                    zoomCurveName = zoomCurve.name,
+                    zoomPullDurationMs = zoomPullDurationMs,
                     gridModeName = overlayView.gridMode.name,
-                    aspectGuideName = overlayView.aspectGuide.name
+                    aspectGuideName = overlayView.aspectGuide.name,
+                    peakingColorName = overlayView.peakingColor.name,
+                    peakingSensitivityName = overlayView.peakingSensitivity.name,
+                    zebraModeName = overlayView.zebraMode.name
                 )
                 presetStore.save(preset)
                 Toast.makeText(this, "Saved template: $name", Toast.LENGTH_SHORT).show()
@@ -970,17 +1053,37 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         toneIdx = ToneProfile.values().indexOf(tone).coerceAtLeast(0)
         engine.setToneProfile(tone)
 
+        engine.audioPreampMode = try { AudioPreampMode.valueOf(p.audioPreampModeName) } catch (_: Exception) { AudioPreampMode.CAMCORDER }
+        engine.isAudioMuted = p.isAudioMuted
+        audioMonitorRestartNeeded = true
+        updateAudioDrawerUi()
+
+        engine.setStabilizationEnabled(p.isStabilizationEnabled)
+        styleToolPill(btnProStab, p.isStabilizationEnabled)
+
         if (p.isManualExposure) {
             engine.setManualIso(p.manualIso)
             engine.setManualShutterNs(p.manualShutterNs)
         } else {
             engine.setAutoExposure()
+            engine.setEvCompensation(p.evCompensationIndex)
+            updateEvDisplay()
         }
-        if (p.isManualWb) engine.setManualWhiteBalanceKelvin(p.manualKelvin) else engine.setAutoWhiteBalance()
+        if (p.isManualWb) {
+            engine.setManualWhiteBalanceKelvin(p.manualKelvin)
+            engine.setManualWhiteBalanceTint(p.manualTint)
+        } else {
+            engine.setAutoWhiteBalance()
+        }
         if (p.isManualFocus) engine.setManualFocusDistance(p.manualFocusDistance) else engine.setAutoFocus()
 
         focusPullDurationMs = p.focusPullMs.coerceIn(300L, 10000L)
         btnPullTime.text = String.format(Locale.US, "%.1fs", focusPullDurationMs / 1000f)
+
+        zoomCurve = try { ZoomCurve.valueOf(p.zoomCurveName) } catch (_: Exception) { ZoomCurve.EXPONENTIAL }
+        btnZoomCurve.text = zoomCurve.label
+        zoomPullDurationMs = p.zoomPullDurationMs.coerceIn(200L, 15000L)
+        btnZoomTime.text = String.format(Locale.US, "%.1fs", zoomPullDurationMs / 1000f)
 
         overlayView.gridMode = try { GridMode.valueOf(p.gridModeName) } catch (_: Exception) { GridMode.OFF }
         gridModeIdx = GridMode.values().indexOf(overlayView.gridMode).coerceAtLeast(0)
@@ -991,6 +1094,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         frameGuideIdx = AspectGuide.values().indexOf(overlayView.aspectGuide).coerceAtLeast(0)
         btnToolFrame.text = "FRAME: ${overlayView.aspectGuide.label}"
         styleToolPill(btnToolFrame, overlayView.aspectGuide != AspectGuide.OFF)
+
+        overlayView.peakingColor = try { PeakingColor.valueOf(p.peakingColorName) } catch (_: Exception) { PeakingColor.GREEN }
+        overlayView.peakingSensitivity = try { PeakingSensitivity.valueOf(p.peakingSensitivityName) } catch (_: Exception) { PeakingSensitivity.MED }
+        overlayView.zebraMode = try { ZebraMode.valueOf(p.zebraModeName) } catch (_: Exception) { ZebraMode.IRE_92 }
+        updateMonitorPillLabels()
 
         btnResolution.text = currentResolution.label
         btnFps.text = "${p.fps} FPS"
@@ -1113,8 +1221,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.10"
-    } catch (_: Exception) { "0.6.10" }
+        info.versionName ?: "0.6.11"
+    } catch (_: Exception) { "0.6.11" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1133,7 +1241,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun setupAudioControllerDrawer() {
         btnAudioPanelToggle.setOnClickListener {
             val showing = audioControlDrawer.visibility == View.VISIBLE
+            if (!showing) closeTopDrawers(except = "AUDIO")
             audioControlDrawer.visibility = if (showing) View.GONE else View.VISIBLE
+            btnAudioPanelToggle.setBackgroundResource(if (!showing) R.drawable.bg_dock_pill_active else R.drawable.bg_hud_pill)
         }
 
         btnAudioMute.setOnClickListener {
@@ -1274,6 +1384,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                                 minBuf
                             )
                             if (rec.state == AudioRecord.STATE_INITIALIZED) {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && engine.micPreference != MicPreference.INTERNAL) {
+                                    engine.findExternalMicDevice()?.let { extMic ->
+                                        try { rec.setPreferredDevice(extMic) } catch (_: Exception) {}
+                                    }
+                                }
                                 rec.startRecording()
                                 ar = rec
                             } else {
@@ -1311,9 +1426,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         val panel = activePanel
         if (panel == ProControlPanel.NONE) return
 
+        val minEvStops = engine.capabilities.evRange.lower * engine.capabilities.evStep
+        val maxEvStops = engine.capabilities.evRange.upper * engine.capabilities.evStep
+
         val (title, hint) = when (panel) {
-            ProControlPanel.EV -> "Enter EV Steps" to "e.g. -6 to +6 (0 = Reset)"
-            ProControlPanel.ISO -> "Enter Exact ISO" to "e.g. 100, 400, 800, 1600"
+            ProControlPanel.EV -> "Enter Exposure Comp (EV Stops)" to String.format(
+                Locale.US,
+                "e.g. %.1f to +%.1f (0 = Reset)",
+                minEvStops,
+                maxEvStops
+            )
+            ProControlPanel.ISO -> "Enter Exact ISO" to "e.g. 100, 400, 800, 3200, 16000"
             ProControlPanel.SHUTTER -> if (shutterInAngleMode) {
                 "Enter Shutter Angle (Degrees)" to "11 to 360 (e.g. 180, 90, 270)"
             } else {
@@ -1327,7 +1450,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         val input = EditText(this).apply {
             this.hint = hint
             inputType = if (panel == ProControlPanel.EV) {
-                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED or InputType.TYPE_NUMBER_FLAG_DECIMAL
             } else {
                 InputType.TYPE_CLASS_NUMBER
             }
@@ -1340,23 +1463,34 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             .setTitle(title)
             .setView(input)
             .setPositiveButton("Apply") { _, _ ->
-                val v = input.text.toString().trim().toIntOrNull()
-                if (v == null || (v <= 0 && panel != ProControlPanel.FOCUS && panel != ProControlPanel.EV)) {
-                    Toast.makeText(this, "Enter a valid number", Toast.LENGTH_SHORT).show()
-                    return@setPositiveButton
-                }
                 if (engine.isAeAfLocked && (panel == ProControlPanel.EV || panel == ProControlPanel.ISO || panel == ProControlPanel.SHUTTER)) {
                     showSingleToast("AE/AF Lock is ON — turn off LOCK first")
                     return@setPositiveButton
                 }
-                when (panel) {
-                    ProControlPanel.EV -> {
-                        if (engine.setEvCompensation(v)) {
-                            updateEvDisplay()
-                        } else {
-                            showSingleToast("AE/AF Lock is ON — turn off LOCK first")
-                        }
+                val rawText = input.text.toString().trim()
+                if (panel == ProControlPanel.EV) {
+                    val stops = rawText.toFloatOrNull()
+                    if (stops == null) {
+                        showSingleToast("Enter a valid EV stop (e.g. -1.5, 0, +1.0)")
+                        return@setPositiveButton
                     }
+                    val step = engine.capabilities.evStep.coerceAtLeast(0.01f)
+                    val evIdx = (stops / step).roundToInt()
+                    if (engine.setEvCompensation(evIdx)) {
+                        updateEvDisplay()
+                    } else {
+                        showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                    }
+                    refreshSliderState()
+                    return@setPositiveButton
+                }
+
+                val v = rawText.toIntOrNull()
+                if (v == null || (v <= 0 && panel != ProControlPanel.FOCUS)) {
+                    showSingleToast("Enter a valid number")
+                    return@setPositiveButton
+                }
+                when (panel) {
                     ProControlPanel.ISO -> engine.setManualIso(v)
                     ProControlPanel.SHUTTER -> {
                         if (shutterInAngleMode) {
@@ -1372,7 +1506,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         val d = (v.coerceIn(0, 100) / 100f) * maxF
                         engine.setManualFocusDistance(d)
                     }
-                    ProControlPanel.NONE -> {}
+                    ProControlPanel.EV, ProControlPanel.NONE -> {}
                 }
                 refreshSliderState()
             }
@@ -1719,7 +1853,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 ProControlPanel.ISO, ProControlPanel.SHUTTER -> engine.setAutoExposure()
                 ProControlPanel.FOCUS -> {
                     rackAnimator?.cancel()
-        zoomAnimator?.cancel()
                     engine.setAutoFocus()
                 }
                 ProControlPanel.WB -> engine.setAutoWhiteBalance()
@@ -1787,7 +1920,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 return@setOnClickListener
             }
             rackAnimator?.cancel()
-        zoomAnimator?.cancel()
             val start = if (rackGoingToB) a else b
             val end = if (rackGoingToB) b else a
             rackGoingToB = !rackGoingToB
@@ -2138,6 +2270,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             matrix.postRotate(180f, centerX, centerY)
         }
         textureView.setTransform(matrix)
+        overlayView.setPreviewTransform(matrix)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        enableImmersiveFullscreen()
+        lastDisplayRotation = getCurrentDisplayRotation()
+        lastPreviewSize?.let { sz ->
+            textureView.post { configureTransform(sz) }
+        }
     }
 
     // ==================== CinemaEngineListener ====================
@@ -2168,11 +2310,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             setOnClickListener {
                 if (!engine.isRecording) {
-                    zoomAnimator?.cancel()
-                    focusPointA = null
-                    focusPointB = null
-                    zoomPointA = null
-                    zoomPointB = null
+                    resetFocusAndZoomABPoints()
                     if (engine.toggleFrontBackCamera()) {
                         val newIdx = lenses.indexOf(engine.getActiveLens()).coerceAtLeast(0)
                         renderLensRail(lenses, newIdx)
@@ -2199,11 +2337,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     }
                     setOnClickListener {
                         if (!engine.isRecording) {
-                            zoomAnimator?.cancel()
-                            focusPointA = null
-                            focusPointB = null
-                            zoomPointA = null
-                            zoomPointB = null
+                            resetFocusAndZoomABPoints()
                             engine.selectLens(idx)
                             renderLensRail(lenses, idx)
                         }
@@ -2222,6 +2356,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         caps: CameraCapabilities
     ) {
         runOnUiThread {
+            lastPreviewSize = previewSize
+            lastDisplayRotation = getCurrentDisplayRotation()
             configureTransform(previewSize)
             currentResolution = engine.targetResolution
             btnResolution.text = currentResolution.label
@@ -2317,6 +2453,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     override fun onResume() {
         super.onResume()
         enableImmersiveFullscreen()
+        displayManager?.registerDisplayListener(displayRotationListener, uiHandler)
         engine.startThread()
         syncAnalysisLoop()
         syncHorizonSensor()
@@ -2331,12 +2468,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     override fun onPause() {
+        displayManager?.unregisterDisplayListener(displayRotationListener)
         rackAnimator?.cancel()
         zoomAnimator?.cancel()
         uiHandler.removeCallbacks(timecodeRunnable)
         zoomRockerDir = 0
         uiHandler.removeCallbacks(zoomRockerRunnable)
-        uiHandler.removeCallbacks(analysisRunnable)
+        stopAnalysisThread()
         stopAudioVuMonitor()
         uiHandler.removeCallbacks(sysTelemetryRunnable)
         uiHandler.removeCallbacks(countdownRunnable)
