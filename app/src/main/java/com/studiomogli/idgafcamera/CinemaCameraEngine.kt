@@ -58,7 +58,9 @@ data class CameraCapabilities(
     val hasFlash: Boolean = false,
     val supportsEis: Boolean = false,
     val supportsOis: Boolean = false,
-    val supportedResolutions: List<CinemaResolution> = listOf(CinemaResolution.FHD_1080P)
+    val supportedResolutions: List<CinemaResolution> = listOf(CinemaResolution.FHD_1080P),
+    val evRange: Range<Int> = Range(-12, 12),
+    val evStep: Float = 0.333f
 )
 
 data class LiveTelemetry(
@@ -173,6 +175,8 @@ class CinemaCameraEngine(
     var isTorchEnabled: Boolean = false
         private set
     var isStabilizationEnabled: Boolean = true
+        private set
+    var evCompensationIndex: Int = 0
         private set
     private var sensorActiveArray: Rect? = null
 
@@ -443,6 +447,18 @@ class CinemaCameraEngine(
         return isShutter180Locked
     }
 
+    fun setEvCompensation(index: Int) {
+        val clamped = index.coerceIn(capabilities.evRange.lower, capabilities.evRange.upper)
+        evCompensationIndex = clamped
+        if (isManualExposure) {
+            isManualExposure = false
+            isShutter180Locked = false
+        }
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun getCurrentEvStops(): Float = evCompensationIndex * capabilities.evStep
+
     fun setAutoExposure() {
         isManualExposure = false
         isShutter180Locked = false
@@ -507,6 +523,10 @@ class CinemaCameraEngine(
         } else {
             builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             builder.set(CaptureRequest.CONTROL_AE_LOCK, isAeAfLocked || lockAutoForRecordStart)
+            builder.set(
+                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                evCompensationIndex.coerceIn(capabilities.evRange.lower, capabilities.evRange.upper)
+            )
         }
 
         // 2. Focus (Manual Diopter vs Locked AF vs Continuous Video AF)
@@ -688,6 +708,9 @@ class CinemaCameraEngine(
             val minZ = zoomRange?.lower ?: 1.0f
             val maxZ = (zoomRange?.upper ?: maxDigital).coerceAtLeast(1.0f).coerceAtMost(10.0f)
 
+            val evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(-12, 12)
+            val evStepRational = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
+            val evStep = evStepRational?.toFloat()?.takeIf { it > 0f } ?: 0.333f
             val hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             val eisModes = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES) ?: intArrayOf()
             val oisModes = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION) ?: intArrayOf()
@@ -718,8 +741,11 @@ class CinemaCameraEngine(
                 hasFlash = hasFlash,
                 supportsEis = supportsEis,
                 supportsOis = supportsOis,
-                supportedResolutions = supportedRes
+                supportedResolutions = supportedRes,
+                evRange = evRange,
+                evStep = evStep
             )
+            evCompensationIndex = evCompensationIndex.coerceIn(evRange.lower, evRange.upper)
             if (!hasFlash) isTorchEnabled = false
             currentZoomRatio = currentZoomRatio.coerceIn(minZ, maxZ)
 

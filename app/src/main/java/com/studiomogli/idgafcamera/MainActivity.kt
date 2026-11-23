@@ -16,6 +16,10 @@ import android.text.InputType
 import android.widget.EditText
 import androidx.appcompat.app.AlertDialog
 import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
@@ -48,7 +52,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import java.util.Locale
 import kotlin.math.roundToInt
 
-enum class ProControlPanel { NONE, ISO, SHUTTER, FOCUS, WB }
+enum class ProControlPanel { NONE, EV, ISO, SHUTTER, FOCUS, WB }
 
 class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
@@ -72,7 +76,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnProTone: TextView
     private lateinit var btnProStab: TextView
     private lateinit var btnProTorch: TextView
+    private lateinit var btnProTimer: TextView
     private lateinit var btnProPresets: TextView
+    private lateinit var txtTimerCountdown: TextView
+    private val timerOptions = listOf(0, 3, 5)
+    private var timerIdx = 0
+    private var countdownRemaining = 0
+    private var pendingRecRotation = Surface.ROTATION_90
     private lateinit var txtSysTelemetry: TextView
     private lateinit var btnUpdateApp: TextView
     private lateinit var presetStore: PresetStore
@@ -95,6 +105,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnToolPeak: TextView
     private lateinit var btnToolZebra: TextView
     private lateinit var btnToolHist: TextView
+    private lateinit var btnToolHorizon: TextView
+    private var sensorManager: SensorManager? = null
+    private var smoothedRoll = 0f
     private var frameGuideIdx = 0
 
     private lateinit var txtTimecode: TextView
@@ -123,6 +136,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var zoomSpeedIdx = 1
 
     // Phase 2 Pro Dock Pills
+    private lateinit var pillEv: LinearLayout
+    private lateinit var txtEvVal: TextView
     private lateinit var pillIso: LinearLayout
     private lateinit var txtIsoVal: TextView
     private lateinit var pillShutter: LinearLayout
@@ -202,7 +217,40 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 )
                 engine.setZoomRatio(nextZoom)
                 updateZoomReadout()
+            updateEvDisplay()
                 uiHandler.postDelayed(this, 16L)
+            }
+        }
+    }
+
+    private val horizonSensorListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            if (!overlayView.showHorizon) return
+            val x = event.values[0]
+            val y = event.values[1]
+            // Landscape roll angle in degrees
+            val rawAngle = Math.toDegrees(kotlin.math.atan2(y.toDouble(), x.toDouble())).toFloat()
+            val normalized = when {
+                rawAngle > 90f -> rawAngle - 180f
+                rawAngle < -90f -> rawAngle + 180f
+                else -> rawAngle
+            }
+            smoothedRoll = smoothedRoll * 0.80f + normalized * 0.20f
+            overlayView.horizonRollDegrees = smoothedRoll
+        }
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
+
+    private val countdownRunnable = object : Runnable {
+        override fun run() {
+            if (countdownRemaining > 0) {
+                txtTimerCountdown.text = countdownRemaining.toString()
+                txtTimerCountdown.visibility = View.VISIBLE
+                countdownRemaining--
+                uiHandler.postDelayed(this, 1000L)
+            } else {
+                txtTimerCountdown.visibility = View.GONE
+                engine.startRecording(pendingRecRotation)
             }
         }
     }
@@ -267,7 +315,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProTone = findViewById(R.id.btnProTone)
         btnProStab = findViewById(R.id.btnProStab)
         btnProTorch = findViewById(R.id.btnProTorch)
+        btnProTimer = findViewById(R.id.btnProTimer)
         btnProPresets = findViewById(R.id.btnProPresets)
+        txtTimerCountdown = findViewById(R.id.txtTimerCountdown)
         txtSysTelemetry = findViewById(R.id.txtSysTelemetry)
         btnUpdateApp = findViewById(R.id.btnUpdateApp)
         presetStore = PresetStore(this)
@@ -278,6 +328,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnToolPeak = findViewById(R.id.btnToolPeak)
         btnToolZebra = findViewById(R.id.btnToolZebra)
         btnToolHist = findViewById(R.id.btnToolHist)
+        btnToolHorizon = findViewById(R.id.btnToolHorizon)
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         txtTimecode = findViewById(R.id.txtTimecode)
         viewRecDot = findViewById(R.id.viewRecDot)
         btnResolution = findViewById(R.id.btnResolution)
@@ -297,6 +349,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         zoomSeekBar = findViewById(R.id.zoomSeekBar)
 
         // Pro Dock bindings
+        pillEv = findViewById(R.id.pillEv)
+        txtEvVal = findViewById(R.id.txtEvVal)
         pillIso = findViewById(R.id.pillIso)
         txtIsoVal = findViewById(R.id.txtIsoVal)
         pillShutter = findViewById(R.id.pillShutter)
@@ -356,6 +410,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 )
                 engine.setZoomRatio(next)
                 updateZoomReadout()
+            updateEvDisplay()
                 return true
             }
         })
@@ -385,6 +440,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun setupTopAndRightControls() {
         findViewById<View>(R.id.btnShutterOuter).setOnClickListener {
+            if (txtTimerCountdown.visibility == View.VISIBLE) {
+                uiHandler.removeCallbacks(countdownRunnable)
+                txtTimerCountdown.visibility = View.GONE
+                Toast.makeText(this, "Timer cancelled", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             if (engine.isRecording) {
                 engine.stopRecording()
             } else {
@@ -394,7 +455,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     @Suppress("DEPRECATION")
                     windowManager.defaultDisplay.rotation
                 }
-                engine.startRecording(rot)
+                val delaySec = timerOptions[timerIdx]
+                if (delaySec > 0) {
+                    pendingRecRotation = rot
+                    countdownRemaining = delaySec
+                    uiHandler.removeCallbacks(countdownRunnable)
+                    uiHandler.post(countdownRunnable)
+                } else {
+                    engine.startRecording(rot)
+                }
             }
         }
 
@@ -455,18 +524,39 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             overlayView.showPeaking = !overlayView.showPeaking
             styleToolPill(btnToolPeak, overlayView.showPeaking)
             syncAnalysisLoop()
+        syncHorizonSensor()
         }
 
         btnToolZebra.setOnClickListener {
             overlayView.showZebras = !overlayView.showZebras
             styleToolPill(btnToolZebra, overlayView.showZebras)
             syncAnalysisLoop()
+        syncHorizonSensor()
         }
 
         btnToolHist.setOnClickListener {
             overlayView.showHistogram = !overlayView.showHistogram
             styleToolPill(btnToolHist, overlayView.showHistogram)
             syncAnalysisLoop()
+        syncHorizonSensor()
+        }
+
+        btnToolHorizon.setOnClickListener {
+            overlayView.showHorizon = !overlayView.showHorizon
+            styleToolPill(btnToolHorizon, overlayView.showHorizon)
+            syncHorizonSensor()
+        }
+    }
+
+    private fun syncHorizonSensor() {
+        val sm = sensorManager ?: return
+        sm.unregisterListener(horizonSensorListener)
+        if (overlayView.showHorizon) {
+            val sensor = sm.getDefaultSensor(Sensor.TYPE_GRAVITY)
+                ?: sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            if (sensor != null) {
+                sm.registerListener(horizonSensorListener, sensor, SensorManager.SENSOR_DELAY_UI)
+            }
         }
     }
 
@@ -537,6 +627,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             val on = engine.toggleTorch()
             styleToolPill(btnProTorch, on)
+        }
+
+        btnProTimer.setOnClickListener {
+            timerIdx = (timerIdx + 1) % timerOptions.size
+            val sec = timerOptions[timerIdx]
+            btnProTimer.text = if (sec == 0) "TMR: OFF" else "TMR: ${sec}s"
+            styleToolPill(btnProTimer, sec > 0)
         }
 
         btnProPresets.setOnClickListener {
@@ -769,8 +866,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.4"
-    } catch (_: Exception) { "0.6.4" }
+        info.versionName ?: "0.6.5"
+    } catch (_: Exception) { "0.6.5" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -972,6 +1069,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 val target = minZ + (maxZ - minZ) * (progress / 100f)
                 engine.setZoomRatio(target)
                 updateZoomReadout()
+            updateEvDisplay()
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
             override fun onStopTrackingTouch(sb: SeekBar?) {}
@@ -1091,6 +1189,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun setupProDockAndDrawer() {
+        pillEv.setOnClickListener {
+            selectPanel(if (activePanel == ProControlPanel.EV) ProControlPanel.NONE else ProControlPanel.EV)
+        }
+
         pillIso.setOnClickListener {
             selectPanel(if (activePanel == ProControlPanel.ISO) ProControlPanel.NONE else ProControlPanel.ISO)
         }
@@ -1119,6 +1221,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         btnSliderAuto.setOnClickListener {
             when (activePanel) {
+                ProControlPanel.EV -> {
+                    engine.setEvCompensation(0)
+                    updateEvDisplay()
+                }
                 ProControlPanel.ISO, ProControlPanel.SHUTTER -> engine.setAutoExposure()
                 ProControlPanel.FOCUS -> {
                     rackAnimator?.cancel()
@@ -1216,7 +1322,25 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (!fromUser || suppressSeekCallback) return
                 when (activePanel) {
-                    ProControlPanel.ISO -> {
+                    ProControlPanel.EV -> {
+                        val minEv = engine.capabilities.evRange.lower
+                        val maxEv = engine.capabilities.evRange.upper
+                        val idx = minEv + progress
+                        engine.setEvCompensation(idx.coerceIn(minEv, maxEv))
+                        updateEvDisplay()
+                        txtSliderReadout.text = formatEv(engine.getCurrentEvStops())
+                        updateAutoButtonVisual(isManual = engine.evCompensationIndex != 0)
+                    }
+                    ProControlPanel.EV -> {
+                txtSliderTitle.text = "EV COMP"
+                val minEv = engine.capabilities.evRange.lower
+                val maxEv = engine.capabilities.evRange.upper
+                proSeekBar.max = (maxEv - minEv).coerceAtLeast(1)
+                proSeekBar.progress = (engine.evCompensationIndex - minEv).coerceIn(0, proSeekBar.max)
+                txtSliderReadout.text = formatEv(engine.getCurrentEvStops())
+                updateAutoButtonVisual(isManual = engine.evCompensationIndex != 0)
+            }
+            ProControlPanel.ISO -> {
                         val minIso = engine.capabilities.isoRange.lower
                         val maxIso = engine.capabilities.isoRange.upper.coerceAtMost(6400)
                         val iso = minIso + ((maxIso - minIso) * (progress / 100f)).roundToInt()
@@ -1268,6 +1392,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun selectPanel(panel: ProControlPanel) {
         activePanel = panel
         val pills = listOf(
+            pillEv to ProControlPanel.EV,
             pillIso to ProControlPanel.ISO,
             pillShutter to ProControlPanel.SHUTTER,
             pillWb to ProControlPanel.WB,
@@ -1292,6 +1417,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun refreshSliderState() {
         suppressSeekCallback = true
         when (activePanel) {
+            ProControlPanel.EV -> {
+                txtSliderTitle.text = "EV COMP"
+                val minEv = engine.capabilities.evRange.lower
+                val maxEv = engine.capabilities.evRange.upper
+                proSeekBar.max = (maxEv - minEv).coerceAtLeast(1)
+                proSeekBar.progress = (engine.evCompensationIndex - minEv).coerceIn(0, proSeekBar.max)
+                txtSliderReadout.text = formatEv(engine.getCurrentEvStops())
+                updateAutoButtonVisual(isManual = engine.evCompensationIndex != 0)
+            }
             ProControlPanel.ISO -> {
                 txtSliderTitle.text = "ISO"
                 proSeekBar.max = 100
@@ -1351,6 +1485,20 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnAeAfLock.text = if (locked) "LOCKED" else "LOCK"
         btnAeAfLock.setBackgroundResource(if (locked) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
         btnAeAfLock.setTextColor(if (locked) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+    }
+
+    private fun formatEv(stops: Float): String {
+        return when {
+            stops > 0.05f -> String.format(Locale.US, "+%.1f", stops)
+            stops < -0.05f -> String.format(Locale.US, "%.1f", stops)
+            else -> "0.0"
+        }
+    }
+
+    private fun updateEvDisplay() {
+        val stops = engine.getCurrentEvStops()
+        txtEvVal.text = formatEv(stops)
+        txtEvVal.setTextColor(if (engine.evCompensationIndex != 0 && !engine.isManualExposure) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
     }
 
     private fun formatShutter(ns: Long): String {
@@ -1511,6 +1659,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             btnResolution.text = currentResolution.label
             btnFps.text = "$activeFps FPS"
             updateZoomReadout()
+            updateEvDisplay()
             styleToolPill(btnProTorch, engine.isTorchEnabled)
             btnProTorch.alpha = if (caps.hasFlash) 1.0f else 0.4f
             styleToolPill(btnProStab, engine.isStabilizationEnabled)
@@ -1581,6 +1730,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         enableImmersiveFullscreen()
         engine.startThread()
         syncAnalysisLoop()
+        syncHorizonSensor()
         startAudioVuMonitor()
         uiHandler.removeCallbacks(sysTelemetryRunnable)
         uiHandler.post(sysTelemetryRunnable)
@@ -1599,6 +1749,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         uiHandler.removeCallbacks(analysisRunnable)
         stopAudioVuMonitor()
         uiHandler.removeCallbacks(sysTelemetryRunnable)
+        uiHandler.removeCallbacks(countdownRunnable)
+        txtTimerCountdown.visibility = View.GONE
+        sensorManager?.unregisterListener(horizonSensorListener)
         engine.stopThread()
         super.onPause()
     }

@@ -62,6 +62,18 @@ class CinemaOverlayView @JvmOverloads constructor(
             invalidate()
         }
 
+    var showHorizon: Boolean = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    var horizonRollDegrees: Float = 0f
+        set(value) {
+            field = value
+            if (showHorizon) postInvalidate()
+        }
+
     private var peakingBitmap: Bitmap? = null
     private var zebraBitmap: Bitmap? = null
     private val histogramBins = FloatArray(64)
@@ -75,6 +87,24 @@ class CinemaOverlayView @JvmOverloads constructor(
     private val crosshairPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(180, 255, 95, 31)
         strokeWidth = 2f
+        style = Paint.Style.STROKE
+    }
+
+    private val horizonLevelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#34C759")
+        strokeWidth = 3f
+        style = Paint.Style.STROKE
+    }
+
+    private val horizonTiltPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#FF5F1F")
+        strokeWidth = 2.5f
+        style = Paint.Style.STROKE
+    }
+
+    private val horizonRefPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(130, 255, 255, 255)
+        strokeWidth = 1.5f
         style = Paint.Style.STROKE
     }
 
@@ -247,6 +277,28 @@ class CinemaOverlayView @JvmOverloads constructor(
             val arm = 18f
             canvas.drawLine(cx - arm, cy, cx + arm, cy, crosshairPaint)
             canvas.drawLine(cx, cy - arm, cx, cy + arm, crosshairPaint)
+        }
+
+        // 4.5. Live Horizon Level Indicator
+        if (showHorizon) {
+            val dp = resources.displayMetrics.density
+            val cx = w / 2f
+            val cy = h / 2f
+            val halfSpan = 64f * dp
+            val gap = 14f * dp
+
+            // Static white reference ticks on left and right
+            canvas.drawLine(cx - halfSpan - 12f * dp, cy, cx - halfSpan - 3f * dp, cy, horizonRefPaint)
+            canvas.drawLine(cx + halfSpan + 3f * dp, cy, cx + halfSpan + 12f * dp, cy, horizonRefPaint)
+
+            // Rotating horizon line (turns green when within 1.5 degrees of dead level)
+            val isLevel = abs(horizonRollDegrees) <= 1.5f
+            val activePaint = if (isLevel) horizonLevelPaint else horizonTiltPaint
+            canvas.save()
+            canvas.rotate(-horizonRollDegrees, cx, cy)
+            canvas.drawLine(cx - halfSpan, cy, cx - gap, cy, activePaint)
+            canvas.drawLine(cx + gap, cy, cx + halfSpan, cy, activePaint)
+            canvas.restore()
         }
 
         // 5. Live Luma Histogram (Compact scope in top-left below HUD bar)
