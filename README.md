@@ -1,15 +1,14 @@
-# IDGAF CAMERA (`v0.7.2.4` — Part 1: Fixed LOG, World-Class Look Presets, Smart Pilot v2 & Google Exemption)
+# IDGAF CAMERA (`v0.7.2.5` — Part 2: Live 60 FPS GPU `RAW | LOOK` Split-Screen Wipe Slider)
 
 *A love letter to indie filmmakers — by Savior San.*
 
 Free, open Android cinema camera powered by the **Savior Cinema Engine** (native **Kotlin + Camera2 + OpenGL ES 2.0**) by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's New in `v0.7.2.4` (Part 1 of 2)
-- **Fixed Double-`LOG` Bug in `LOOK`:** Removed hidden hardware `ToneProfile.FLAT` stacking so `LOG` applies cleanly once in the GPU pipeline—eliminating milky washout and making **`RAW`** compare 100% accurately against true unmodified sensor output.
-- **Upgraded Quick `LOOK` Buttons (`NONE / LOG / FILM / VIVID / MONO`):** Replaced basic starter presets with calibrated cinema grading foundations designed to stack cleanly with the 12 World-Class 3D LUTs.
-- **Sleeker `LOOK` Header (`RAW | RESET | ✕`):** Renamed `HOLD RAW` to compact **`RAW`** and added a dedicated **`✕`** Close button side-by-side (ready for **`SPLIT`** in Part 2 `v0.7.2.5`).
-- **Smart Auto Pilot v2 (`PILOT`) + Low-Light Flashlight Prompt:**
-  - Automatically re-balances metered brightness toward the **180° cinema shutter rule** (`1/60s` at `30 FPS`, `1/48s` at `24 FPS`) with lowest-noise ISO, base-ISO daylight lock, and smooth `1/fps` low-light protection (zero exposure jump).
-  - Detects dark scenes (`ISO ≥ 1600`) and asks **"Low Light Detected — Turn on Flashlight?"** with 1-tap **`TORCH ON & RE-METER`** so exposure re-balances automatically for the LED light.
-  - Warns if free storage is below `0.5 GB`.
-- **Updated IDGAF License (`LICENSE.md` + Credits):** Added a permanent **FREE FOREVER** exemption for **Alphabet Inc.**, **Google LLC**, and all of their wholly owned subsidiaries worldwide.
+## What's New in `v0.7.2.5` (Part 2 of 2)
+- **Live 60 FPS GPU `RAW | LOOK` Split-Screen Wipe (`CinemaGlRenderer.kt` + `CinemaOverlayView.kt`):**
+  - **2 Ways to Trigger:**
+    1. **Dedicated `SPLIT` Button (`LOOK` Header):** Tap **`SPLIT`** right beside **`RAW`** (`RAW | SPLIT | RESET | ✕`) to drop an interactive `50/50` vertical wipe line across the viewfinder, then grab and drag the **`◂▸`** handle anywhere across the screen.
+    2. **Hold `RAW` & Slide Finger:** Press & hold **`RAW`** for an instant full-screen RAW peek—or **slide your finger left/right while holding `RAW`** to pull out the vertical wipe line and scrub live across the entire frame. Release in the frame to keep it interactive, or swipe to either edge to snap back to full graded view.
+  - **100% Preview-Only & Zero Black-Screen Risk:** Runs via a single `uSplitPixelX` float uniform (zero extra texture units) and is strictly bypassed on Pass 2 (`MediaRecorder` encoder), so recorded `.mp4` clips always stay 100% full-frame graded.
+  - **Full-Screen Inspection (`SPLIT ✕`):** Close the `LOOK` drawer with **`✕`** and keep dragging the vertical divider across the unobstructed viewfinder—dismiss anytime with the floating top-left **`SPLIT ✕`** pill (or `PILOT` / `RESET`).
+  - **Live Dynamic Tagging:** Displays **`RAW`** on the left and the active **3D LUT name** (e.g., `2383 PRINT D60`, `CINESTILL 800T`) or active **`LOOK`** (`LOG`, `FILM`, `VIVID`, `MONO`) on the right.

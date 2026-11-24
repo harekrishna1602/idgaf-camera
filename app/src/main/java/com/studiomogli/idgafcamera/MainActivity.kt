@@ -113,6 +113,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var rowColorHil: LinearLayout
     private lateinit var rowColorVig: LinearLayout
     private lateinit var btnColorCompareAB: TextView
+    private lateinit var btnColorSplitWipe: TextView
+    private lateinit var btnExitSplitWipe: TextView
     private lateinit var btnColorReset: TextView
     private lateinit var btnColorClose: TextView
     private lateinit var btnLookNone: TextView
@@ -137,6 +139,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var activeLutSourceId: String = ""
     private var activeLutDisplayName: String = "NONE"
     private var suppressColorSeek: Boolean = false
+    private var isSplitCompareActive: Boolean = false
+    private var splitCompareFraction: Float = 0.50f
+    private var isDraggingSplitLine: Boolean = false
+    private var rawTouchDownRawX: Float = 0f
+    private var rawSlideEngagedSplit: Boolean = false
     private lateinit var txtTimerCountdown: TextView
     private val timerOptions = listOf(0, 3, 5)
     private var timerIdx = 0
@@ -552,6 +559,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         rowColorHil = findViewById(R.id.rowColorHil)
         rowColorVig = findViewById(R.id.rowColorVig)
         btnColorCompareAB = findViewById(R.id.btnColorCompareAB)
+        btnColorSplitWipe = findViewById(R.id.btnColorSplitWipe)
+        btnExitSplitWipe = findViewById(R.id.btnExitSplitWipe)
         btnColorReset = findViewById(R.id.btnColorReset)
         btnColorClose = findViewById(R.id.btnColorClose)
         btnLookNone = findViewById(R.id.btnLookNone)
@@ -678,19 +687,44 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         })
 
         textureView.setOnTouchListener { v, event ->
+            val vw = v.width.coerceAtLeast(1).toFloat()
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (isSplitCompareActive && event.pointerCount == 1) {
+                        val dividerX = splitCompareFraction * vw
+                        if (kotlin.math.abs(event.x - dividerX) <= dpToPx(44)) {
+                            isDraggingSplitLine = true
+                            updateSplitComparePosition((event.x / vw).coerceIn(0.04f, 0.96f))
+                            return@setOnTouchListener true
+                        }
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (isDraggingSplitLine) {
+                        if (event.pointerCount == 1) {
+                            updateSplitComparePosition((event.x / vw).coerceIn(0.04f, 0.96f))
+                        } else {
+                            isDraggingSplitLine = false
+                        }
+                        return@setOnTouchListener true
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (isDraggingSplitLine) {
+                        isDraggingSplitLine = false
+                        return@setOnTouchListener true
+                    }
+                }
+            }
+
             scaleDetector.onTouchEvent(event)
-            if (event.action == MotionEvent.ACTION_DOWN && event.pointerCount == 1 && !scaleDetector.isInProgress) {
+            if (event.actionMasked == MotionEvent.ACTION_DOWN && event.pointerCount == 1 && !scaleDetector.isInProgress) {
                 if (hasAnyOpenDrawer()) {
                     closeAllDrawers()
                 } else {
-                    val normX = event.x / v.width.coerceAtLeast(1)
+                    val normX = event.x / vw
                     val normY = event.y / v.height.coerceAtLeast(1)
-                    val rot = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                        display?.rotation ?: Surface.ROTATION_90
-                    } else {
-                        @Suppress("DEPRECATION")
-                        windowManager.defaultDisplay.rotation
-                    }
+                    val rot = getCurrentDisplayRotation()
                     if (engine.isAeAfLocked) {
                         showSingleToast("AE/AF Lock is ON — turn off LOCK to tap-focus")
                     } else {
@@ -1006,6 +1040,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         if (except != "AUDIO" && audioControlDrawer.visibility == View.VISIBLE) {
             audioControlDrawer.visibility = View.GONE
             lensRail.visibility = View.VISIBLE
+            syncExitSplitPillVisibility()
             updateAudioTopPillVisual()
         }
         if (except != "LOOK" && colorControlDrawer.visibility == View.VISIBLE) {
@@ -1540,8 +1575,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.2.4"
-    } catch (_: Exception) { "0.7.2.4" }
+        info.versionName ?: "0.7.2.5"
+    } catch (_: Exception) { "0.7.2.5" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1565,6 +1600,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             audioControlDrawer.visibility = if (nextVisible) View.VISIBLE else View.GONE
             // Hide left lens rail while Pro Audio Drawer is open so camera switch button never overlaps audio controls
             lensRail.visibility = if (nextVisible) View.GONE else View.VISIBLE
+            syncExitSplitPillVisibility()
             updateAudioTopPillVisual()
         }
 
@@ -1623,26 +1659,78 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             updateLookTopPillVisual()
         }
 
-        // Press-and-hold Peek-Through RAW Compare: hides drawer clutter while held so you see 100% raw sensor output!
+        // Hold RAW for instant full-screen RAW peek; SLIDE finger left/right while holding to pull out the live RAW | LOOK Split-Screen Wipe!
         btnColorCompareAB.setOnTouchListener { _, event ->
+            val texW = textureView.width.coerceAtLeast(1).toFloat()
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    rawTouchDownRawX = event.rawX
+                    rawSlideEngagedSplit = false
                     gpuColorState = gpuColorState.copy(isBypassed = true)
                     engine.updateGpuColorState(gpuColorState)
+                    if (isSplitCompareActive) {
+                        overlayView.splitCompareFraction = -1f
+                    }
                     setColorDrawerRawComparePeek(true)
                     styleToolPill(btnColorCompareAB, true)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = kotlin.math.abs(event.rawX - rawTouchDownRawX)
+                    if (!rawSlideEngagedSplit && dx > dpToPx(16)) {
+                        rawSlideEngagedSplit = true
+                        gpuColorState = gpuColorState.copy(isBypassed = false)
+                        engine.updateGpuColorState(gpuColorState)
+                    }
+                    if (rawSlideEngagedSplit) {
+                        val loc = IntArray(2)
+                        textureView.getLocationOnScreen(loc)
+                        val frac = ((event.rawX - loc[0]) / texW).coerceIn(0.02f, 0.98f)
+                        isSplitCompareActive = true
+                        splitCompareFraction = frac
+                        engine.setSplitCompareFraction(frac)
+                        overlayView.splitRightLabel = getSplitRightLabel()
+                        overlayView.splitCompareFraction = frac
+                        styleToolPill(btnColorSplitWipe, true)
+                    }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     gpuColorState = gpuColorState.copy(isBypassed = false)
                     engine.updateGpuColorState(gpuColorState)
                     setColorDrawerRawComparePeek(false)
                     styleToolPill(btnColorCompareAB, false)
+                    if (rawSlideEngagedSplit) {
+                        rawSlideEngagedSplit = false
+                        if (splitCompareFraction < 0.08f || splitCompareFraction > 0.92f) {
+                            setSplitCompareMode(false)
+                        } else {
+                            setSplitCompareMode(true, splitCompareFraction, announce = false)
+                        }
+                    } else if (isSplitCompareActive) {
+                        // Restore active split line after a simple non-sliding RAW peek
+                        overlayView.splitCompareFraction = splitCompareFraction
+                        engine.setSplitCompareFraction(splitCompareFraction)
+                    }
                 }
             }
             true
         }
 
+        btnColorSplitWipe.setOnClickListener {
+            if (isSplitCompareActive) {
+                setSplitCompareMode(false)
+                showSingleToast("Split-Screen Compare OFF")
+            } else {
+                setSplitCompareMode(true, 0.50f, announce = true)
+            }
+        }
+
+        btnExitSplitWipe.setOnClickListener {
+            setSplitCompareMode(false)
+            showSingleToast("Split-Screen Compare OFF")
+        }
+
         btnColorReset.setOnClickListener {
+            setSplitCompareMode(false)
             clearActiveCubeLut()
             applyBuiltInLook("NONE", GpuColorState())
             showSingleToast("GPU Color & 3D LUT Reset")
@@ -1840,6 +1928,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         if (active) {
             colorControlDrawer.setBackgroundColor(Color.TRANSPARENT)
             txtColorDrawerTitle.visibility = View.INVISIBLE
+            btnColorSplitWipe.visibility = View.INVISIBLE
             btnColorReset.visibility = View.INVISIBLE
             btnColorClose.visibility = View.INVISIBLE
             colorLooksPresetRow.visibility = View.INVISIBLE
@@ -1848,11 +1937,62 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             colorControlDrawer.setBackgroundResource(R.drawable.bg_hud_pill)
             txtColorDrawerTitle.visibility = View.VISIBLE
+            btnColorSplitWipe.visibility = View.VISIBLE
             btnColorReset.visibility = View.VISIBLE
             btnColorClose.visibility = View.VISIBLE
             colorLooksPresetRow.visibility = View.VISIBLE
             colorLutBarRow.visibility = View.VISIBLE
             scrollColorSliders.visibility = View.VISIBLE
+        }
+    }
+
+    private fun getSplitRightLabel(): String {
+        return when {
+            activeLutSourceId.isNotEmpty() -> activeLutDisplayName
+            activeLookTag != "NONE" -> activeLookTag
+            !gpuColorState.isNeutral(false) -> "CUSTOM"
+            else -> "LOOK"
+        }
+    }
+
+    private fun setSplitCompareMode(active: Boolean, fraction: Float = splitCompareFraction, announce: Boolean = false) {
+        isSplitCompareActive = active
+        if (active) {
+            splitCompareFraction = fraction.coerceIn(0.05f, 0.95f)
+            engine.setSplitCompareFraction(splitCompareFraction)
+            overlayView.splitRightLabel = getSplitRightLabel()
+            overlayView.splitCompareFraction = splitCompareFraction
+            styleToolPill(btnColorSplitWipe, true)
+            if (announce) {
+                val hint = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) {
+                    "Split ON — pick a LOOK or 3D LUT & drag divider"
+                } else {
+                    "Split ON — drag vertical divider across screen (Preview-Only)"
+                }
+                showSingleToast(hint, Toast.LENGTH_LONG)
+            }
+        } else {
+            isDraggingSplitLine = false
+            engine.setSplitCompareFraction(-1f)
+            overlayView.splitCompareFraction = -1f
+            styleToolPill(btnColorSplitWipe, false)
+        }
+        syncExitSplitPillVisibility()
+    }
+
+    private fun updateSplitComparePosition(fraction: Float) {
+        splitCompareFraction = fraction.coerceIn(0.04f, 0.96f)
+        if (isSplitCompareActive) {
+            engine.setSplitCompareFraction(splitCompareFraction)
+            overlayView.splitCompareFraction = splitCompareFraction
+        }
+    }
+
+    private fun syncExitSplitPillVisibility() {
+        btnExitSplitWipe.visibility = if (isSplitCompareActive && audioControlDrawer.visibility != View.VISIBLE) {
+            View.VISIBLE
+        } else {
+            View.GONE
         }
     }
 
@@ -2170,6 +2310,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         styleToolPill(btnLookCine, activeLookTag == "FILM")
         styleToolPill(btnLookPunch, activeLookTag == "VIVID")
         styleToolPill(btnLookNoir, activeLookTag == "MONO")
+        if (isSplitCompareActive) {
+            overlayView.splitRightLabel = getSplitRightLabel()
+        }
         updateLookTopPillVisual()
     }
 
@@ -3413,6 +3556,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         // 3. Rescue GPU Color Studio (reset LOOK & 3D LUT cleanly back to NONE), Tone & Stabilization + Lock & EV
+        if (isSplitCompareActive) {
+            setSplitCompareMode(false)
+        }
         if (!gpuColorState.isNeutral(activeLutSourceId.isNotEmpty()) || activeLookTag != "NONE" || activeLutSourceId.isNotEmpty()) {
             clearActiveCubeLut()
             applyBuiltInLook("NONE", GpuColorState())
@@ -3510,6 +3656,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 txtTimecode.text = "TL 0f • 00:00.0"
             } else {
                 uiHandler.post(timecodeRunnable)
+            }
+            if (isSplitCompareActive) {
+                showSingleToast("Split is preview-only — recording full graded video")
             }
         }
     }

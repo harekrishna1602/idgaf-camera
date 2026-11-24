@@ -337,6 +337,7 @@ class CinemaCameraEngine(
             glRenderer?.start()
         }
         glRenderer?.colorState = gpuColorState
+        glRenderer?.splitCompareFraction = splitCompareFraction
         glRenderer?.mirrorFrontExport = mirrorFrontExport
         glRenderer?.setCubeLut(activeCubeLut)
         glRenderer?.onTimelapseFrameCaptured = { frames ->
@@ -364,6 +365,8 @@ class CinemaCameraEngine(
 
     @Volatile var gpuColorState: GpuColorState = GpuColorState()
         private set
+    @Volatile var splitCompareFraction: Float = -1.0f
+        private set
     @Volatile var activeCubeLut: CubeLutData? = null
         private set
     @Volatile var mirrorFrontExport: Boolean = false
@@ -376,6 +379,11 @@ class CinemaCameraEngine(
     fun updateGpuColorState(state: GpuColorState) {
         gpuColorState = state
         glRenderer?.colorState = state
+    }
+
+    fun setSplitCompareFraction(fraction: Float) {
+        splitCompareFraction = fraction
+        glRenderer?.splitCompareFraction = fraction
     }
 
     fun setCubeLut(lut: CubeLutData?) {

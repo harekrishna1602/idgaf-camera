@@ -502,7 +502,7 @@
         android:padding="10dp"
         android:visibility="gone">
 
-        <!-- Header: Title + Compact RAW + Reset + Close (X) Side-by-Side -->
+        <!-- Header: Title + RAW (Hold/Slide) + SPLIT + RESET + Close (X) Side-by-Side -->
         <LinearLayout
             android:id="@+id/colorDrawerHeaderRow"
             android:layout_width="match_parent"
@@ -516,7 +516,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:fontFamily="monospace"
-                android:text="GPU COLOR STUDIO"
+                android:text="COLOR STUDIO"
                 android:textColor="#FF5F1F"
                 android:textSize="10sp"
                 android:textStyle="bold" />
@@ -525,12 +525,26 @@
                 android:id="@+id/btnColorCompareAB"
                 android:layout_width="wrap_content"
                 android:layout_height="24dp"
-                android:layout_marginEnd="5dp"
+                android:layout_marginEnd="4dp"
                 android:background="@drawable/bg_hud_pill"
                 android:gravity="center"
-                android:paddingStart="9dp"
-                android:paddingEnd="9dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
                 android:text="RAW"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnColorSplitWipe"
+                android:layout_width="wrap_content"
+                android:layout_height="24dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="SPLIT"
                 android:textColor="#FFFFFF"
                 android:textSize="9sp"
                 android:textStyle="bold" />
@@ -539,11 +553,11 @@
                 android:id="@+id/btnColorReset"
                 android:layout_width="wrap_content"
                 android:layout_height="24dp"
-                android:layout_marginEnd="5dp"
+                android:layout_marginEnd="4dp"
                 android:background="@drawable/bg_hud_pill"
                 android:gravity="center"
-                android:paddingStart="9dp"
-                android:paddingEnd="9dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
                 android:text="RESET"
                 android:textColor="#FF5F1F"
                 android:textSize="9sp"
@@ -551,7 +565,7 @@
 
             <TextView
                 android:id="@+id/btnColorClose"
-                android:layout_width="26dp"
+                android:layout_width="25dp"
                 android:layout_height="24dp"
                 android:background="@drawable/bg_hud_pill"
                 android:gravity="center"
@@ -1206,6 +1220,26 @@
                 android:textStyle="bold" />
         </LinearLayout>
     </LinearLayout>
+
+    <!-- Phase 7.2.5 Floating Quick-Exit Pill for Full-Screen Split Wipe -->
+    <TextView
+        android:id="@+id/btnExitSplitWipe"
+        android:layout_width="wrap_content"
+        android:layout_height="28dp"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="20dp"
+        android:layout_marginTop="58dp"
+        android:background="@drawable/bg_dock_pill_active"
+        android:elevation="6dp"
+        android:fontFamily="monospace"
+        android:gravity="center"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:text="SPLIT ✕"
+        android:textColor="#FF5F1F"
+        android:textSize="10sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
 
     <!-- LEFT RAIL: DYNAMIC LENS SWITCHER -->
     <LinearLayout

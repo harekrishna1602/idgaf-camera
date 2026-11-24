@@ -99,6 +99,18 @@ class CinemaOverlayView @JvmOverloads constructor(
             if (showHorizon) postInvalidate()
         }
 
+    @Volatile var splitCompareFraction: Float = -1f
+        set(value) {
+            field = value
+            postInvalidate()
+        }
+
+    @Volatile var splitRightLabel: String = "LOOK"
+        set(value) {
+            field = value
+            if (splitCompareFraction >= 0f) postInvalidate()
+        }
+
     fun toGpuScopeState(): GpuScopeState = GpuScopeState(
         showPeaking = showPeaking,
         peakingColorArgb = peakingColor.argb,
@@ -227,6 +239,36 @@ class CinemaOverlayView @JvmOverloads constructor(
 
     private val legendSwatchPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
+    }
+
+    private val splitShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(150, 0, 0, 0)
+        strokeWidth = 5f
+        style = Paint.Style.STROKE
+    }
+
+    private val splitLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#FF5F1F")
+        strokeWidth = 2.4f
+        style = Paint.Style.STROKE
+    }
+
+    private val splitThumbFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(225, 18, 22, 29)
+        style = Paint.Style.FILL
+    }
+
+    private val splitThumbStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#FF5F1F")
+        strokeWidth = 2.5f
+        style = Paint.Style.STROKE
+    }
+
+    private val splitTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        typeface = Typeface.MONOSPACE
+        isFakeBoldText = true
+        textAlign = Paint.Align.CENTER
     }
 
     private val histPathR = Path()
@@ -375,6 +417,12 @@ class CinemaOverlayView @JvmOverloads constructor(
             canvas.drawText(degLabel, cx, pillTop + 12f * dp, horizonTextPaint)
         }
 
+        // 3.5. Phase 7.2.5 Live RAW | LOOK Split-Screen Wipe Divider & Draggable Handle
+        val splitFrac = splitCompareFraction
+        if (splitFrac in 0f..1f) {
+            drawSplitCompareDivider(canvas, w, h, dp, splitFrac)
+        }
+
         // 4. Compact False Color IRE Legend Strip (Bottom-Center above dock)
         if (showFalseColor) {
             drawFalseColorLegend(canvas, w, h, dp)
@@ -439,6 +487,54 @@ class CinemaOverlayView @JvmOverloads constructor(
         }
         path.lineTo(startX + innerW, baseY)
         path.close()
+    }
+
+    private fun drawSplitCompareDivider(canvas: Canvas, w: Float, h: Float, dp: Float, frac: Float) {
+        val x = (frac * w).coerceIn(0f, w)
+        val topY = 50f * dp
+        val botY = h
+
+        // Vertical drop-shadow + crisp Safety Orange divider line
+        splitShadowPaint.strokeWidth = 3.5f * dp
+        splitLinePaint.strokeWidth = 1.8f * dp
+        canvas.drawLine(x, topY, x, botY, splitShadowPaint)
+        canvas.drawLine(x, topY, x, botY, splitLinePaint)
+
+        // Tactile circular drag handle at vertical center (◄►)
+        val cy = h * 0.50f
+        val r = 15f * dp
+        canvas.drawCircle(x, cy, r + 1.5f * dp, splitShadowPaint)
+        canvas.drawCircle(x, cy, r, splitThumbFillPaint)
+        canvas.drawCircle(x, cy, r, splitThumbStrokePaint)
+
+        splitTextPaint.textSize = 10f * dp
+        splitTextPaint.color = Color.WHITE
+        canvas.drawText("◂▸", x, cy + 3.5f * dp, splitTextPaint)
+
+        // Left "RAW" & Right "<LUT/LOOK>" compact pill tags beside the handle
+        val tagH = 18f * dp
+        val tagTop = cy - r - tagH - 8f * dp
+        val tagGap = 8f * dp
+        splitTextPaint.textSize = 8.5f * dp
+
+        if (x > 64f * dp) {
+            val rawW = 36f * dp
+            pillRect.set(x - tagGap - rawW, tagTop, x - tagGap, tagTop + tagH)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, histBgPaint)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, histBorderPaint)
+            splitTextPaint.color = Color.WHITE
+            canvas.drawText("RAW", pillRect.centerX(), tagTop + 12.5f * dp, splitTextPaint)
+        }
+
+        val rightTxt = splitRightLabel.take(14)
+        val rightW = (splitTextPaint.measureText(rightTxt) + 14f * dp).coerceAtLeast(42f * dp)
+        if (w - x > rightW + tagGap + 14f * dp) {
+            pillRect.set(x + tagGap, tagTop, x + tagGap + rightW, tagTop + tagH)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, histBgPaint)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, splitThumbStrokePaint)
+            splitTextPaint.color = Color.parseColor("#FF5F1F")
+            canvas.drawText(rightTxt, pillRect.centerX(), tagTop + 12.5f * dp, splitTextPaint)
+        }
     }
 
     private fun drawFalseColorLegend(canvas: Canvas, w: Float, h: Float, dp: Float) {

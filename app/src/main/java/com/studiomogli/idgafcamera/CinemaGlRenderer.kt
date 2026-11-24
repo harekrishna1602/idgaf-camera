@@ -118,6 +118,7 @@ class CinemaGlRenderer(
             uniform int uHasLut;
             uniform float uLutSize;
             uniform float uLutIntensity;
+            uniform float uSplitPixelX;
 
             varying vec2 vTexCoord;
             varying vec2 vQuadCoord;
@@ -202,6 +203,11 @@ class CinemaGlRenderer(
                         float whiteAmt = clamp(uVignette * falloff, 0.0, 1.0);
                         baseColor = mix(baseColor, vec3(1.0), whiteAmt);
                     }
+                }
+
+                // Phase 7.2.5 Preview-Only Live RAW | LOOK Split-Screen Wipe (NEVER active in Pass 2 encoder!)
+                if (uEnableScopes == 1 && uSplitPixelX >= 0.0 && gl_FragCoord.x < uSplitPixelX) {
+                    baseColor = rawColor;
                 }
 
                 vec3 outColor = baseColor;
@@ -301,6 +307,7 @@ class CinemaGlRenderer(
     private var uHasLutLoc: Int = -1
     private var uLutSizeLoc: Int = -1
     private var uLutIntensityLoc: Int = -1
+    private var uSplitPixelXLoc: Int = -1
 
     private var lutTextureId: Int = 0
     private var dummyLutTextureId: Int = 0
@@ -329,6 +336,7 @@ class CinemaGlRenderer(
 
     @Volatile var scopeState: GpuScopeState = GpuScopeState()
     @Volatile var colorState: GpuColorState = GpuColorState()
+    @Volatile var splitCompareFraction: Float = -1.0f // < 0.0 = OFF, 0.0..1.0 = Live RAW | LOOK vertical wipe
     @Volatile var mirrorFrontExport: Boolean = false
 
     @Volatile private var previewWidth: Int = 0
@@ -953,6 +961,14 @@ class CinemaGlRenderer(
             GLES20.glUniform1f(uLutIntensityLoc, cs.lutIntensity.coerceIn(0f, 1f))
         }
 
+        val splitFrac = splitCompareFraction
+        val splitPx = if (enableScopes && !cs.isBypassed && splitFrac >= 0.0f && splitFrac <= 1.0f && previewWidth > 0) {
+            splitFrac * previewWidth.toFloat()
+        } else {
+            -1.0f
+        }
+        GLES20.glUniform1f(uSplitPixelXLoc, splitPx)
+
         GLES20.glEnableVertexAttribArray(aPositionLoc)
         GLES20.glVertexAttribPointer(aPositionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
         GLES20.glEnableVertexAttribArray(aTexCoordLoc)
@@ -1113,6 +1129,7 @@ class CinemaGlRenderer(
             uHasLutLoc = GLES20.glGetUniformLocation(programId, "uHasLut")
             uLutSizeLoc = GLES20.glGetUniformLocation(programId, "uLutSize")
             uLutIntensityLoc = GLES20.glGetUniformLocation(programId, "uLutIntensity")
+            uSplitPixelXLoc = GLES20.glGetUniformLocation(programId, "uSplitPixelX")
             if (desiredLutData != null) {
                 lutUploadDirty = true
             }
