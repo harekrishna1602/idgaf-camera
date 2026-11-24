@@ -69,6 +69,10 @@ enum class ProControlPanel { NONE, EV, ISO, SHUTTER, FOCUS, WB }
 enum class ZoomCurve(val label: String) { LINEAR("LIN"), EXPONENTIAL("EXP"), CRASH("CRASH") }
 enum class CameraWorkbench { SAVIOR, ERA }
 enum class EraSliderPanel { NONE, IRIS, FOCUS }
+enum class EraCameraId(val shaderCode: Int, val pillLabel: String, val fileTag: String) {
+    SILENT_1920S(1, "1920s SILENT ▾", "1920s"),
+    MONO_1950S(2, "1950s MONO 35mm ▾", "1950s")
+}
 
 data class SaviorWorkbenchSnapshot(
     val fps: Int,
@@ -245,6 +249,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnEraSliderAuto: TextView
     private lateinit var eraSeekBar: SeekBar
     private lateinit var pillEraSpeed: LinearLayout
+    private lateinit var txtEraSlot1Label: TextView
     private lateinit var txtEraSpeedVal: TextView
     private lateinit var pillEraIris: LinearLayout
     private lateinit var txtEraIrisVal: TextView
@@ -253,8 +258,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var pillEraPrint: LinearLayout
     private lateinit var txtEraPrintVal: TextView
     private var currentWorkbench: CameraWorkbench = CameraWorkbench.SAVIOR
+    private var activeEraCamera: EraCameraId = EraCameraId.MONO_1950S
     private var activeEraPanel: EraSliderPanel = EraSliderPanel.NONE
     private var eraSilentFps: Int = 16
+    private val era1950sTurretPrimes = listOf("28mm" to 1.0f, "35mm" to 1.35f, "50mm" to 1.95f)
+    private var era1950sTurretIdx: Int = 1 // Starts on Satyajit Ray's iconic 35mm prime!
     private var eraArchiveWear: Boolean = false
     private var suppressEraSeek: Boolean = false
     private var saviorSnapshot: SaviorWorkbenchSnapshot? = null
@@ -535,8 +543,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 val elapsedMs = System.currentTimeMillis() - recStartMs
                 val totalSec = elapsedMs / 1000L
                 if (currentWorkbench == CameraWorkbench.ERA) {
-                    // Authentic 35mm Silent Film Footage: 16 frames per foot (16 FPS = 1.0 ft/s, 18 FPS = 1.125 ft/s)
-                    val feet = ((elapsedMs / 1000.0) * (eraSilentFps / 16.0)).toInt().coerceAtLeast(0)
+                    // Authentic 35mm 4-Perf Film Footage (16 frames/ft): 24 FPS = 1.5 ft/s (90 ft/min), 16 FPS = 1.0 ft/s
+                    val activeEraFpsVal = if (activeEraCamera == EraCameraId.MONO_1950S) 24 else eraSilentFps
+                    val feet = ((elapsedMs / 1000.0) * (activeEraFpsVal / 16.0)).toInt().coerceAtLeast(0)
                     val mins = totalSec / 60L
                     val secs = totalSec % 60L
                     txtEraFootage.text = String.format(Locale.US, "%03d FT • %02d:%02d", feet, mins, secs)
@@ -700,6 +709,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnEraSliderAuto = findViewById(R.id.btnEraSliderAuto)
         eraSeekBar = findViewById(R.id.eraSeekBar)
         pillEraSpeed = findViewById(R.id.pillEraSpeed)
+        txtEraSlot1Label = findViewById(R.id.txtEraSlot1Label)
         txtEraSpeedVal = findViewById(R.id.txtEraSpeedVal)
         pillEraIris = findViewById(R.id.pillEraIris)
         txtEraIrisVal = findViewById(R.id.txtEraIrisVal)
@@ -887,7 +897,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 Toast.makeText(this, "Timer cancelled", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
+            if (engine.isFinalizingClip) {
+                showSingleToast("Developing 1950s Optical Mono track...")
+                return@setOnClickListener
+            }
             if (engine.isRecording) {
+                if (currentWorkbench == CameraWorkbench.ERA && activeEraCamera == EraCameraId.MONO_1950S) {
+                    showSingleToast("Developing 1950s Optical Mono track...")
+                }
                 engine.stopRecording()
             } else {
                 val rot = getCurrentDisplayRotation()
@@ -950,11 +967,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
-    // ==================== PHASE 7.3: 3-WORKBENCH SWITCHER & ERA 1 (1920s SILENT 35mm) ====================
+    // ==================== PHASE 7.3 / 7.4: 3-WORKBENCH SWITCHER (SAVIOR / CLASSIC / PURIST) & ERA 1 + ERA 2 ====================
 
     private fun setupEraWorkbench() {
         btnWorkbenchToEra.setOnClickListener {
-            if (engine.isRecording) {
+            if (engine.isRecording || engine.isFinalizingClip) {
                 showSingleToast("Stop recording to switch workbench")
                 return@setOnClickListener
             }
@@ -962,12 +979,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnWorkbenchToEra.setOnLongClickListener {
-            if (!engine.isRecording) showWorkbenchSwitcherDialog()
+            if (!engine.isRecording && !engine.isFinalizingClip) showWorkbenchSwitcherDialog()
             true
         }
 
         btnEraWorkbenchSwitch.setOnClickListener {
-            if (engine.isRecording) {
+            if (engine.isRecording || engine.isFinalizingClip) {
                 showSingleToast("Stop recording to switch workbench")
                 return@setOnClickListener
             }
@@ -975,40 +992,56 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnEraWorkbenchSwitch.setOnLongClickListener {
-            if (!engine.isRecording) exitEraToSaviorWorkbench()
+            if (!engine.isRecording && !engine.isFinalizingClip) exitEraToSaviorWorkbench()
             true
         }
 
         btnEraCameraPicker.setOnClickListener {
-            if (engine.isRecording) {
-                showSingleToast("Stop recording to change Era camera")
+            if (engine.isRecording || engine.isFinalizingClip) {
+                showSingleToast("Stop recording to change Classic camera")
                 return@setOnClickListener
             }
             showEraMuseumPickerDialog()
         }
 
         btnEraFlipLens.setOnClickListener {
-            if (engine.isRecording) return@setOnClickListener
+            if (engine.isRecording || engine.isFinalizingClip) return@setOnClickListener
             if (engine.toggleFrontBackCamera()) {
                 selectEraPanel(EraSliderPanel.NONE)
-                showSingleToast("Switched 1920s lens glass")
+                showSingleToast("Switched classic lens glass")
             }
         }
 
-        // Authentic 1920s Crank Speed toggle: 16 FPS (Early Silent) <-> 18 FPS (Late Silent)
+        // Slot 1 morphs authentically per camera:
+        // - Era 1 (1920s Silent): CRANK speed (16 FPS <-> 18 FPS)
+        // - Era 2 (1950s Monochrome): Rotating 3-Lens Prime TURRET (28mm -> 35mm -> 50mm, NO zoom!)
         pillEraSpeed.setOnClickListener {
-            if (engine.isRecording) {
-                showSingleToast("Stop cranking to change film speed")
-                return@setOnClickListener
+            if (activeEraCamera == EraCameraId.SILENT_1920S) {
+                if (engine.isRecording) {
+                    showSingleToast("Stop cranking to change film speed")
+                    return@setOnClickListener
+                }
+                eraSilentFps = if (eraSilentFps == 16) 18 else 16
+                txtEraSpeedVal.text = "$eraSilentFps FPS"
+                engine.setTargetFpsSeamless(eraSilentFps)
+                engine.setEraRenderState(
+                    EraCameraId.SILENT_1920S.shaderCode,
+                    if (eraArchiveWear) 1.0f else 0.0f,
+                    eraSilentFps.toFloat()
+                )
+                showSingleToast(
+                    if (eraSilentFps == 16) "16 FPS — Classic Hand-Crank Silent (1.0 ft/s)"
+                    else "18 FPS — Late Silent Projection Speed (1.125 ft/s)"
+                )
+            } else {
+                // Era 2: Rotate Arriflex 35 / Mitchell 3-lens prime turret!
+                era1950sTurretIdx = (era1950sTurretIdx + 1) % era1950sTurretPrimes.size
+                val (mmLabel, ratio) = era1950sTurretPrimes[era1950sTurretIdx]
+                val clamped = ratio.coerceIn(engine.capabilities.minZoom, engine.capabilities.maxZoom)
+                engine.setZoomRatio(clamped)
+                txtEraSpeedVal.text = mmLabel
+                showSingleToast("Cooke Speed Panchro $mmLabel Prime Engaged")
             }
-            eraSilentFps = if (eraSilentFps == 16) 18 else 16
-            txtEraSpeedVal.text = "$eraSilentFps FPS"
-            engine.setTargetFpsSeamless(eraSilentFps)
-            engine.setEraRenderState(1, if (eraArchiveWear) 1.0f else 0.0f, eraSilentFps.toFloat())
-            showSingleToast(
-                if (eraSilentFps == 16) "16 FPS — Classic Hand-Crank Silent (1.0 ft/s)"
-                else "18 FPS — Late Silent Projection Speed (1.125 ft/s)"
-            )
         }
 
         // Mechanical Iris (Relative Aperture EV stops)
@@ -1016,7 +1049,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             selectEraPanel(if (activeEraPanel == EraSliderPanel.IRIS) EraSliderPanel.NONE else EraSliderPanel.IRIS)
         }
 
-        // Focus Ring (Manual Diopter + AF fallback)
+        // Follow-Focus Ring (Manual Diopter + AF fallback)
         pillEraFocus.setOnClickListener {
             if (!engine.capabilities.supportsManualFocus) {
                 showSingleToast("This lens has fixed focus")
@@ -1025,18 +1058,22 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             selectEraPanel(if (activeEraPanel == EraSliderPanel.FOCUS) EraSliderPanel.NONE else EraSliderPanel.FOCUS)
         }
 
-        // Print Stock Condition: FRESH (Day-1 1920s Premiere Nitrate) <-> ARCHIVE (100-Year Vault Print)
+        // Print Stock Condition: FRESH (Premiere Release Print) <-> ARCHIVE (Aged Vault Reel)
         pillEraPrint.setOnClickListener {
             eraArchiveWear = !eraArchiveWear
             txtEraPrintVal.text = if (eraArchiveWear) "ARCHIVE" else "FRESH"
             pillEraPrint.setBackgroundResource(if (eraArchiveWear) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
             txtEraPrintVal.setTextColor(if (eraArchiveWear) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
-            engine.setEraRenderState(1, if (eraArchiveWear) 1.0f else 0.0f, eraSilentFps.toFloat())
-            showSingleToast(
-                if (eraArchiveWear) "ARCHIVE — 100-Yr Vault Reel (Sepia Patina, Gate Weave, Scratches & Dust)"
-                else "FRESH — 1920s Premiere Nitrate (Clean Silver-Gelatin, Deep Blacks, Zero Scratches)",
-                Toast.LENGTH_LONG
-            )
+            val activeFpsVal = if (activeEraCamera == EraCameraId.MONO_1950S) 24f else eraSilentFps.toFloat()
+            engine.setEraRenderState(activeEraCamera.shaderCode, if (eraArchiveWear) 1.0f else 0.0f, activeFpsVal)
+            val msg = if (activeEraCamera == EraCameraId.MONO_1950S) {
+                if (eraArchiveWear) "ARCHIVE — 1950s Acetate Vault Print (Warm Cream, Reel Cues, Dust & Optical Hiss)"
+                else "FRESH — 1955 Silver-Gelatin Premiere Print (Clean Panchromatic & Warm Optical Mono)"
+            } else {
+                if (eraArchiveWear) "ARCHIVE — 100-Yr Nitrate Reel (Sepia Patina, Gate Weave, Scratches & Dust)"
+                else "FRESH — 1920s Premiere Nitrate (Clean Silver-Gelatin, Deep Blacks, Zero Scratches)"
+            }
+            showSingleToast(msg, Toast.LENGTH_LONG)
         }
 
         btnEraSliderAuto.setOnClickListener {
@@ -1084,7 +1121,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun showWorkbenchSwitcherDialog() {
         val items = arrayOf(
             (if (currentWorkbench == CameraWorkbench.SAVIOR) "✓ " else "") + "SAVIOR — Modern Digital Cinema Rig",
-            (if (currentWorkbench == CameraWorkbench.ERA) "✓ " else "") + "ERA — Classic Camera Vault (1920s)",
+            (if (currentWorkbench == CameraWorkbench.ERA) "✓ " else "") + "CLASSIC — Vintage Camera Vault (1920s / 1950s)",
             "PURIST — Gate 65 Discipline (Coming in Phase 8)"
         )
         AlertDialog.Builder(this)
@@ -1102,24 +1139,92 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun showEraMuseumPickerDialog() {
         val items = arrayOf(
-            "✓ 1920s Classic Silent — 35mm Hand-Crank Orthochromatic",
-            "1950s Classic Monochrome — Satyajit Ray 35mm (Next in v0.7.4)",
-            "1970s Indie Celluloid — Super 8 & 16mm (Coming in v0.7.4)",
-            "1980s–90s Analog Tape — VHS Camcorder (Coming in v0.7.5)",
-            "2000s Classic CCD — MiniDV Handycam (Coming in v0.7.5)",
-            "2008 First-Gen HD — Early DSLR Cinema (Coming in v0.7.5)"
+            (if (activeEraCamera == EraCameraId.SILENT_1920S) "✓ " else "") + "1920s Classic Silent — 35mm Orthochromatic (16/18 FPS • Silent)",
+            (if (activeEraCamera == EraCameraId.MONO_1950S) "✓ " else "") + "1950s Classic Monochrome — Satyajit Ray 35mm (24 FPS • Optical Mono)",
+            "1970s Indie Celluloid — Super 8 & 16mm (Next in v0.7.5)",
+            "1980s–90s Analog Tape — VHS Camcorder (Coming in v0.7.6)",
+            "2000s Classic CCD — MiniDV Handycam (Coming in v0.7.6)",
+            "2008 First-Gen HD — Early DSLR Cinema (Coming in v0.7.6)"
         )
         AlertDialog.Builder(this)
             .setTitle("Classic Camera Vault")
             .setItems(items) { _, which ->
-                if (which == 0) {
-                    showSingleToast("1920s Classic Silent 35mm active")
-                } else {
-                    showSingleToast("Building each classic camera one by one — 1950s Classic Monochrome arrives next in v0.7.4!", Toast.LENGTH_LONG)
+                when (which) {
+                    0 -> switchActiveEraCamera(EraCameraId.SILENT_1920S)
+                    1 -> switchActiveEraCamera(EraCameraId.MONO_1950S)
+                    else -> showSingleToast("Building each classic camera one by one with original detail — Super 8 arrives next in v0.7.5!", Toast.LENGTH_LONG)
                 }
             }
             .setNegativeButton("Close", null)
             .show()
+    }
+
+    private fun switchActiveEraCamera(target: EraCameraId) {
+        activeEraCamera = target
+        selectEraPanel(EraSliderPanel.NONE)
+        applyActiveEraCamera(announce = true)
+    }
+
+    private fun applyActiveEraCamera(announce: Boolean) {
+        btnEraCameraPicker.text = activeEraCamera.pillLabel
+        txtEraFootage.text = "000 FT • 00:00"
+        txtEraFootage.setTextColor(0xFFF5E6C8.toInt())
+        viewEraRecDot.visibility = View.GONE
+
+        txtEraPrintVal.text = if (eraArchiveWear) "ARCHIVE" else "FRESH"
+        pillEraPrint.setBackgroundResource(if (eraArchiveWear) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
+        txtEraPrintVal.setTextColor(if (eraArchiveWear) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
+
+        if (activeEraCamera == EraCameraId.SILENT_1920S) {
+            txtEraSlot1Label.text = "CRANK"
+            txtEraSpeedVal.text = "$eraSilentFps FPS"
+            txtEraAudioBadge.text = "SILENT"
+            txtEraAudioBadge.setTextColor(0xFFB8A37E.toInt())
+
+            engine.resetZoom()
+            engine.eraSilentAudio = true
+            engine.eraAudioProfile = EraAudioProfile.NONE
+            engine.eraFilenameTag = EraCameraId.SILENT_1920S.fileTag
+            engine.setTargetFpsSeamless(eraSilentFps)
+            engine.setEraRenderState(
+                EraCameraId.SILENT_1920S.shaderCode,
+                if (eraArchiveWear) 1.0f else 0.0f,
+                eraSilentFps.toFloat()
+            )
+            if (announce) {
+                showSingleToast(
+                    "1920s CLASSIC SILENT • $eraSilentFps FPS • ${if (eraArchiveWear) "ARCHIVE" else "FRESH"} Print",
+                    Toast.LENGTH_LONG
+                )
+            }
+        } else {
+            // Era 2: 1950s Classic Monochrome (Satyajit Ray / Arriflex 35 — 1.37:1, 24 FPS, 3-Lens Prime Turret, Optical Mono)
+            txtEraSlot1Label.text = "TURRET"
+            val (mmLabel, ratio) = era1950sTurretPrimes[era1950sTurretIdx]
+            txtEraSpeedVal.text = mmLabel
+            txtEraAudioBadge.text = "OPTICAL MONO"
+            txtEraAudioBadge.setTextColor(0xFFE8B968.toInt())
+
+            val clamped = ratio.coerceIn(engine.capabilities.minZoom, engine.capabilities.maxZoom)
+            engine.setZoomRatio(clamped)
+            engine.eraSilentAudio = false
+            engine.eraAudioProfile = EraAudioProfile.OPTICAL_1950S
+            engine.eraFilenameTag = EraCameraId.MONO_1950S.fileTag
+            engine.setTargetFpsSeamless(24)
+            engine.setEraRenderState(
+                EraCameraId.MONO_1950S.shaderCode,
+                if (eraArchiveWear) 1.0f else 0.0f,
+                24.0f
+            )
+            if (announce) {
+                showSingleToast(
+                    "1950s CLASSIC MONO • 24 FPS • $mmLabel Prime • Optical Mono Sound",
+                    Toast.LENGTH_LONG
+                )
+            }
+        }
+        updateEraIrisUi()
+        updateEraFocusUi()
     }
 
     private fun enterEraWorkbench() {
@@ -1166,36 +1271,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnExitSplitWipe.visibility = View.GONE
         overlayView.visibility = View.GONE
 
-        // 4. Show authentic 1920s Silent 35mm HUD
+        // 4. Show authentic Classic HUD
         eraTopBar.visibility = View.VISIBLE
         eraBottomDock.visibility = View.VISIBLE
         selectEraPanel(EraSliderPanel.NONE)
 
-        // 5. Configure engine cleanly for 1920s Silent 35mm (ZERO camera session reboot!)
+        // 5. Reset modern exposure/WB/focus overrides cleanly & activate chosen Classic camera (ZERO reboot!)
         engine.timelapseIntervalMs = 0L
         engine.clearAeAfLock()
         engine.setAutoExposure()
         engine.setEvCompensation(0)
         engine.setAutoWhiteBalance()
         engine.setAutoFocus()
-        engine.resetZoom()
-        engine.eraSilentAudio = true
-        engine.eraFilenameTag = "1920s"
-        engine.setTargetFpsSeamless(eraSilentFps)
-        engine.setEraRenderState(1, if (eraArchiveWear) 1.0f else 0.0f, eraSilentFps.toFloat())
 
-        txtEraSpeedVal.text = "$eraSilentFps FPS"
-        txtEraFootage.text = "000 FT • 00:00"
-        txtEraFootage.setTextColor(0xFFF5E6C8.toInt())
-        viewEraRecDot.visibility = View.GONE
-        txtEraPrintVal.text = if (eraArchiveWear) "ARCHIVE" else "FRESH"
-        pillEraPrint.setBackgroundResource(if (eraArchiveWear) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-        txtEraPrintVal.setTextColor(if (eraArchiveWear) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
-        updateEraIrisUi()
-        updateEraFocusUi()
-
+        applyActiveEraCamera(announce = true)
         updateSystemTelemetry(null)
-        showSingleToast("1920s CLASSIC SILENT • $eraSilentFps FPS (${if (eraArchiveWear) "ARCHIVE" else "FRESH"} Print)", Toast.LENGTH_LONG)
     }
 
     private fun exitEraToSaviorWorkbench() {
@@ -1203,9 +1293,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         currentWorkbench = CameraWorkbench.SAVIOR
         selectEraPanel(EraSliderPanel.NONE)
 
-        // 1. Disable Era shader & silent flags cleanly
+        // 1. Disable Era shader & audio flags cleanly
         engine.setEraRenderState(0, 0.0f, 30.0f)
         engine.eraSilentAudio = false
+        engine.eraAudioProfile = EraAudioProfile.NONE
         engine.eraFilenameTag = ""
 
         // 2. Restore exact saved SAVIOR workbench state
@@ -1247,7 +1338,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
-        // 3. Hide ERA HUD & restore modern SAVIOR HUD
+        // 3. Hide Classic HUD & restore modern SAVIOR HUD
         eraTopBar.visibility = View.GONE
         eraBottomDock.visibility = View.GONE
         saviorTopBar.visibility = View.VISIBLE
@@ -2146,8 +2237,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.3.1"
-    } catch (_: Exception) { "0.7.3.1" }
+        info.versionName ?: "0.7.4"
+    } catch (_: Exception) { "0.7.4" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -4060,6 +4151,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             pillFocus.alpha = if (caps.supportsManualFocus) 1.0f else 0.45f
             pillEraFocus.alpha = if (caps.supportsManualFocus) 1.0f else 0.45f
             if (currentWorkbench == CameraWorkbench.ERA) {
+                if (activeEraCamera == EraCameraId.MONO_1950S) {
+                    val ratio = era1950sTurretPrimes[era1950sTurretIdx].second
+                    engine.setZoomRatio(ratio.coerceIn(caps.minZoom, caps.maxZoom))
+                }
                 updateEraIrisUi()
                 updateEraFocusUi()
                 if (activeEraPanel != EraSliderPanel.NONE) refreshEraSliderUi()
@@ -4314,10 +4409,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             } catch (_: Exception) {
             }
         }
-        if (batteryReceiverRegistered) {
-            try { unregisterReceiver(batteryBroadcastReceiver) } catch (_: Exception) {}
-            batteryReceiverRegistered = false
-        }
         uiHandler.removeCallbacks(sysTelemetryRunnable)
         uiHandler.post(sysTelemetryRunnable)
         textureView.surfaceTextureListener = surfaceTextureListener
@@ -4335,6 +4426,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         uiHandler.removeCallbacks(zoomRockerRunnable)
         stopAnalysisThread()
         stopAudioVuMonitor()
+        if (batteryReceiverRegistered) {
+            try { unregisterReceiver(batteryBroadcastReceiver) } catch (_: Exception) {}
+            batteryReceiverRegistered = false
+        }
         uiHandler.removeCallbacks(sysTelemetryRunnable)
         uiHandler.removeCallbacks(countdownRunnable)
         txtTimerCountdown.visibility = View.GONE

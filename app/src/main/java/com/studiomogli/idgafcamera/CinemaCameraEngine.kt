@@ -168,7 +168,12 @@ class CinemaCameraEngine(
     @Volatile var timelapseIntervalMs: Long = 0L
     fun isTimelapseEnabled(): Boolean = timelapseIntervalMs > 0L
     @Volatile var eraSilentAudio: Boolean = false
+    @Volatile var eraAudioProfile: EraAudioProfile = EraAudioProfile.NONE
     @Volatile var eraFilenameTag: String = ""
+    @Volatile var isFinalizingClip: Boolean = false
+        private set
+    private var activeTempRawFile: File? = null
+    private var activeTargetFileName: String = ""
     @Volatile var eraModeCode: Int = 0
         private set
     @Volatile var eraWearLevel: Float = 0.0f
@@ -1417,7 +1422,7 @@ class CinemaCameraEngine(
     }
 
     fun startRecording(displayRotation: Int) {
-        if (isRecording) return
+        if (isRecording || isFinalizingClip) return
         val renderer = glRenderer ?: return
         val lens = getActiveLens() ?: return
         if (cameraDevice == null || captureSession == null) return
@@ -1483,6 +1488,55 @@ class CinemaCameraEngine(
         }
         activeOutputPfd = null
 
+        val tempRaw = activeTempRawFile
+        val targetName = activeTargetFileName
+        val label = activeFileLabel
+        activeTempRawFile = null
+        activeTargetFileName = ""
+
+        if (tempRaw != null) {
+            activeMediaUri = null
+            if (!stopSucceeded || !tempRaw.exists() || tempRaw.length() < 1024L) {
+                try { tempRaw.delete() } catch (_: Exception) {}
+                listener.onRecordingStopped(null, "")
+                return
+            }
+
+            // Phase 7.4 Era Optical Mono Audio DSP Remux (lossless video copy + authentic 1950s Academy Curve audio)
+            val profile = eraAudioProfile
+            val archiveWear = (eraWearLevel > 0.25f)
+            isFinalizingClip = true
+            Thread {
+                val processedFile = File(context.cacheDir, "era_proc_${System.currentTimeMillis()}.mp4")
+                var finalUri: Uri? = null
+                try {
+                    val dspOk = EraAudioProcessor.processMp4Audio(
+                        inputFile = tempRaw,
+                        outputFile = processedFile,
+                        profile = profile,
+                        archiveWear = archiveWear
+                    )
+                    val sourceToCommit = if (dspOk && processedFile.exists() && processedFile.length() > 1024L) {
+                        processedFile
+                    } else {
+                        tempRaw // Ironclad fallback: never lose a take!
+                    }
+                    finalUri = commitCacheMp4ToMediaStore(sourceToCommit, targetName)
+                } catch (_: Exception) {
+                    try {
+                        finalUri = commitCacheMp4ToMediaStore(tempRaw, targetName)
+                    } catch (_: Exception) {
+                    }
+                } finally {
+                    try { tempRaw.delete() } catch (_: Exception) {}
+                    try { processedFile.delete() } catch (_: Exception) {}
+                    isFinalizingClip = false
+                    listener.onRecordingStopped(finalUri, label)
+                }
+            }.start()
+            return
+        }
+
         val savedUri = activeMediaUri
         activeMediaUri = null
         if (!stopSucceeded && savedUri != null) {
@@ -1507,8 +1561,39 @@ class CinemaCameraEngine(
             }
         }
 
-        val label = activeFileLabel
         listener.onRecordingStopped(savedUri, label)
+    }
+
+    private fun commitCacheMp4ToMediaStore(sourceFile: File, fileName: String): Uri? {
+        if (!sourceFile.exists() || sourceFile.length() < 1024L) return null
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/IDGAF_Camera")
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+            val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: return null
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                sourceFile.inputStream().use { ins -> ins.copyTo(out, 65_536) }
+            }
+            val doneVals = ContentValues().apply {
+                put(MediaStore.Video.Media.IS_PENDING, 0)
+            }
+            context.contentResolver.update(uri, doneVals, null, null)
+            uri
+        } else {
+            val dir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+                "IDGAF_Camera"
+            )
+            if (!dir.exists()) dir.mkdirs()
+            val outFile = File(dir, fileName)
+            sourceFile.inputStream().use { ins ->
+                outFile.outputStream().use { out -> ins.copyTo(out, 65_536) }
+            }
+            Uri.fromFile(outFile)
+        }
     }
 
     private fun formatTimelapseFileTag(): String {
@@ -1534,14 +1619,23 @@ class CinemaCameraEngine(
             MediaRecorder()
         }
 
-        val recordAudio = !isAudioMuted && !isTl && !eraSilentAudio
+        val useEraAudioDsp = (eraAudioProfile != EraAudioProfile.NONE && !eraSilentAudio && !isTl)
+        val recordAudio = if (useEraAudioDsp) true else (!isAudioMuted && !isTl && !eraSilentAudio)
         if (recordAudio) {
-            recorder.setAudioSource(audioPreampMode.audioSource)
+            recorder.setAudioSource(if (useEraAudioDsp) MediaRecorder.AudioSource.CAMCORDER else audioPreampMode.audioSource)
         }
         recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
         recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (useEraAudioDsp) {
+            val rawCache = File(context.cacheDir, "era_raw_${System.currentTimeMillis()}.mp4")
+            activeTempRawFile = rawCache
+            activeTargetFileName = fileName
+            activeMediaUri = null
+            recorder.setOutputFile(rawCache.absolutePath)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            activeTempRawFile = null
+            activeTargetFileName = ""
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
@@ -1556,6 +1650,8 @@ class CinemaCameraEngine(
             activeOutputPfd = pfd
             recorder.setOutputFile(pfd.fileDescriptor)
         } else {
+            activeTempRawFile = null
+            activeTargetFileName = ""
             val dir = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
                 "IDGAF_Camera"
@@ -1573,8 +1669,14 @@ class CinemaCameraEngine(
         recorder.setVideoEncoder(targetCodec.encoder)
         if (recordAudio) {
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            recorder.setAudioEncodingBitRate(256_000)
-            recorder.setAudioSamplingRate(48_000)
+            if (useEraAudioDsp) {
+                recorder.setAudioChannels(1)
+                recorder.setAudioEncodingBitRate(96_000)
+                recorder.setAudioSamplingRate(44_100)
+            } else {
+                recorder.setAudioEncodingBitRate(256_000)
+                recorder.setAudioSamplingRate(48_000)
+            }
         }
         // Upright orientation is baked directly inside CinemaGlRenderer's GPU encoder pass
         recorder.setOrientationHint(0)
@@ -1611,6 +1713,11 @@ class CinemaCameraEngine(
             try { context.contentResolver.delete(uri, null, null) } catch (_: Exception) {}
         }
         activeMediaUri = null
+        activeTempRawFile?.let { f ->
+            try { f.delete() } catch (_: Exception) {}
+        }
+        activeTempRawFile = null
+        activeTargetFileName = ""
     }
 
     private fun closeSession() {

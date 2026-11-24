@@ -1,15 +1,19 @@
-# IDGAF CAMERA (`v0.7.3.1` — True 1920s FRESH vs ARCHIVE Film Optics, Classic Era Vault & Charging Alerts)
+# IDGAF CAMERA (`v0.7.4` — Era 2: 1950s Classic Monochrome [Satyajit Ray 35mm] + Optical Mono Sound Engine)
 
 *A love letter to indie filmmakers — by Savior San.*
 
 Free, open Android cinema camera powered by the **Savior Cinema Engine** (native **Kotlin + Camera2 + OpenGL ES 2.0**) by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's New in `v0.7.3.1`
-- **Live Charging Icon (`⚡`) & Low-Battery Plug-In Warning:**
-  - Instant `ACTION_BATTERY_CHANGED` updates show green **`⚡84% • 14.2GB`** while charging in **`SAVIOR`** (and a subtle **`⚡84%`** badge in **`ERA`**).
-  - Dropping to **`≤ 15%`** while unplugged triggers a crisp **`⚠ LOW BATTERY 15% — PLUG IN CHARGER`** warning banner (plus critical alert at `≤ 7%`) across both workbenches—tap to dismiss, or plug in to auto-clear instantly.
-- **True-to-Life 1920s Film Emulation (`FRESH` vs `ARCHIVE`):**
-  - Rebuilt the `1920s` GPU pipeline with uncoated **Cooke/Petzval radial corner softening**, subtle silver-halide **highlight bloom**, and genuine intermittent-claw **gate weave**.
-  - **`FRESH` (1920s Premiere Nitrate):** Pristine Day-1 cinema strike—crisp center, luminous cool-ivory silver-gelatin tone, deep inky blacks, ultra-fine grain, and **zero scratches or dust**.
-  - **`ARCHIVE` (100-Year Vault Reel):** Recovered century-old nitrate scan—warm sepia-amber patina, milky faded shadows, generational print softening, frame-to-frame gate weave, organic projector shutter flicker, dual-scale clumped grain, **3 razor-thin organically wandering dark/light hairline scratches**, and **circular single-frame micro-dust & pinholes**.
-- **Refined Classic Camera Vault Labels:** Kept the top **`ERA`** button name while upgrading inner menu labels to **`Classic Camera Vault`**, **`1920s CLASSIC ▾`**, and **`PRINT: FRESH / ARCHIVE`**.
+## What's New in `v0.7.4`
+- **Era 2 — 1950s Classic Monochrome (*Satyajit Ray / Arriflex 35 / Kodak Plus-X & Double-X*):**
+  - **Authentic 1950s Controls Only:** Locked **`24 FPS`** sync sound (true `90 ft/min` 35mm footage counter), **3-Lens Rotating Prime `TURRET` (`28mm` / `35mm` / `50mm`, zero zoom)**, mechanical **`IRIS` (`f/2.0`–`f/16`)**, **`FOCUS`** ring, and **`PRINT` (`FRESH` ↔ `ARCHIVE`)**.
+  - **True 1950s Optical & Panchromatic Pipeline (`CinemaGlRenderer.kt`):**
+    - Baked **`1.375:1` AMPAS Academy Sound Gate** with crisp machined corners.
+    - Genuine **Panchromatic Silver-Halide + Wratten K2 Yellow Filter** tonal response (sculptural luminous skin, rich reds, moody textured skies) and **Cooke Speed Panchro** coated-glass sharpness + delicate highlight halation.
+    - **`FRESH` (1955 Premiere Release Print):** Pure cool-neutral silver-gelatin, deep velvety chiaroscuro blacks, ultra-fine 24 FPS 35mm grain, rock-steady pin-registered gate, zero artifacts.
+    - **`ARCHIVE` (70-Year Acetate Vault Print):** Warm cream-selenium acetate base, lifted projection shadows, subtle micro-weave & flicker, delicate hairline scratches, micro-dust, and an authentic **top-right 35mm changeover cue mark** every ~20 seconds.
+- **Authentic Era Audio DSP Engine (`EraAudioProcessor.kt`):**
+  - Committed authentic **`OPTICAL MONO`** sound (zero modern audio toggle) using lossless zero-reencode video passthrough + **1950s Academy Curve Optical Sound-on-Film DSP**: `125 Hz` rumble HPF, `4.8–5.8 kHz` optical slit rolloff, `1.65 kHz` warm ribbon-mic vocal peak, Westrex vacuum-tube soft saturation, and subtle 35mm optical emulsion noise floor (`FRESH` clean hiss vs `ARCHIVE` dustier hiss + micro ticks), with ironclad fallback.
+- **Classic Workbench Naming & Instant Battery Receiver Fix:**
+  - Kept the top-bar button named **`ERA`** while updating the 3-Workbench dropdown (`SAVIOR` / **`CLASSIC`** / `PURIST`) and inner top-left pill (`CLASSIC ▾`).
+  - Fixed `ACTION_BATTERY_CHANGED` BroadcastReceiver lifecycle so charging **`⚡`** and **`≤ 15%`** low-battery plug-in alerts respond instantaneously.
