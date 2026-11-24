@@ -114,9 +114,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var audioGainSeekBar: SeekBar
     private lateinit var txtAudioTrimVal: TextView
 
-    // Live Audio VU preview monitor (runs when idle; switches to MediaRecorder amplitude while recording)
+    // Live Audio VU preview monitor (runs when idle; releases hardware mic cleanly before MediaRecorder.start())
     @Volatile private var audioMonitorRunning = false
     @Volatile private var audioMonitorRestartNeeded = false
+    @Volatile private var audioPreviewPausedForRec = false
+    @Volatile private var isPreviewMicHeld = false
     private var audioMonitorThread: Thread? = null
 
     // Phase 3 / 6.10 Monitoring Toolbar
@@ -385,7 +387,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 uiHandler.postDelayed(this, 1000L)
             } else {
                 txtTimerCountdown.visibility = View.GONE
-                engine.startRecording(pendingRecRotation)
+                beginRecordingCleanly(pendingRecRotation)
             }
         }
     }
@@ -659,7 +661,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     uiHandler.removeCallbacks(countdownRunnable)
                     uiHandler.post(countdownRunnable)
                 } else {
-                    engine.startRecording(rot)
+                    beginRecordingCleanly(rot)
                 }
             }
         }
@@ -1265,8 +1267,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.0.1"
-    } catch (_: Exception) { "0.7.0.1" }
+        info.versionName ?: "0.7.0.2"
+    } catch (_: Exception) { "0.7.0.2" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1403,18 +1405,20 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val buffer = ShortArray(minBuf / 2)
 
             while (audioMonitorRunning) {
-                if (engine.isRecording || engine.isAudioMuted) {
+                if (engine.isRecording || engine.isAudioMuted || audioPreviewPausedForRec) {
                     if (ar != null) {
                         try { ar.stop(); ar.release() } catch (_: Exception) {}
                         ar = null
                     }
+                    isPreviewMicHeld = false
                     val amp = if (engine.isRecording && !engine.isAudioMuted) engine.getRecordingMaxAmplitude() else 0
                     dispatchAudioMeterUi(amp)
-                    try { Thread.sleep(75L) } catch (_: Exception) {}
+                    try { Thread.sleep(60L) } catch (_: Exception) {}
                 } else {
                     if (audioMonitorRestartNeeded && ar != null) {
                         try { ar.stop(); ar.release() } catch (_: Exception) {}
                         ar = null
+                        isPreviewMicHeld = false
                         audioMonitorRestartNeeded = false
                     }
                     if (ar == null) {
@@ -1435,10 +1439,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                                 }
                                 rec.startRecording()
                                 ar = rec
+                                isPreviewMicHeld = true
                             } else {
                                 rec.release()
                             }
                         } catch (_: Exception) {
+                            isPreviewMicHeld = false
                             try { Thread.sleep(200L) } catch (_: Exception) {}
                         }
                     }
@@ -1457,11 +1463,27 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 }
             }
             try { ar?.stop(); ar?.release() } catch (_: Exception) {}
+            isPreviewMicHeld = false
         }.also { it.start() }
+    }
+
+    private fun beginRecordingCleanly(displayRotation: Int) {
+        if (engine.isRecording) return
+        // Release preview AudioRecord cleanly BEFORE MediaRecorder.prepare()/start() to avoid mic contention or audio delay!
+        audioPreviewPausedForRec = true
+        val waitStart = System.currentTimeMillis()
+        while (isPreviewMicHeld && (System.currentTimeMillis() - waitStart) < 160L) {
+            try { Thread.sleep(10L) } catch (_: Exception) { break }
+        }
+        engine.startRecording(displayRotation)
+        if (!engine.isRecording) {
+            audioPreviewPausedForRec = false
+        }
     }
 
     private fun stopAudioVuMonitor() {
         audioMonitorRunning = false
+        audioPreviewPausedForRec = false
         audioMonitorThread?.interrupt()
         audioMonitorThread = null
     }
@@ -2535,6 +2557,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     override fun onRecordingStopped(savedUri: Uri?, filePathLabel: String) {
+        audioPreviewPausedForRec = false
         runOnUiThread {
             uiHandler.removeCallbacks(timecodeRunnable)
             viewRecDot.visibility = View.GONE
@@ -2552,6 +2575,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     override fun onError(message: String) {
+        if (!engine.isRecording) audioPreviewPausedForRec = false
         runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
     }
 

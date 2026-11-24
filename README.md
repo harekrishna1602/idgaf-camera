@@ -1,8 +1,9 @@
-# IDGAF CAMERA (`v0.7.0.1` — Hotfix: OpenGL ES Viewfinder & Encoder Rotation Alignment)
+# IDGAF CAMERA (`v0.7.0.2` — Hotfix: MP4 Duration Clock Sync + Encoder & Audio Start Audit)
 
 Free, open, community-built Android cinema camera built on native **Kotlin + Camera2 + OpenGL ES 2.0** by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's Fixed in `v0.7.0.1`
-- **Fixed Sideways / Stretched Camera Preview & Recordings:** `SurfaceTexture.getTransformMatrix(stMatrix)` already applies Camera2's `sensorOrientation` to align frames to natural portrait (`ROTATION_0`). `v0.7.0` subtracted `sensorOrientation` a second time (producing `0°` rotation instead of `±90°`). `v0.7.0.1` now rotates cleanly from `ROTATION_0` to the active display orientation (`+90°` CCW in `ROTATION_90`, `-90°` CW in `ROTATION_270`) and computes exact center-crop aspect ratio from `stMatrix` for 1:1 unstretched square pixels.
-- **Fixed Recorded MP4 Orientation & Front-Camera Un-Mirroring:** `buildEncoderMvp` now applies exact upright `±90°` landscape rotation on the `MediaRecorder` GL pass and checks `det2x2(stMatrix) > 0` to cleanly un-mirror front-camera MP4 exports horizontally.
-- **Exact 1-Pixel GPU Sobel Peaking Steps & Frame-1 Viewport Size:** Fixed `uStepX` / `uStepY` to true raw OES pixel units `(1/W, 0)` & `(0, 1/H)` and passed exact `(width, height)` from `onSurfaceTextureAvailable`.
+## What's Fixed in `v0.7.0.2`
+- **Fixed `2013:49` Wrong MP4 Duration Bug (`CLOCK_BOOTTIME` vs `CLOCK_MONOTONIC`):** Camera2 `SurfaceTexture.timestamp` uses `CLOCK_BOOTTIME` (`REALTIME`, which counts deep sleep hours), while `MediaRecorder` Audio uses `CLOCK_MONOTONIC` (`System.nanoTime()`). Feeding raw `camTex.timestamp` into `eglPresentationTimeANDROID()` created a multi-hour gap between Video and Audio tracks. `CinemaGlRenderer` now anchors the first encoded video frame to `System.nanoTime()` and advances using verified hardware deltas + monotonic guard so a 5-second clip is always **`00:05`** with tight lip-sync.
+- **Fixed Pre-Start Encoder Frame Race:** Added an `isEncoderRecording` gate so OpenGL never swaps frames into `MediaRecorder.surface` until `MediaRecorder.start()` has completed.
+- **Fixed Mic Contention Race on REC Start:** `MainActivity` now synchronously pauses and releases the preview VU `AudioRecord` (max 160ms wait) **before** `MediaRecorder.prepare()`/`start()` opens the mic, eliminating audio start delay or silent tracks.
+- **Aspect-Safe Encoder Scaling & Thread Safety:** Added aspect-matched center-crop protection inside `buildEncoderMvp()` for non-16:9 lenses, marked shared recording/audio state `@Volatile`, and removed dead legacy orientation code.

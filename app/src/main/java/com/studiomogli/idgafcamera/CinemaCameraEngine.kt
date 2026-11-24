@@ -160,12 +160,12 @@ class CinemaCameraEngine(
     var targetCodec: CinemaCodec = CinemaCodec.H264
     var targetBitrateMbps: Int = 35
     var micPreference: MicPreference = MicPreference.AUTO
-    var audioPreampMode: AudioPreampMode = AudioPreampMode.CAMCORDER
-    var isAudioMuted: Boolean = false
-    var audioMonitorTrimDb: Int = 0
-    var toneProfile: ToneProfile = ToneProfile.STANDARD
+    @Volatile var audioPreampMode: AudioPreampMode = AudioPreampMode.CAMCORDER
+    @Volatile var isAudioMuted: Boolean = false
+    @Volatile var audioMonitorTrimDb: Int = 0
+    @Volatile var toneProfile: ToneProfile = ToneProfile.STANDARD
         private set
-    var isRecording: Boolean = false
+    @Volatile var isRecording: Boolean = false
         private set
 
     var capabilities: CameraCapabilities = CameraCapabilities()
@@ -1267,6 +1267,8 @@ class CinemaCameraEngine(
 
             recorder.start()
             isRecording = true
+            // Enable GL encoder pass ONLY after MediaRecorder.start() has initialized its audio + video tracks!
+            renderer.setEncoderRecordingActive(true)
             listener.onRecordingStarted()
         } catch (e: Exception) {
             glRenderer?.detachEncoderSurfaceSync()
@@ -1395,21 +1397,6 @@ class CinemaCameraEngine(
 
         recorder.prepare()
         return recorder
-    }
-
-    private fun computeOrientationHint(lens: CinemaLens, displayRotation: Int): Int {
-        val deviceDegrees = when (displayRotation) {
-            Surface.ROTATION_0 -> 0
-            Surface.ROTATION_90 -> 90
-            Surface.ROTATION_180 -> 180
-            Surface.ROTATION_270 -> 270
-            else -> 90
-        }
-        return if (lens.isFront) {
-            (lens.sensorOrientation + deviceDegrees) % 360
-        } else {
-            (lens.sensorOrientation - deviceDegrees + 360) % 360
-        }
     }
 
     private fun cleanupRecorderOnFailure() {

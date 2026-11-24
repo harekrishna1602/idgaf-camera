@@ -237,7 +237,13 @@ class CinemaGlRenderer(
     @Volatile private var encoderWidth: Int = 1920
     @Volatile private var encoderHeight: Int = 1080
     @Volatile private var encoderRotation: Int = Surface.ROTATION_90
+    @Volatile private var isEncoderRecording: Boolean = false
     @Volatile private var isReleased: Boolean = true
+
+    // CLOCK_MONOTONIC (System.nanoTime) anchor for MediaRecorder A/V sync (prevents BOOTTIME deep-sleep offset!)
+    private var encoderBaseCamTsNs: Long = -1L
+    private var encoderBaseMonoNs: Long = -1L
+    private var lastEncoderPtsNs: Long = -1L
 
     fun start(): Boolean {
         if (glThread != null && !isReleased) return true
@@ -372,6 +378,10 @@ class CinemaGlRenderer(
                 encoderWidth = width.coerceAtLeast(16)
                 encoderHeight = height.coerceAtLeast(16)
                 encoderRotation = rotation
+                isEncoderRecording = false
+                encoderBaseCamTsNs = -1L
+                encoderBaseMonoNs = -1L
+                lastEncoderPtsNs = -1L
                 encoderEglSurface = surface
                 ok = true
             } catch (e: Exception) {
@@ -387,10 +397,30 @@ class CinemaGlRenderer(
         return ok
     }
 
+    fun setEncoderRecordingActive(active: Boolean) {
+        val handler = glHandler
+        if (!active) {
+            isEncoderRecording = false
+        }
+        handler?.post {
+            if (active) {
+                encoderBaseCamTsNs = -1L
+                encoderBaseMonoNs = -1L
+                lastEncoderPtsNs = -1L
+            }
+            isEncoderRecording = active
+        }
+    }
+
     fun detachEncoderSurfaceSync() {
+        isEncoderRecording = false
         val handler = glHandler ?: return
         val latch = CountDownLatch(1)
         handler.post {
+            isEncoderRecording = false
+            encoderBaseCamTsNs = -1L
+            encoderBaseMonoNs = -1L
+            lastEncoderPtsNs = -1L
             destroyEncoderSurfaceOnGlThread()
             latch.countDown()
         }
@@ -507,13 +537,13 @@ class CinemaGlRenderer(
             EGL14.eglSwapBuffers(eglDisplay, previewEglSurface)
         }
 
-        // PASS 2: Clean Hardware Encoder Surface (ZERO monitoring scopes baked into MP4!)
-        if (encoderEglSurface != EGL14.EGL_NO_SURFACE && encoderWidth > 0 && encoderHeight > 0) {
+        // PASS 2: Clean Hardware Encoder Surface (ONLY while MediaRecorder is actively started; ZERO scopes baked in!)
+        if (isEncoderRecording && encoderEglSurface != EGL14.EGL_NO_SURFACE && encoderWidth > 0 && encoderHeight > 0) {
             if (EGL14.eglMakeCurrent(eglDisplay, encoderEglSurface, encoderEglSurface, eglContext)) {
                 GLES20.glViewport(0, 0, encoderWidth, encoderHeight)
                 GLES20.glClearColor(0f, 0f, 0f, 1f)
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-                buildEncoderMvp(mvpMatrix, encoderRotation)
+                buildEncoderMvp(mvpMatrix, encoderWidth, encoderHeight, encoderRotation)
                 drawQuad(
                     enableScopes = false,
                     stepXx = stepXx,
@@ -522,7 +552,8 @@ class CinemaGlRenderer(
                     stepYy = stepYy,
                     timeSec = timeSec
                 )
-                EGLExt.eglPresentationTimeANDROID(eglDisplay, encoderEglSurface, frameTimestampNs)
+                val ptsNs = computeMonotonicEncoderPtsNs(frameTimestampNs)
+                EGLExt.eglPresentationTimeANDROID(eglDisplay, encoderEglSurface, ptsNs)
                 EGL14.eglSwapBuffers(eglDisplay, encoderEglSurface)
             }
         }
@@ -562,15 +593,67 @@ class CinemaGlRenderer(
         }
     }
 
-    private fun buildEncoderMvp(outMvp: FloatArray, rot: Int) {
+    /**
+     * Converts Camera2's SurfaceTexture timestamp (which may be on CLOCK_BOOTTIME / REALTIME, including
+     * hours of deep sleep!) onto MediaRecorder's exact CLOCK_MONOTONIC (System.nanoTime) timeline.
+     * Preserves smooth hardware sensor frame pacing while guaranteeing exact MP4 duration & A/V sync.
+     */
+    private fun computeMonotonicEncoderPtsNs(camTsNs: Long): Long {
+        val nowMonoNs = System.nanoTime()
+        val candidateNs = if (encoderBaseMonoNs < 0L || camTsNs <= 0L) {
+            encoderBaseCamTsNs = camTsNs
+            encoderBaseMonoNs = nowMonoNs
+            nowMonoNs
+        } else {
+            val deltaNs = camTsNs - encoderBaseCamTsNs
+            val projectedNs = encoderBaseMonoNs + deltaNs
+            // Guard against HAL timestamp resets or >250ms clock drift
+            if (deltaNs < 0L || kotlin.math.abs(projectedNs - nowMonoNs) > 250_000_000L) {
+                encoderBaseCamTsNs = camTsNs
+                encoderBaseMonoNs = nowMonoNs
+                nowMonoNs
+            } else {
+                projectedNs
+            }
+        }
+        val monotonicNs = if (lastEncoderPtsNs >= 0L && candidateNs <= lastEncoderPtsNs) {
+            lastEncoderPtsNs + 1_000_000L
+        } else {
+            candidateNs
+        }
+        lastEncoderPtsNs = monotonicNs
+        return monotonicNs
+    }
+
+    private fun buildEncoderMvp(outMvp: FloatArray, encW: Int, encH: Int, rot: Int) {
         val glRotDeg = displayRotationToGlDegrees(rot)
+        val stSwapped = kotlin.math.abs(stMatrix[1]) > kotlin.math.abs(stMatrix[0])
+        val rot0W = if (stSwapped) videoHeight.toFloat() else videoWidth.toFloat()
+        val rot0H = if (stSwapped) videoWidth.toFloat() else videoHeight.toFloat()
+
+        val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
+        val effVideoW = if (rotSwapped) rot0H else rot0W
+        val effVideoH = if (rotSwapped) rot0W else rot0H
+
+        val encAspect = encW.toFloat() / encH.coerceAtLeast(1).toFloat()
+        val videoAspect = effVideoW / effVideoH.coerceAtLeast(1f)
+        val scaleX: Float
+        val scaleY: Float
+        if (encAspect > videoAspect) {
+            scaleX = 1.0f
+            scaleY = encAspect / videoAspect
+        } else {
+            scaleX = videoAspect / encAspect
+            scaleY = 1.0f
+        }
+
         // Determinant of upper-left 2x2 of stMatrix: negative = unmirrored (standard GL Y-flip),
         // positive = HAL applied horizontal selfie mirror (front camera). Un-mirror for clean readable MP4.
         val stDet = stMatrix[0] * stMatrix[5] - stMatrix[1] * stMatrix[4]
         val unMirrorX = if (isFrontCamera && stDet > 0f) -1.0f else 1.0f
 
         Matrix.setIdentityM(outMvp, 0)
-        Matrix.scaleM(outMvp, 0, unMirrorX, 1.0f, 1.0f)
+        Matrix.scaleM(outMvp, 0, scaleX * unMirrorX, scaleY, 1.0f)
         if (glRotDeg != 0f) {
             Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
         }
