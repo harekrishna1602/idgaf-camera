@@ -481,13 +481,11 @@ class CinemaGlRenderer(
         val frameTimestampNs = camTex.timestamp
         val timeSec = ((System.currentTimeMillis() - startTimeMs) % 60_000L) / 1000f
 
-        // Compute 1-pixel Sobel steps transformed through stMatrix so edges align regardless of Y-flip/crop
-        val invW = 1.0f / videoWidth.coerceAtLeast(16).toFloat()
-        val invH = 1.0f / videoHeight.coerceAtLeast(16).toFloat()
-        val stepXx = stMatrix[0] * invW
-        val stepXy = stMatrix[1] * invW
-        val stepYx = stMatrix[4] * invH
-        val stepYy = stMatrix[5] * invH
+        // vTexCoord is already in raw OES buffer (bx, by) coordinates, so exact 1-pixel steps are axis-aligned
+        val stepXx = 1.0f / videoWidth.coerceAtLeast(16).toFloat()
+        val stepXy = 0.0f
+        val stepYx = 0.0f
+        val stepYy = 1.0f / videoHeight.coerceAtLeast(16).toFloat()
 
         // PASS 1: Full-Bleed Preview Surface WITH 60 FPS GPU Monitoring Scopes
         if (previewEglSurface != EGL14.EGL_NO_SURFACE && previewWidth > 0 && previewHeight > 0) {
@@ -531,15 +529,22 @@ class CinemaGlRenderer(
     }
 
     private fun buildPreviewMvp(outMvp: FloatArray, viewW: Int, viewH: Int, rot: Int) {
-        val rotDeg = computeGlRotationDegrees(sensorOrientationDeg, isFrontCamera, rot)
-        val swapped = (rotDeg == 90 || rotDeg == 270)
-        val effVideoW = if (swapped) videoHeight.toFloat() else videoWidth.toFloat()
-        val effVideoH = if (swapped) videoWidth.toFloat() else videoHeight.toFloat()
+        // Camera2's SurfaceTexture stMatrix ALREADY rotates the sensor buffer to natural ROTATION_0 (portrait on phones).
+        // Rotate cleanly from ROTATION_0 to the active displayRotation:
+        // ROTATION_90 -> +90 deg CCW, ROTATION_270 -> -90 deg CW, ROTATION_180 -> 180 deg, ROTATION_0 -> 0 deg.
+        val glRotDeg = displayRotationToGlDegrees(rot)
+        val stSwapped = kotlin.math.abs(stMatrix[1]) > kotlin.math.abs(stMatrix[0])
+        val rot0W = if (stSwapped) videoHeight.toFloat() else videoWidth.toFloat()
+        val rot0H = if (stSwapped) videoWidth.toFloat() else videoHeight.toFloat()
+
+        val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
+        val effVideoW = if (rotSwapped) rot0H else rot0W
+        val effVideoH = if (rotSwapped) rot0W else rot0H
 
         val viewAspect = viewW.toFloat() / viewH.coerceAtLeast(1).toFloat()
         val videoAspect = effVideoW / effVideoH.coerceAtLeast(1f)
 
-        // Full-bleed center-crop scale (zero black bars, zero stretching)
+        // Full-bleed center-crop scale in post-rotation screen space (zero stretching, 1:1 square pixels)
         val scaleX: Float
         val scaleY: Float
         if (viewAspect > videoAspect) {
@@ -552,34 +557,32 @@ class CinemaGlRenderer(
 
         Matrix.setIdentityM(outMvp, 0)
         Matrix.scaleM(outMvp, 0, scaleX, scaleY, 1.0f)
-        if (rotDeg != 0) {
-            Matrix.rotateM(outMvp, 0, -rotDeg.toFloat(), 0f, 0f, 1f)
+        if (glRotDeg != 0f) {
+            Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
         }
     }
 
     private fun buildEncoderMvp(outMvp: FloatArray, rot: Int) {
-        val rotDeg = computeGlRotationDegrees(sensorOrientationDeg, isFrontCamera, rot)
-        // If Camera2 HAL attached horizontal selfie mirror in stMatrix on front camera, un-mirror for clean readable MP4!
-        val unMirrorX = if (isFrontCamera && stMatrix[0] < 0f) -1.0f else 1.0f
+        val glRotDeg = displayRotationToGlDegrees(rot)
+        // Determinant of upper-left 2x2 of stMatrix: negative = unmirrored (standard GL Y-flip),
+        // positive = HAL applied horizontal selfie mirror (front camera). Un-mirror for clean readable MP4.
+        val stDet = stMatrix[0] * stMatrix[5] - stMatrix[1] * stMatrix[4]
+        val unMirrorX = if (isFrontCamera && stDet > 0f) -1.0f else 1.0f
+
         Matrix.setIdentityM(outMvp, 0)
         Matrix.scaleM(outMvp, 0, unMirrorX, 1.0f, 1.0f)
-        if (rotDeg != 0) {
-            Matrix.rotateM(outMvp, 0, -rotDeg.toFloat(), 0f, 0f, 1f)
+        if (glRotDeg != 0f) {
+            Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
         }
     }
 
-    private fun computeGlRotationDegrees(sensorOrient: Int, isFront: Boolean, displayRot: Int): Int {
-        val deviceDegrees = when (displayRot) {
-            Surface.ROTATION_0 -> 0
-            Surface.ROTATION_90 -> 90
-            Surface.ROTATION_180 -> 180
-            Surface.ROTATION_270 -> 270
-            else -> 90
-        }
-        return if (isFront) {
-            (sensorOrient + deviceDegrees) % 360
-        } else {
-            (sensorOrient - deviceDegrees + 360) % 360
+    private fun displayRotationToGlDegrees(displayRot: Int): Float {
+        return when (displayRot) {
+            Surface.ROTATION_0 -> 0f
+            Surface.ROTATION_90 -> 90f
+            Surface.ROTATION_180 -> 180f
+            Surface.ROTATION_270 -> -90f
+            else -> 90f
         }
     }
 

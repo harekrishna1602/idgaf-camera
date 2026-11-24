@@ -425,7 +425,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private val surfaceTextureListener = object : TextureView.SurfaceTextureListener {
         override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-            openCameraIfReady()
+            openCameraIfReady(width, height)
         }
         override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
             engine.onPreviewSizeChanged(width, height)
@@ -1265,8 +1265,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.0"
-    } catch (_: Exception) { "0.7.0" }
+        info.versionName ?: "0.7.0.1"
+    } catch (_: Exception) { "0.7.0.1" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -2277,18 +2277,20 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun hasPerm(p: String): Boolean =
         ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
 
-    private fun openCameraIfReady() {
+    private fun openCameraIfReady(surfaceW: Int = textureView.width, surfaceH: Int = textureView.height) {
         if (!hasPerm(Manifest.permission.CAMERA) || !hasPerm(Manifest.permission.RECORD_AUDIO)) {
             permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
             return
         }
         val st = textureView.surfaceTexture ?: return
+        val w = if (surfaceW > 0) surfaceW else textureView.width.coerceAtLeast(1)
+        val h = if (surfaceH > 0) surfaceH else textureView.height.coerceAtLeast(1)
         textureView.setTransform(Matrix())
         lastDisplayRotation = getCurrentDisplayRotation()
         engine.attachSurfaceAndOpen(
             texture = st,
-            width = textureView.width.coerceAtLeast(1),
-            height = textureView.height.coerceAtLeast(1),
+            width = w,
+            height = h,
             displayRotation = lastDisplayRotation
         )
         engine.updateGpuScopes(overlayView.toGpuScopeState())
