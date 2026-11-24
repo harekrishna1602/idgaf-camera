@@ -1314,6 +1314,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
+        view.findViewById<TextView>(R.id.btnCreditsLicense).setOnClickListener {
+            showIdgafLicenseDialog()
+        }
+
         val btnUpdateOrCheck = view.findViewById<TextView>(R.id.btnCreditsCheckUpdate)
         val pendingUrl = updateDownloadUrl
         val pendingTag = updateLatestTag
@@ -1339,6 +1343,23 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         dialog.show()
+    }
+
+    private fun showIdgafLicenseDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("THE IDGAF LICENSE (Redemption Edition)")
+            .setMessage(
+                "1. FOR HUMANS (Indie Filmmakers, Students, Creators & Literally Any Person):\n" +
+                    "• Price: $0 / ₹0 FOREVER.\n" +
+                    "• Zero paywalls. Zero watermarks. Zero subscriptions.\n" +
+                    "• Optional Human Lifetime License: $1 USD globally — only if you feel like owning it officially. Otherwise, it stays 100% free forever.\n\n" +
+                    "2. FOR SUBSCRIPTION-HAPPY CORPORATIONS (Any XYZ Company Charging Humans Monthly Rent Just to Breathe):\n" +
+                    "• Mandatory Corporate Redemption Subscription: $9,999 USD / month per device (billed annually, payable in advance, auto-renewing with zero grace period).\n" +
+                    "• LIFETIME LICENSE STRICTLY BANNED: Corporations & organizations are permanently prohibited from purchasing the $1 Lifetime License. No buyouts. Enjoy your monthly bill.\n\n" +
+                    "— Studio Mogli / Savior San"
+            )
+            .setPositiveButton("RESPECT", null)
+            .show()
     }
 
     private fun checkForGitHubUpdateSilently(manualCheck: Boolean = false) {
@@ -1406,8 +1427,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.2"
-    } catch (_: Exception) { "0.7.2" }
+        info.versionName ?: "0.7.2.1"
+    } catch (_: Exception) { "0.7.2.1" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1483,6 +1504,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 setColorDrawerRawComparePeek(false)
             }
             colorControlDrawer.visibility = if (showing) View.GONE else View.VISIBLE
+            if (!showing) {
+                rowColorLutMix.visibility = if (activeLutSourceId.isNotEmpty()) View.VISIBLE else View.GONE
+            }
             updateLookTopPillVisual()
         }
 

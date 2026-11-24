@@ -297,6 +297,7 @@ class CinemaGlRenderer(
     private var uLutIntensityLoc: Int = -1
 
     private var lutTextureId: Int = 0
+    private var dummyLutTextureId: Int = 0
     private var activeUploadedLutSize: Int = 0
     @Volatile private var desiredLutData: CubeLutData? = null
     @Volatile private var lutUploadDirty: Boolean = false
@@ -572,6 +573,10 @@ class CinemaGlRenderer(
                     GLES20.glDeleteTextures(1, intArrayOf(lutTextureId), 0)
                     lutTextureId = 0
                     activeUploadedLutSize = 0
+                }
+                if (dummyLutTextureId != 0) {
+                    GLES20.glDeleteTextures(1, intArrayOf(dummyLutTextureId), 0)
+                    dummyLutTextureId = 0
                 }
                 if (oesTextureId != 0) {
                     GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
@@ -860,11 +865,12 @@ class CinemaGlRenderer(
 
         val cs = colorState
         val lutReady = (lutTextureId != 0 && activeUploadedLutSize >= 2)
-        if (lutReady) {
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lutTextureId)
-            GLES20.glUniform1i(uLutTextureLoc, 1)
-        }
+        // CRITICAL OpenGL ES 2.0 rule: samplerExternalOES (uTexture -> unit 0) and sampler2D (uLutTexture -> unit 1)
+        // MUST NEVER share Texture Unit 0, or glDrawArrays() fails with GL_INVALID_OPERATION (black screen)!
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (lutReady) lutTextureId else dummyLutTextureId)
+        GLES20.glUniform1i(uLutTextureLoc, 1)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         if (cs.isBypassed) {
             GLES20.glUniform1f(uExposureMulLoc, 1.0f)
             GLES20.glUniform1f(uContrastLoc, 1.0f)
@@ -897,10 +903,8 @@ class CinemaGlRenderer(
 
         GLES20.glDisableVertexAttribArray(aPositionLoc)
         GLES20.glDisableVertexAttribArray(aTexCoordLoc)
-        if (lutReady) {
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
-        }
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
     }
@@ -1063,6 +1067,35 @@ class CinemaGlRenderer(
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+
+            // Create a permanent 2x2 valid 2D texture for GL_TEXTURE1 so uLutTexture is ALWAYS complete on boot
+            val dummyIds = IntArray(1)
+            GLES20.glGenTextures(1, dummyIds, 0)
+            dummyLutTextureId = dummyIds[0]
+            val dummyBuf = ByteBuffer.allocateDirect(2 * 2 * 4).order(ByteOrder.nativeOrder()).apply {
+                put(byteArrayOf(
+                    0, 0, 0, -1,  -1, 0, 0, -1,
+                    0, -1, 0, -1, -1, -1, -1, -1
+                ))
+                position(0)
+            }
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, dummyLutTextureId)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, 2, 2, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, dummyBuf
+            )
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+
+            // Lock sampler units immediately after program link (unit 0 = OES camera, unit 1 = 2D LUT)
+            GLES20.glUseProgram(programId)
+            GLES20.glUniform1i(uTextureLoc, 0)
+            GLES20.glUniform1i(uLutTextureLoc, 1)
 
             cameraInputTexture = SurfaceTexture(oesTextureId).apply {
                 setDefaultBufferSize(videoWidth, videoHeight)
