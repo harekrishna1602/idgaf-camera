@@ -253,7 +253,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val curRot = getCurrentDisplayRotation()
             if (curRot != lastDisplayRotation) {
                 lastDisplayRotation = curRot
-                lastPreviewSize?.let { configureTransform(it) }
+                engine.setDisplayRotation(curRot)
             }
         }
     }
@@ -283,21 +283,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private val analysisRunnable = object : Runnable {
         override fun run() {
-            if (!overlayView.needsFrameAnalysis()) return
+            if (!overlayView.needsHistogramAnalysis()) return
             if (textureView.isAvailable && isAnalyzingFrame.compareAndSet(false, true)) {
                 val worker = analysisHandler
                 if (worker == null) {
                     isAnalyzingFrame.set(false)
                 } else {
                     try {
-                        // Aspect-matched 108x192 (9:16) buffer matches raw SurfaceTexture so rotated landscape scopes have 1:1 square pixels
-                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 108 && it.height == 192 }
-                            ?: Bitmap.createBitmap(108, 192, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
+                        // Ultra-lightweight 64x36 sample ONLY for RGB+Luma Histogram (Peaking, Zebras & False Color run 100% on GPU at 60 FPS!)
+                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 64 && it.height == 36 }
+                            ?: Bitmap.createBitmap(64, 36, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
                         textureView.getBitmap(reusable)
                         worker.post {
                             try {
                                 if (!reusable.isRecycled) {
-                                    overlayView.analyzeFrame(reusable)
+                                    overlayView.analyzeHistogramFrame(reusable)
                                 }
                             } catch (_: Exception) {
                             } finally {
@@ -309,13 +309,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     }
                 }
             }
-            uiHandler.postDelayed(this, 90L)
+            uiHandler.postDelayed(this, 110L)
         }
     }
 
     private fun syncAnalysisLoop() {
+        engine.updateGpuScopes(overlayView.toGpuScopeState())
         uiHandler.removeCallbacks(analysisRunnable)
-        if (overlayView.needsFrameAnalysis()) {
+        if (overlayView.needsHistogramAnalysis()) {
             startAnalysisThread()
             uiHandler.post(analysisRunnable)
         }
@@ -426,8 +427,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
             openCameraIfReady()
         }
-        override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
-        override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
+        override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+            engine.onPreviewSizeChanged(width, height)
+        }
+        override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+            engine.onPreviewSurfaceDestroyed()
+            return true
+        }
         override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
     }
 
@@ -1136,6 +1142,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         overlayView.peakingSensitivity = try { PeakingSensitivity.valueOf(p.peakingSensitivityName) } catch (_: Exception) { PeakingSensitivity.MED }
         overlayView.zebraMode = try { ZebraMode.valueOf(p.zebraModeName) } catch (_: Exception) { ZebraMode.IRE_92 }
         updateMonitorPillLabels()
+        syncAnalysisLoop()
 
         btnResolution.text = currentResolution.label
         btnFps.text = "${p.fps} FPS"
@@ -1258,8 +1265,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.14"
-    } catch (_: Exception) { "0.6.14" }
+        info.versionName ?: "0.7.0"
+    } catch (_: Exception) { "0.7.0" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -2276,7 +2283,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             return
         }
         val st = textureView.surfaceTexture ?: return
-        engine.attachSurfaceAndOpen(st)
+        textureView.setTransform(Matrix())
+        lastDisplayRotation = getCurrentDisplayRotation()
+        engine.attachSurfaceAndOpen(
+            texture = st,
+            width = textureView.width.coerceAtLeast(1),
+            height = textureView.height.coerceAtLeast(1),
+            displayRotation = lastDisplayRotation
+        )
+        engine.updateGpuScopes(overlayView.toGpuScopeState())
     }
 
     private fun showFocusReticle(x: Float, y: Float) {
@@ -2290,45 +2305,19 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun configureTransform(previewSize: Size) {
-        val viewW = textureView.width.toFloat()
-        val viewH = textureView.height.toFloat()
-        if (viewW <= 0f || viewH <= 0f) return
-
-        val matrix = Matrix()
-        val viewRect = RectF(0f, 0f, viewW, viewH)
-        val bufferRect = RectF(0f, 0f, previewSize.height.toFloat(), previewSize.width.toFloat())
-        val centerX = viewRect.centerX()
-        val centerY = viewRect.centerY()
-
-        val rotation = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-            display?.rotation ?: Surface.ROTATION_90
-        } else {
-            @Suppress("DEPRECATION")
-            windowManager.defaultDisplay.rotation
-        }
-
-        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
-            bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
-            matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
-            val scale = maxOf(
-                viewH / previewSize.height.toFloat(),
-                viewW / previewSize.width.toFloat()
-            )
-            matrix.postScale(scale, scale, centerX, centerY)
-            matrix.postRotate(90f * (rotation - 2), centerX, centerY)
-        } else if (rotation == Surface.ROTATION_180) {
-            matrix.postRotate(180f, centerX, centerY)
-        }
-        textureView.setTransform(matrix)
-        overlayView.setPreviewTransform(matrix)
+        // CinemaGlRenderer handles exact aspect center-crop + rotation on the GPU; keep TextureView matrix identity
+        textureView.setTransform(Matrix())
+        engine.onPreviewSizeChanged(textureView.width, textureView.height)
+        engine.setDisplayRotation(getCurrentDisplayRotation())
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         enableImmersiveFullscreen()
         lastDisplayRotation = getCurrentDisplayRotation()
-        lastPreviewSize?.let { sz ->
-            textureView.post { configureTransform(sz) }
+        textureView.post {
+            engine.onPreviewSizeChanged(textureView.width, textureView.height)
+            engine.setDisplayRotation(lastDisplayRotation)
         }
     }
 
@@ -2409,6 +2398,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             lastPreviewSize = previewSize
             lastDisplayRotation = getCurrentDisplayRotation()
             configureTransform(previewSize)
+            engine.updateGpuScopes(overlayView.toGpuScopeState())
             currentResolution = engine.targetResolution
             btnResolution.text = currentResolution.label
             btnFps.text = "$activeFps FPS"
@@ -2581,10 +2571,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         startAudioVuMonitor()
         uiHandler.removeCallbacks(sysTelemetryRunnable)
         uiHandler.post(sysTelemetryRunnable)
+        textureView.surfaceTextureListener = surfaceTextureListener
         if (textureView.isAvailable) {
             openCameraIfReady()
-        } else {
-            textureView.surfaceTextureListener = surfaceTextureListener
         }
     }
 

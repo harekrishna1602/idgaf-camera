@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -37,16 +36,16 @@ enum class PeakingColor(val label: String, val argb: Int) {
     CYAN("CYAN", Color.argb(235, 0, 229, 255))
 }
 
-enum class PeakingSensitivity(val label: String, val shortLabel: String, val threshold: Int) {
-    LOW("LOW", "L", 68),
-    MED("MED", "M", 44),
-    HIGH("HIGH", "H", 24)
+enum class PeakingSensitivity(val label: String, val shortLabel: String, val gpuThreshold: Float) {
+    LOW("LOW", "L", 0.56f),
+    MED("MED", "M", 0.34f),
+    HIGH("HIGH", "H", 0.18f)
 }
 
-enum class ZebraMode(val label: String, val shortLabel: String) {
-    IRE_70("70% (SKIN)", "70%"),
-    IRE_92("92% (HIGH)", "92%"),
-    IRE_100("100% (CLIP)", "100%")
+enum class ZebraMode(val label: String, val shortLabel: String, val gpuCode: Int) {
+    IRE_70("70% (SKIN)", "70%", 1),
+    IRE_92("92% (HIGH)", "92%", 2),
+    IRE_100("100% (CLIP)", "100%", 3)
 }
 
 class CinemaOverlayView @JvmOverloads constructor(
@@ -56,14 +55,6 @@ class CinemaOverlayView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     private val renderLock = Any()
-    private val previewTransform = Matrix()
-
-    fun setPreviewTransform(matrix: Matrix) {
-        synchronized(renderLock) {
-            previewTransform.set(matrix)
-        }
-        postInvalidate()
-    }
 
     @Volatile var gridMode: GridMode = GridMode.OFF
         set(value) {
@@ -77,36 +68,17 @@ class CinemaOverlayView @JvmOverloads constructor(
             postInvalidate()
         }
 
+    // Stored here for unified UI & Preset state; rendered on GPU at 60 FPS by CinemaGlRenderer!
     @Volatile var showPeaking: Boolean = false
-        set(value) {
-            field = value
-            if (!value) {
-                synchronized(renderLock) { peakingFront = null }
-            }
-            postInvalidate()
-        }
-
     @Volatile var peakingColor: PeakingColor = PeakingColor.GREEN
     @Volatile var peakingSensitivity: PeakingSensitivity = PeakingSensitivity.MED
-
     @Volatile var showZebras: Boolean = false
-        set(value) {
-            field = value
-            if (!value) {
-                synchronized(renderLock) { zebraFront = null }
-            }
-            postInvalidate()
-        }
-
     @Volatile var zebraMode: ZebraMode = ZebraMode.IRE_92
 
     @Volatile var showFalseColor: Boolean = false
         set(value) {
             field = value
-            if (!value) {
-                synchronized(renderLock) { falseColorFront = null }
-            }
-            postInvalidate()
+            postInvalidate() // Toggles compact IRE Legend bar
         }
 
     @Volatile var showHistogram: Boolean = false
@@ -127,23 +99,19 @@ class CinemaOverlayView @JvmOverloads constructor(
             if (showHorizon) postInvalidate()
         }
 
-    // Double-buffered overlay bitmaps (background worker writes Back, swaps atomically to Front)
-    private var peakingFront: Bitmap? = null
-    private var peakingBack: Bitmap? = null
-    private var zebraFront: Bitmap? = null
-    private var zebraBack: Bitmap? = null
-    private var falseColorFront: Bitmap? = null
-    private var falseColorBack: Bitmap? = null
+    fun toGpuScopeState(): GpuScopeState = GpuScopeState(
+        showPeaking = showPeaking,
+        peakingColorArgb = peakingColor.argb,
+        peakingThreshold = peakingSensitivity.gpuThreshold,
+        showZebras = showZebras,
+        zebraModeCode = zebraMode.gpuCode,
+        showFalseColor = showFalseColor
+    )
 
-    // Reusable analysis buffers (zero per-frame allocations)
+    // Ultra-lightweight reusable buffer for RGB + Luma Histogram ONLY (64x36 = 2,304 px)
     private var bufLen: Int = 0
     private var samplePixels = IntArray(0)
-    private var lumaBuf = IntArray(0)
-    private var peakPixels = IntArray(0)
-    private var zebraPixels = IntArray(0)
-    private var falseColorPixels = IntArray(0)
 
-    // 3-Channel RGB + Luma Histogram buffers
     private val rawBinsR = IntArray(64)
     private val rawBinsG = IntArray(64)
     private val rawBinsB = IntArray(64)
@@ -159,22 +127,6 @@ class CinemaOverlayView @JvmOverloads constructor(
     private val frontBinsB = FloatArray(64)
     private val frontBinsY = FloatArray(64)
     private var hasHighlightClip = false
-    private var zebraPhase = 0
-
-    // Precomputed 256-level ARRI/SmallHD-inspired Rec.709 IRE False Color LUT
-    private val falseColorLut = IntArray(256).apply {
-        for (y in 0..255) {
-            this[y] = when {
-                y <= 13 -> Color.argb(230, 139, 92, 246)   // 0-5% IRE: Purple (Crushed Black)
-                y <= 38 -> Color.argb(225, 37, 99, 235)    // 5-15% IRE: Blue (Deep Shadows)
-                y in 97..112 -> Color.argb(225, 34, 197, 94) // 38-44% IRE: Green (Middle Grey ~41%)
-                y in 143..174 -> Color.argb(225, 244, 114, 182) // 56-68% IRE: Pink (Key Skin Tone)
-                y in 217..242 -> Color.argb(230, 250, 204, 21) // 85-95% IRE: Yellow (Bright Highlights)
-                y >= 243 -> Color.argb(240, 239, 68, 68)   // 95-100% IRE: Red (Clipped)
-                else -> Color.argb(215, y, y, y)           // Neutral Monochrome Luma
-            }
-        }
-    }
 
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(120, 255, 255, 255)
@@ -281,46 +233,29 @@ class CinemaOverlayView @JvmOverloads constructor(
     private val histPathG = Path()
     private val histPathB = Path()
     private val histPathY = Path()
-    private val overlayPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val destRect = RectF()
     private val histRect = RectF()
     private val pillRect = RectF()
 
-    fun needsFrameAnalysis(): Boolean = showPeaking || showZebras || showHistogram || showFalseColor
+    // Only Histogram requires lightweight CPU sampling now; Peaking, Zebras & False Color run 100% on GPU!
+    fun needsHistogramAnalysis(): Boolean = showHistogram
 
-    /**
-     * Thread-safe background frame analysis (call from a dedicated worker thread).
-     * Reuses pre-allocated buffers & double-buffered Bitmaps for zero UI-thread lag.
-     */
-    fun analyzeFrame(sample: Bitmap) {
+    fun analyzeHistogramFrame(sample: Bitmap) {
+        if (!showHistogram) return
         val w = sample.width
         val h = sample.height
         val total = w * h
         if (w < 4 || h < 4) return
 
-        val doHist = showHistogram
-        val doPeak = showPeaking
-        val doZebra = showZebras
-        val doFalse = showFalseColor
-        if (!doHist && !doPeak && !doZebra && !doFalse) return
-
         if (bufLen != total) {
             bufLen = total
             samplePixels = IntArray(total)
-            lumaBuf = IntArray(total)
-            peakPixels = IntArray(total)
-            zebraPixels = IntArray(total)
-            falseColorPixels = IntArray(total)
         }
-
         sample.getPixels(samplePixels, 0, w, 0, 0, w, h)
 
-        if (doHist) {
-            rawBinsR.fill(0)
-            rawBinsG.fill(0)
-            rawBinsB.fill(0)
-            rawBinsY.fill(0)
-        }
+        rawBinsR.fill(0)
+        rawBinsG.fill(0)
+        rawBinsB.fill(0)
+        rawBinsY.fill(0)
         var clippedCount = 0
 
         for (i in 0 until total) {
@@ -329,115 +264,35 @@ class CinemaOverlayView @JvmOverloads constructor(
             val g = (c shr 8) and 0xFF
             val b = c and 0xFF
             val y = (r * 77 + g * 150 + b * 29) shr 8
-            lumaBuf[i] = y
-            if (doHist) {
-                rawBinsR[r shr 2]++
-                rawBinsG[g shr 2]++
-                rawBinsB[b shr 2]++
-                rawBinsY[y shr 2]++
-                if (r >= 252 || g >= 252 || b >= 252) clippedCount++
-            }
-            if (doFalse) {
-                falseColorPixels[i] = falseColorLut[y]
-            }
+            rawBinsR[r shr 2]++
+            rawBinsG[g shr 2]++
+            rawBinsB[b shr 2]++
+            rawBinsY[y shr 2]++
+            if (r >= 252 || g >= 252 || b >= 252) clippedCount++
         }
 
-        if (doHist) {
-            var maxBin = 1
-            for (i in 0 until 64) {
-                if (rawBinsR[i] > maxBin) maxBin = rawBinsR[i]
-                if (rawBinsG[i] > maxBin) maxBin = rawBinsG[i]
-                if (rawBinsB[i] > maxBin) maxBin = rawBinsB[i]
-                if (rawBinsY[i] > maxBin) maxBin = rawBinsY[i]
-            }
-            val invMax = 1f / maxBin.toFloat()
-            for (i in 0 until 64) {
-                workBinsR[i] = rawBinsR[i] * invMax
-                workBinsG[i] = rawBinsG[i] * invMax
-                workBinsB[i] = rawBinsB[i] * invMax
-                workBinsY[i] = rawBinsY[i] * invMax
-            }
-            val clipAlert = clippedCount > (total / 40) // > 2.5% channel highlight clipping
-            synchronized(renderLock) {
-                System.arraycopy(workBinsR, 0, frontBinsR, 0, 64)
-                System.arraycopy(workBinsG, 0, frontBinsG, 0, 64)
-                System.arraycopy(workBinsB, 0, frontBinsB, 0, 64)
-                System.arraycopy(workBinsY, 0, frontBinsY, 0, 64)
-                hasHighlightClip = clipAlert
-            }
+        var maxBin = 1
+        for (i in 0 until 64) {
+            if (rawBinsR[i] > maxBin) maxBin = rawBinsR[i]
+            if (rawBinsG[i] > maxBin) maxBin = rawBinsG[i]
+            if (rawBinsB[i] > maxBin) maxBin = rawBinsB[i]
+            if (rawBinsY[i] > maxBin) maxBin = rawBinsY[i]
         }
-
-        if (doFalse) {
-            val back = falseColorBack?.takeIf { it.width == w && it.height == h }
-                ?: Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            back.setPixels(falseColorPixels, 0, w, 0, 0, w, h)
-            synchronized(renderLock) {
-                val prevFront = falseColorFront
-                falseColorFront = back
-                falseColorBack = prevFront
-            }
+        val invMax = 1f / maxBin.toFloat()
+        for (i in 0 until 64) {
+            workBinsR[i] = rawBinsR[i] * invMax
+            workBinsG[i] = rawBinsG[i] * invMax
+            workBinsB[i] = rawBinsB[i] * invMax
+            workBinsY[i] = rawBinsY[i] * invMax
         }
-
-        if (doPeak) {
-            peakPixels.fill(0)
-            val threshold = peakingSensitivity.threshold
-            val peakColor = peakingColor.argb
-            for (y in 1 until h - 1) {
-                val row = y * w
-                for (x in 1 until w - 1) {
-                    val gx = abs(lumaBuf[row + x + 1] - lumaBuf[row + x - 1])
-                    val gy = abs(lumaBuf[row + w + x] - lumaBuf[row - w + x])
-                    if (gx + gy > threshold) {
-                        peakPixels[row + x] = peakColor
-                    }
-                }
-            }
-            val back = peakingBack?.takeIf { it.width == w && it.height == h }
-                ?: Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            back.setPixels(peakPixels, 0, w, 0, 0, w, h)
-            synchronized(renderLock) {
-                val prevFront = peakingFront
-                peakingFront = back
-                peakingBack = prevFront
-            }
+        val clipAlert = clippedCount > (total / 40)
+        synchronized(renderLock) {
+            System.arraycopy(workBinsR, 0, frontBinsR, 0, 64)
+            System.arraycopy(workBinsG, 0, frontBinsG, 0, 64)
+            System.arraycopy(workBinsB, 0, frontBinsB, 0, 64)
+            System.arraycopy(workBinsY, 0, frontBinsY, 0, 64)
+            hasHighlightClip = clipAlert
         }
-
-        if (doZebra) {
-            zebraPixels.fill(0)
-            val mode = zebraMode
-            val phase = zebraPhase
-            zebraPhase = (zebraPhase + 1) and 3
-            val zebraColor = when (mode) {
-                ZebraMode.IRE_70 -> Color.argb(220, 255, 204, 0)  // Warm Yellow for 70% Skin Band
-                ZebraMode.IRE_92 -> Color.argb(220, 255, 59, 48)  // Warning Red for 92% IRE
-                ZebraMode.IRE_100 -> Color.argb(235, 255, 23, 68) // Hot Clip Red for 100% IRE
-            }
-            for (y in 0 until h) {
-                val row = y * w
-                for (x in 0 until w) {
-                    if (((x + y + phase) and 3) < 2) {
-                        val lv = lumaBuf[row + x]
-                        val hit = when (mode) {
-                            ZebraMode.IRE_70 -> lv in 170..192
-                            ZebraMode.IRE_92 -> lv >= 235
-                            ZebraMode.IRE_100 -> lv >= 250
-                        }
-                        if (hit) {
-                            zebraPixels[row + x] = zebraColor
-                        }
-                    }
-                }
-            }
-            val back = zebraBack?.takeIf { it.width == w && it.height == h }
-                ?: Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            back.setPixels(zebraPixels, 0, w, 0, 0, w, h)
-            synchronized(renderLock) {
-                val prevFront = zebraFront
-                zebraFront = back
-                zebraBack = prevFront
-            }
-        }
-
         postInvalidate()
     }
 
@@ -448,27 +303,8 @@ class CinemaOverlayView @JvmOverloads constructor(
         if (w <= 0f || h <= 0f) return
 
         val dp = resources.displayMetrics.density
-        destRect.set(0f, 0f, w, h)
 
-        // Draw frame-derived scopes using TextureView's EXACT transform matrix so they lock pixel-for-pixel!
-        synchronized(renderLock) {
-            if (showFalseColor || showPeaking || showZebras) {
-                canvas.save()
-                canvas.concat(previewTransform)
-                if (showFalseColor) {
-                    falseColorFront?.let { canvas.drawBitmap(it, null, destRect, overlayPaint) }
-                }
-                if (showPeaking) {
-                    peakingFront?.let { canvas.drawBitmap(it, null, destRect, overlayPaint) }
-                }
-                if (showZebras) {
-                    zebraFront?.let { canvas.drawBitmap(it, null, destRect, overlayPaint) }
-                }
-                canvas.restore()
-            }
-        }
-
-        // 4. Aspect Ratio Frame Guides
+        // 1. Aspect Ratio Frame Guides
         if (aspectGuide != AspectGuide.OFF && aspectGuide.ratio > 0f) {
             val viewRatio = w / h
             val targetRatio = aspectGuide.ratio
@@ -489,7 +325,7 @@ class CinemaOverlayView @JvmOverloads constructor(
             }
         }
 
-        // 5. Rule of Thirds OR Golden Ratio (Phi 0.382 / 0.618) Grid + Center Crosshair
+        // 2. Rule of Thirds OR Golden Ratio (Phi 0.382 / 0.618) Grid + Center Crosshair
         if (gridMode != GridMode.OFF) {
             val f1 = if (gridMode == GridMode.GOLDEN) 0.382f else (1f / 3f)
             val f2 = if (gridMode == GridMode.GOLDEN) 0.618f else (2f / 3f)
@@ -509,14 +345,13 @@ class CinemaOverlayView @JvmOverloads constructor(
             canvas.drawLine(cx, cy - arm, cx, cy + arm, crosshairPaint)
         }
 
-        // 6. Live Horizon Level Indicator + Live Degree Readout
+        // 3. Live Horizon Level Indicator + Live Degree Readout
         if (showHorizon) {
             val cx = w / 2f
             val cy = h / 2f
             val halfSpan = 64f * dp
             val gap = 14f * dp
 
-            // Static white reference ticks on left and right
             canvas.drawLine(cx - halfSpan - 12f * dp, cy, cx - halfSpan - 3f * dp, cy, horizonRefPaint)
             canvas.drawLine(cx + halfSpan + 3f * dp, cy, cx + halfSpan + 12f * dp, cy, horizonRefPaint)
 
@@ -540,12 +375,12 @@ class CinemaOverlayView @JvmOverloads constructor(
             canvas.drawText(degLabel, cx, pillTop + 12f * dp, horizonTextPaint)
         }
 
-        // 7. Compact False Color IRE Legend Strip (Bottom-Center above dock)
+        // 4. Compact False Color IRE Legend Strip (Bottom-Center above dock)
         if (showFalseColor) {
             drawFalseColorLegend(canvas, w, h, dp)
         }
 
-        // 8. 3-Channel RGB + Luma Overlay Histogram (Top-Right clear of all drawers)
+        // 5. 3-Channel RGB + Luma Overlay Histogram (Top-Right clear of all drawers)
         if (showHistogram) {
             val boxW = 132f * dp
             val boxH = 56f * dp
@@ -561,7 +396,6 @@ class CinemaOverlayView @JvmOverloads constructor(
             val innerH = boxH - pad * 2f - 9f * dp
             val baseY = top + boxH - pad
 
-            // Quarter-stop vertical guide lines (25% / 50% / 75%)
             for (q in 1..3) {
                 val gx = left + pad + (q * 0.25f) * innerW
                 canvas.drawLine(gx, top + 11f * dp, gx, baseY, histGuidePaint)

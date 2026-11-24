@@ -147,7 +147,11 @@ class CinemaCameraEngine(
     private var activeMediaUri: Uri? = null
     private var activeFileLabel: String = ""
 
-    private var surfaceTexture: SurfaceTexture? = null
+    private var glRenderer: CinemaGlRenderer? = null
+    private var previewSurfaceTexture: SurfaceTexture? = null
+    private var previewViewWidth: Int = 1920
+    private var previewViewHeight: Int = 1080
+    private var currentDisplayRotation: Int = Surface.ROTATION_90
     private var lenses: List<CinemaLens> = emptyList()
     private var activeLensIndex: Int = 0
 
@@ -322,6 +326,11 @@ class CinemaCameraEngine(
             backgroundThread = HandlerThread("IdgafCinemaThread").also { it.start() }
             backgroundHandler = Handler(backgroundThread!!.looper)
         }
+        if (glRenderer == null) {
+            glRenderer = CinemaGlRenderer { err -> listener.onError(err) }.also { it.start() }
+        } else {
+            glRenderer?.start()
+        }
         if (lenses.isEmpty()) {
             discoverLenses()
         }
@@ -329,6 +338,9 @@ class CinemaCameraEngine(
 
     fun stopThread() {
         closeCamera()
+        glRenderer?.release()
+        glRenderer = null
+        previewSurfaceTexture = null
         backgroundThread?.quitSafely()
         try {
             backgroundThread?.join(500)
@@ -336,6 +348,28 @@ class CinemaCameraEngine(
         }
         backgroundThread = null
         backgroundHandler = null
+    }
+
+    fun updateGpuScopes(state: GpuScopeState) {
+        glRenderer?.scopeState = state
+    }
+
+    fun onPreviewSizeChanged(width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            previewViewWidth = width
+            previewViewHeight = height
+            glRenderer?.updatePreviewSize(width, height)
+        }
+    }
+
+    fun setDisplayRotation(rotation: Int) {
+        currentDisplayRotation = rotation
+        glRenderer?.setDisplayRotation(rotation)
+    }
+
+    fun onPreviewSurfaceDestroyed() {
+        previewSurfaceTexture = null
+        glRenderer?.detachPreviewSurfaceSync()
     }
 
     private fun discoverLenses() {
@@ -409,8 +443,12 @@ class CinemaCameraEngine(
         }
     }
 
-    fun attachSurfaceAndOpen(texture: SurfaceTexture) {
-        surfaceTexture = texture
+    fun attachSurfaceAndOpen(texture: SurfaceTexture, width: Int, height: Int, displayRotation: Int) {
+        previewSurfaceTexture = texture
+        previewViewWidth = width.coerceAtLeast(1)
+        previewViewHeight = height.coerceAtLeast(1)
+        currentDisplayRotation = displayRotation
+        glRenderer?.attachPreviewSurface(texture, previewViewWidth, previewViewHeight, displayRotation)
         openActiveCamera()
     }
 
@@ -951,7 +989,7 @@ class CinemaCameraEngine(
     @SuppressLint("MissingPermission")
     fun openActiveCamera() {
         val lens = getActiveLens() ?: return
-        if (surfaceTexture == null) return
+        if (previewSurfaceTexture == null) return
 
         try {
             val chars = cameraManager.getCameraCharacteristics(lens.cameraId)
@@ -1035,10 +1073,14 @@ class CinemaCameraEngine(
             if (!hasFlash) isTorchEnabled = false
             currentZoomRatio = currentZoomRatio.coerceIn(minZ, maxZ)
 
-            resolvedVideoSize = chooseClosest16x9Size(videoSizes, targetResolution.width, targetResolution.height)
-
             val previewSizes = map.getOutputSizes(SurfaceTexture::class.java) ?: emptyArray()
-            resolvedPreviewSize = chooseClosest16x9Size(previewSizes, 1920, 1080)
+            // Pick a video size supported by BOTH MediaRecorder and SurfaceTexture (for our OpenGL ES OES input!)
+            val sharedSizes = videoSizes.filter { vs ->
+                previewSizes.any { ps -> ps.width == vs.width && ps.height == vs.height }
+            }.toTypedArray()
+            val candidateSizes = if (sharedSizes.isNotEmpty()) sharedSizes else previewSizes.ifEmpty { videoSizes }
+            resolvedVideoSize = chooseClosest16x9Size(candidateSizes, targetResolution.width, targetResolution.height)
+            resolvedPreviewSize = resolvedVideoSize
 
             val fpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
             resolvedFpsRange = chooseBestFpsRange(fpsRanges, targetFps)
@@ -1067,23 +1109,31 @@ class CinemaCameraEngine(
 
     private fun startPreviewSession() {
         val camera = cameraDevice ?: return
-        val texture = surfaceTexture ?: return
+        val renderer = glRenderer ?: return
         val lens = getActiveLens() ?: return
 
         try {
             closeSession()
-            texture.setDefaultBufferSize(resolvedPreviewSize.width, resolvedPreviewSize.height)
-            val previewSurface = Surface(texture)
+            val glInputSurface = renderer.prepareCameraInputSurface(
+                width = resolvedVideoSize.width,
+                height = resolvedVideoSize.height,
+                sensorOrientation = lens.sensorOrientation,
+                isFront = lens.isFront
+            ) ?: run {
+                listener.onError("OpenGL input surface unavailable.")
+                return
+            }
 
-            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                addTarget(previewSurface)
+            // Single continuous TEMPLATE_RECORD stream into OpenGL ES — zero session restarts when REC starts/stops!
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                addTarget(glInputSurface)
                 applyCinemaControls(this)
             }
             activeBuilder = builder
 
             @Suppress("DEPRECATION")
             camera.createCaptureSession(
-                listOf(previewSurface),
+                listOf(glInputSurface),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         if (cameraDevice == null) return
@@ -1103,7 +1153,7 @@ class CinemaCameraEngine(
                     }
 
                     override fun onConfigureFailed(session: CameraCaptureSession) {
-                        listener.onError("Preview configuration failed.")
+                        listener.onError("Camera GL session configuration failed.")
                     }
                 },
                 backgroundHandler
@@ -1191,73 +1241,37 @@ class CinemaCameraEngine(
 
     fun startRecording(displayRotation: Int) {
         if (isRecording) return
-        val camera = cameraDevice ?: return
-        val texture = surfaceTexture ?: return
+        val renderer = glRenderer ?: return
         val lens = getActiveLens() ?: return
+        if (cameraDevice == null || captureSession == null) return
 
         // Audit fix: if user taps REC while Auto Pilot is still metering, snap-lock Exposure + WB
         // right now BEFORE MediaRecorder starts so exposure/color never jump mid-recording!
         if (autoPilotState == AutoPilotState.METERING) {
-            finalizeAutoPilotSceneLock(pushRequest = false)
+            finalizeAutoPilotSceneLock(pushRequest = true)
         }
 
         try {
-            closeSession()
             val recorder = createAndPrepareMediaRecorder(lens, displayRotation)
             mediaRecorder = recorder
 
-            texture.setDefaultBufferSize(resolvedPreviewSize.width, resolvedPreviewSize.height)
-            val previewSurface = Surface(texture)
-            val recordSurface = recorder.surface
-
-            // Freeze current exposure on frame 1 to prevent auto-exposure brightness burst!
-            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                addTarget(previewSurface)
-                addTarget(recordSurface)
-                applyCinemaControls(this, lockAutoForRecordStart = true)
-            }
-            activeBuilder = builder
-
-            @Suppress("DEPRECATION")
-            camera.createCaptureSession(
-                listOf(previewSurface, recordSurface),
-                object : CameraCaptureSession.StateCallback() {
-                    override fun onConfigured(session: CameraCaptureSession) {
-                        if (cameraDevice == null) return
-                        captureSession = session
-                        try {
-                            session.setRepeatingRequest(builder.build(), captureCallback, backgroundHandler)
-                            recorder.start()
-                            isRecording = true
-                            listener.onRecordingStarted()
-
-                            // If user was in Auto mode (not manually locked), smoothly release AE lock after 600ms
-                            if (!isManualExposure && !isAeAfLocked) {
-                                backgroundHandler?.postDelayed({
-                                    if (isRecording && !isManualExposure && !isAeAfLocked) {
-                                        pushUpdatedRepeatingRequest()
-                                    }
-                                }, 600L)
-                            }
-                        } catch (e: Exception) {
-                            cleanupRecorderOnFailure()
-                            listener.onError("Record start failed: ${e.message}")
-                            startPreviewSession()
-                        }
-                    }
-
-                    override fun onConfigureFailed(session: CameraCaptureSession) {
-                        cleanupRecorderOnFailure()
-                        listener.onError("Record session failed (try 1080P or 30fps).")
-                        startPreviewSession()
-                    }
-                },
-                backgroundHandler
+            val attached = renderer.attachEncoderSurfaceSync(
+                recorderSurface = recorder.surface,
+                width = resolvedVideoSize.width,
+                height = resolvedVideoSize.height,
+                rotation = displayRotation
             )
+            if (!attached) {
+                throw IllegalStateException("Failed to attach OpenGL encoder surface")
+            }
+
+            recorder.start()
+            isRecording = true
+            listener.onRecordingStarted()
         } catch (e: Exception) {
+            glRenderer?.detachEncoderSurfaceSync()
             cleanupRecorderOnFailure()
-            listener.onError("MediaRecorder error: ${e.message}")
-            startPreviewSession()
+            listener.onError("Record start failed: ${e.message}")
         }
     }
 
@@ -1265,14 +1279,13 @@ class CinemaCameraEngine(
         if (!isRecording) return
         isRecording = false
 
-        try {
-            captureSession?.stopRepeating()
-            captureSession?.abortCaptures()
-        } catch (_: Exception) {
-        }
+        // Step 1: Synchronously detach GL encoder surface BEFORE MediaRecorder.stop() so EGL never writes to a dead surface!
+        glRenderer?.detachEncoderSurfaceSync()
 
+        var stopSucceeded = false
         try {
             mediaRecorder?.stop()
+            stopSucceeded = true
         } catch (_: Exception) {
         }
         try {
@@ -1289,6 +1302,16 @@ class CinemaCameraEngine(
         activeOutputPfd = null
 
         val savedUri = activeMediaUri
+        activeMediaUri = null
+        if (!stopSucceeded && savedUri != null) {
+            try {
+                context.contentResolver.delete(savedUri, null, null)
+            } catch (_: Exception) {
+            }
+            listener.onRecordingStopped(null, "")
+            return
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && savedUri != null) {
             try {
                 val values = ContentValues().apply {
@@ -1300,10 +1323,7 @@ class CinemaCameraEngine(
         }
 
         val label = activeFileLabel
-        activeMediaUri = null
         listener.onRecordingStopped(savedUri, label)
-
-        startPreviewSession()
     }
 
     private fun createAndPrepareMediaRecorder(lens: CinemaLens, displayRotation: Int): MediaRecorder {
@@ -1359,7 +1379,8 @@ class CinemaCameraEngine(
             recorder.setAudioEncodingBitRate(256_000)
             recorder.setAudioSamplingRate(48_000)
         }
-        recorder.setOrientationHint(computeOrientationHint(lens, displayRotation))
+        // Upright orientation is baked directly inside CinemaGlRenderer's GPU encoder pass
+        recorder.setOrientationHint(0)
 
         // Route external USB/Wired mic if preferred or detected in AUTO mode (API 28+)
         if (!isAudioMuted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
@@ -1404,6 +1425,10 @@ class CinemaCameraEngine(
         } catch (_: Exception) {
         }
         activeOutputPfd = null
+        activeMediaUri?.let { uri ->
+            try { context.contentResolver.delete(uri, null, null) } catch (_: Exception) {}
+        }
+        activeMediaUri = null
     }
 
     private fun closeSession() {
