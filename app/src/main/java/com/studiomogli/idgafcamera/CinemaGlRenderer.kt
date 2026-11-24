@@ -36,10 +36,12 @@ data class GpuColorState(
     val shadows: Float = 0.0f,      // -0.50 .. +0.50
     val highlights: Float = 0.0f,   // -0.50 .. +0.50
     val vignette: Float = 0.0f,     // 0.00 .. 0.85
+    val lutIntensity: Float = 1.0f, // 0.00 .. 1.00
     val isBypassed: Boolean = false
 ) {
-    fun isNeutral(): Boolean =
-        kotlin.math.abs(exposureLift) < 0.01f &&
+    fun isNeutral(hasActiveLut: Boolean = false): Boolean =
+        !hasActiveLut &&
+            kotlin.math.abs(exposureLift) < 0.01f &&
             kotlin.math.abs(contrast - 1.0f) < 0.01f &&
             kotlin.math.abs(saturation - 1.0f) < 0.01f &&
             kotlin.math.abs(shadows) < 0.01f &&
@@ -105,19 +107,42 @@ class CinemaGlRenderer(
             uniform vec2 uStepY;
             uniform float uTimeSec;
 
-            // Phase 7.2A Live GPU Color Grade uniforms (baked cleanly into both preview & MP4 encoder passes)
+            // Phase 7.2A/7.2B Live GPU Color Grade + 3D .cube LUT Atlas uniforms (baked cleanly into preview & MP4)
             uniform float uExposureMul;
             uniform float uContrast;
             uniform float uSaturation;
             uniform float uShadows;
             uniform float uHighlights;
             uniform float uVignette;
+            uniform sampler2D uLutTexture;
+            uniform int uHasLut;
+            uniform float uLutSize;
+            uniform float uLutIntensity;
 
             varying vec2 vTexCoord;
             varying vec2 vQuadCoord;
 
             float calcLuma(vec3 c) {
                 return dot(c, vec3(0.299, 0.587, 0.114));
+            }
+
+            // Broadcast-grade trilinear 3D LUT lookup packed into 2D atlas (width = N*N, height = N)
+            vec3 apply3dCubeLut(vec3 c) {
+                vec3 rgb = clamp(c, 0.0, 1.0);
+                float blueSlice = rgb.b * (uLutSize - 1.0);
+                float b0 = floor(blueSlice);
+                float b1 = min(b0 + 1.0, uLutSize - 1.0);
+                float bFrac = blueSlice - b0;
+
+                float invAtlasW = 1.0 / (uLutSize * uLutSize);
+                float rOffset = rgb.r * (uLutSize - 1.0) + 0.5;
+                float u0 = (b0 * uLutSize + rOffset) * invAtlasW;
+                float u1 = (b1 * uLutSize + rOffset) * invAtlasW;
+                float v  = (rgb.g * (uLutSize - 1.0) + 0.5) / uLutSize;
+
+                vec3 s0 = texture2D(uLutTexture, vec2(u0, v)).rgb;
+                vec3 s1 = texture2D(uLutTexture, vec2(u1, v)).rgb;
+                return mix(s0, s1, bFrac);
             }
 
             vec3 applyFalseColor(float y) {
@@ -160,7 +185,13 @@ class CinemaGlRenderer(
                     baseColor = clamp(mix(vec3(ly2), baseColor, uSaturation), 0.0, 1.0);
                 }
 
-                // 5. Cinema Optical Vignette (elliptical to frame via vQuadCoord; identical on preview & MP4)
+                // 5. Phase 7.2B Real 3D .cube LUT (applied after primary balance & before optical vignette)
+                if (uHasLut == 1 && uLutIntensity > 0.001) {
+                    vec3 lutColor = apply3dCubeLut(baseColor);
+                    baseColor = clamp(mix(baseColor, lutColor, uLutIntensity), 0.0, 1.0);
+                }
+
+                // 6. Cinema Optical Vignette (elliptical to frame via vQuadCoord; identical on preview & MP4)
                 if (uVignette > 0.001) {
                     float d = length(vQuadCoord) * 0.7071;
                     float vig = 1.0 - uVignette * smoothstep(0.32, 1.08, d);
@@ -260,6 +291,15 @@ class CinemaGlRenderer(
     private var uShadowsLoc: Int = -1
     private var uHighlightsLoc: Int = -1
     private var uVignetteLoc: Int = -1
+    private var uLutTextureLoc: Int = -1
+    private var uHasLutLoc: Int = -1
+    private var uLutSizeLoc: Int = -1
+    private var uLutIntensityLoc: Int = -1
+
+    private var lutTextureId: Int = 0
+    private var activeUploadedLutSize: Int = 0
+    @Volatile private var desiredLutData: CubeLutData? = null
+    @Volatile private var lutUploadDirty: Boolean = false
 
     private val vertexBuf: FloatBuffer = ByteBuffer.allocateDirect(FULL_QUAD_VERTICES.size * 4)
         .order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
@@ -404,6 +444,11 @@ class CinemaGlRenderer(
         displayRotation = rotation
     }
 
+    fun setCubeLut(lut: CubeLutData?) {
+        desiredLutData = lut
+        lutUploadDirty = true
+    }
+
     fun detachPreviewSurfaceSync() {
         val handler = glHandler ?: return
         val latch = CountDownLatch(1)
@@ -523,6 +568,11 @@ class CinemaGlRenderer(
                 cameraInputTexture?.release()
                 cameraInputTexture = null
 
+                if (lutTextureId != 0) {
+                    GLES20.glDeleteTextures(1, intArrayOf(lutTextureId), 0)
+                    lutTextureId = 0
+                    activeUploadedLutSize = 0
+                }
                 if (oesTextureId != 0) {
                     GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
                     oesTextureId = 0
@@ -589,6 +639,11 @@ class CinemaGlRenderer(
         val stepXy = 0.0f
         val stepYx = 0.0f
         val stepYy = 1.0f / videoHeight.coerceAtLeast(16).toFloat()
+
+        // Sync any pending 3D .cube LUT texture upload right on IdgafGlThread (zero stalls, instant switch!)
+        if (lutUploadDirty) {
+            uploadPendingLutOnGlThread()
+        }
 
         // PASS 1: Full-Bleed Preview Surface WITH 60 FPS GPU Monitoring Scopes
         if (previewEglSurface != EGL14.EGL_NO_SURFACE && previewWidth > 0 && previewHeight > 0) {
@@ -804,6 +859,12 @@ class CinemaGlRenderer(
         GLES20.glUniform1f(uTimeSecLoc, timeSec)
 
         val cs = colorState
+        val lutReady = (lutTextureId != 0 && activeUploadedLutSize >= 2)
+        if (lutReady) {
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lutTextureId)
+            GLES20.glUniform1i(uLutTextureLoc, 1)
+        }
         if (cs.isBypassed) {
             GLES20.glUniform1f(uExposureMulLoc, 1.0f)
             GLES20.glUniform1f(uContrastLoc, 1.0f)
@@ -811,6 +872,9 @@ class CinemaGlRenderer(
             GLES20.glUniform1f(uShadowsLoc, 0.0f)
             GLES20.glUniform1f(uHighlightsLoc, 0.0f)
             GLES20.glUniform1f(uVignetteLoc, 0.0f)
+            GLES20.glUniform1i(uHasLutLoc, 0)
+            GLES20.glUniform1f(uLutSizeLoc, 33.0f)
+            GLES20.glUniform1f(uLutIntensityLoc, 0.0f)
         } else {
             val expMul = Math.pow(2.0, cs.exposureLift.toDouble()).toFloat()
             GLES20.glUniform1f(uExposureMulLoc, expMul)
@@ -819,6 +883,9 @@ class CinemaGlRenderer(
             GLES20.glUniform1f(uShadowsLoc, cs.shadows)
             GLES20.glUniform1f(uHighlightsLoc, cs.highlights)
             GLES20.glUniform1f(uVignetteLoc, cs.vignette)
+            GLES20.glUniform1i(uHasLutLoc, if (lutReady) 1 else 0)
+            GLES20.glUniform1f(uLutSizeLoc, activeUploadedLutSize.coerceAtLeast(2).toFloat())
+            GLES20.glUniform1f(uLutIntensityLoc, cs.lutIntensity.coerceIn(0f, 1f))
         }
 
         GLES20.glEnableVertexAttribArray(aPositionLoc)
@@ -830,7 +897,64 @@ class CinemaGlRenderer(
 
         GLES20.glDisableVertexAttribArray(aPositionLoc)
         GLES20.glDisableVertexAttribArray(aTexCoordLoc)
+        if (lutReady) {
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+        }
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+    }
+
+    private fun uploadPendingLutOnGlThread() {
+        lutUploadDirty = false
+        val lut = desiredLutData
+        if (lut == null) {
+            if (lutTextureId != 0) {
+                GLES20.glDeleteTextures(1, intArrayOf(lutTextureId), 0)
+                lutTextureId = 0
+            }
+            activeUploadedLutSize = 0
+            return
+        }
+        try {
+            if (lutTextureId == 0) {
+                val ids = IntArray(1)
+                GLES20.glGenTextures(1, ids, 0)
+                lutTextureId = ids[0]
+            }
+            val n = lut.size
+            val atlasW = n * n
+            val atlasH = n
+            val buf = ByteBuffer.allocateDirect(lut.rgbaBytes.size).order(ByteOrder.nativeOrder())
+            buf.put(lut.rgbaBytes)
+            buf.position(0)
+
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lutTextureId)
+            // NPOT OpenGL ES 2.0 strict requirement: CLAMP_TO_EDGE + LINEAR (zero mipmaps)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 4)
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D,
+                0,
+                GLES20.GL_RGBA,
+                atlasW,
+                atlasH,
+                0,
+                GLES20.GL_RGBA,
+                GLES20.GL_UNSIGNED_BYTE,
+                buf
+            )
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            activeUploadedLutSize = n
+        } catch (e: Exception) {
+            activeUploadedLutSize = 0
+            onGlError("3D LUT GPU upload failed: ${e.message}")
+        }
     }
 
     private fun destroyPreviewSurfaceOnGlThread() {
@@ -922,6 +1046,13 @@ class CinemaGlRenderer(
             uShadowsLoc = GLES20.glGetUniformLocation(programId, "uShadows")
             uHighlightsLoc = GLES20.glGetUniformLocation(programId, "uHighlights")
             uVignetteLoc = GLES20.glGetUniformLocation(programId, "uVignette")
+            uLutTextureLoc = GLES20.glGetUniformLocation(programId, "uLutTexture")
+            uHasLutLoc = GLES20.glGetUniformLocation(programId, "uHasLut")
+            uLutSizeLoc = GLES20.glGetUniformLocation(programId, "uLutSize")
+            uLutIntensityLoc = GLES20.glGetUniformLocation(programId, "uLutIntensity")
+            if (desiredLutData != null) {
+                lutUploadDirty = true
+            }
 
             val textures = IntArray(1)
             GLES20.glGenTextures(1, textures, 0)

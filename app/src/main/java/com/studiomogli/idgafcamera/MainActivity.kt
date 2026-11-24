@@ -14,6 +14,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.text.InputType
 import android.widget.EditText
 import androidx.appcompat.app.AlertDialog
@@ -95,7 +96,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var colorDrawerHeaderRow: LinearLayout
     private lateinit var txtColorDrawerTitle: TextView
     private lateinit var colorLooksPresetRow: LinearLayout
+    private lateinit var colorLutBarRow: LinearLayout
+    private lateinit var btnSelectCubeLut: TextView
+    private lateinit var btnImportCubeQuick: TextView
     private lateinit var scrollColorSliders: ScrollView
+    private lateinit var rowColorLutMix: LinearLayout
+    private lateinit var seekColorLutMix: SeekBar
+    private lateinit var txtColorLutMixVal: TextView
     private lateinit var rowColorExp: LinearLayout
     private lateinit var rowColorCon: LinearLayout
     private lateinit var rowColorSat: LinearLayout
@@ -123,16 +130,19 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var txtColorVigVal: TextView
     private var gpuColorState: GpuColorState = GpuColorState()
     private var activeLookTag: String = "NONE"
+    private var activeLutSourceId: String = ""
+    private var activeLutDisplayName: String = "NONE"
     private var suppressColorSeek: Boolean = false
     private lateinit var txtTimerCountdown: TextView
     private val timerOptions = listOf(0, 3, 5)
     private var timerIdx = 0
     private var countdownRemaining = 0
     private var pendingRecRotation = Surface.ROTATION_90
+    private lateinit var btnBrandCredits: TextView
     private lateinit var txtSysTelemetry: TextView
-    private lateinit var btnUpdateApp: TextView
     private lateinit var presetStore: PresetStore
     private var updateDownloadUrl: String? = null
+    private var updateLatestTag: String? = null
     private var gridModeIdx = 0
     private val bitrateOptions = listOf(4, 8, 12, 24, 35, 50, 75, 100, 120)
     private var bitrateIdx = 4
@@ -451,6 +461,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
+    private val importCubeLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            importCubeLutFromUri(uri)
+        }
+    }
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
@@ -513,7 +531,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         colorDrawerHeaderRow = findViewById(R.id.colorDrawerHeaderRow)
         txtColorDrawerTitle = findViewById(R.id.txtColorDrawerTitle)
         colorLooksPresetRow = findViewById(R.id.colorLooksPresetRow)
+        colorLutBarRow = findViewById(R.id.colorLutBarRow)
+        btnSelectCubeLut = findViewById(R.id.btnSelectCubeLut)
+        btnImportCubeQuick = findViewById(R.id.btnImportCubeQuick)
         scrollColorSliders = findViewById(R.id.scrollColorSliders)
+        rowColorLutMix = findViewById(R.id.rowColorLutMix)
+        seekColorLutMix = findViewById(R.id.seekColorLutMix)
+        txtColorLutMixVal = findViewById(R.id.txtColorLutMixVal)
         rowColorExp = findViewById(R.id.rowColorExp)
         rowColorCon = findViewById(R.id.rowColorCon)
         rowColorSat = findViewById(R.id.rowColorSat)
@@ -540,8 +564,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         seekColorVig = findViewById(R.id.seekColorVig)
         txtColorVigVal = findViewById(R.id.txtColorVigVal)
         txtTimerCountdown = findViewById(R.id.txtTimerCountdown)
+        btnBrandCredits = findViewById(R.id.btnBrandCredits)
         txtSysTelemetry = findViewById(R.id.txtSysTelemetry)
-        btnUpdateApp = findViewById(R.id.btnUpdateApp)
         presetStore = PresetStore(this)
         btnMonitorToggle = findViewById(R.id.btnMonitorToggle)
         monitorToolsBar = findViewById(R.id.monitorToolsBar)
@@ -624,19 +648,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         setupAudioControllerDrawer()
         setupColorStudioDrawer()
 
-        findViewById<TextView>(R.id.btnBrandCredits).setOnClickListener {
+        btnBrandCredits.setOnClickListener {
             showStudioMogliCreditsDialog()
-        }
-
-        btnUpdateApp.setOnClickListener {
-            val url = updateDownloadUrl
-            if (!url.isNullOrBlank()) {
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                } catch (_: Exception) {
-                    Toast.makeText(this, "Unable to open update link", Toast.LENGTH_SHORT).show()
-                }
-            }
         }
 
         if (savedInstanceState == null) {
@@ -1162,6 +1175,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     gpuShadows = gpuColorState.shadows,
                     gpuHighlights = gpuColorState.highlights,
                     gpuVignette = gpuColorState.vignette,
+                    lutSourceId = activeLutSourceId,
+                    lutIntensity = gpuColorState.lutIntensity,
                     mirrorFrontExport = engine.mirrorFrontExport
                 )
                 presetStore.save(preset)
@@ -1245,9 +1260,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             shadows = p.gpuShadows.coerceIn(-0.50f, 0.50f),
             highlights = p.gpuHighlights.coerceIn(-0.50f, 0.50f),
             vignette = p.gpuVignette.coerceIn(0.0f, 0.85f),
+            lutIntensity = p.lutIntensity.coerceIn(0.0f, 1.0f),
             isBypassed = false
         )
-        activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+        loadAndActivateCubeLut(p.lutSourceId, silent = true)
+        activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
         pushGpuColorStateAndRefreshUi()
         engine.setMirrorFrontExport(p.mirrorFrontExport)
         updateMirrorFrontPillUi()
@@ -1297,9 +1314,24 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
-        view.findViewById<TextView>(R.id.btnCreditsCheckUpdate).setOnClickListener {
-            Toast.makeText(this, "Checking GitHub Releases...", Toast.LENGTH_SHORT).show()
-            checkForGitHubUpdateSilently(manualCheck = true)
+        val btnUpdateOrCheck = view.findViewById<TextView>(R.id.btnCreditsCheckUpdate)
+        val pendingUrl = updateDownloadUrl
+        val pendingTag = updateLatestTag
+        if (!pendingUrl.isNullOrBlank()) {
+            btnUpdateOrCheck.text = if (!pendingTag.isNullOrBlank()) "INSTALL $pendingTag" else "INSTALL UPDATE"
+            btnUpdateOrCheck.setOnClickListener {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pendingUrl)))
+                    dialog.dismiss()
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Unable to open update link", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            btnUpdateOrCheck.setOnClickListener {
+                Toast.makeText(this, "Checking GitHub Releases...", Toast.LENGTH_SHORT).show()
+                checkForGitHubUpdateSilently(manualCheck = true)
+            }
         }
 
         view.findViewById<TextView>(R.id.btnCreditsClose).setOnClickListener {
@@ -1351,9 +1383,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     runOnUiThread {
                         if (!isFinishing && !isDestroyed) {
                             updateDownloadUrl = downloadUrl
-                            btnUpdateApp.visibility = View.VISIBLE
+                            updateLatestTag = latestTag
+                            // Subtle zero-clunk left badge on IDGAF CAM — never shifts or crowds the right top bar!
+                            btnBrandCredits.text = "IDGAF CAM ↑"
+                            btnBrandCredits.setBackgroundResource(R.drawable.bg_dock_pill_active)
                             if (manualCheck) {
-                                Toast.makeText(this, "Update $latestTag available! Tap UPDATE in top bar.", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this, "Update $latestTag ready! Tap IDGAF CAM ↑ to install.", Toast.LENGTH_LONG).show()
                             }
                         }
                     }
@@ -1371,8 +1406,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.1.2"
-    } catch (_: Exception) { "0.7.1.2" }
+        info.versionName ?: "0.7.2"
+    } catch (_: Exception) { "0.7.2" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1473,8 +1508,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnColorReset.setOnClickListener {
+            clearActiveCubeLut()
             applyBuiltInLook("NONE", GpuColorState())
-            showSingleToast("GPU Color Reset to Neutral")
+            showSingleToast("GPU Color & 3D LUT Reset")
+        }
+
+        btnSelectCubeLut.setOnClickListener {
+            showCubeLutLibraryDialog()
+        }
+
+        btnImportCubeQuick.setOnClickListener {
+            showImportCubeSourceMenu()
         }
 
         btnLookNone.setOnClickListener {
@@ -1556,36 +1600,41 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         bindSeek(rowColorShd, seekColorShd) { p -> gpuColorState = gpuColorState.copy(shadows = (p - 50) * 0.01f) }
         bindSeek(rowColorHil, seekColorHil) { p -> gpuColorState = gpuColorState.copy(highlights = (p - 50) * 0.01f) }
         bindSeek(rowColorVig, seekColorVig) { p -> gpuColorState = gpuColorState.copy(vignette = p * 0.01f) }
+        bindSeek(rowColorLutMix, seekColorLutMix) { p -> gpuColorState = gpuColorState.copy(lutIntensity = p * 0.01f) }
 
         // Tap any readout to reset just that single parameter to neutral!
         txtColorExpVal.setOnClickListener {
             gpuColorState = gpuColorState.copy(exposureLift = 0f)
-            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorConVal.setOnClickListener {
             gpuColorState = gpuColorState.copy(contrast = 1.0f)
-            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorSatVal.setOnClickListener {
             gpuColorState = gpuColorState.copy(saturation = 1.0f)
-            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorShdVal.setOnClickListener {
             gpuColorState = gpuColorState.copy(shadows = 0f)
-            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorHilVal.setOnClickListener {
             gpuColorState = gpuColorState.copy(highlights = 0f)
-            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorVigVal.setOnClickListener {
             gpuColorState = gpuColorState.copy(vignette = 0f)
-            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
+            pushGpuColorStateAndRefreshUi()
+        }
+        txtColorLutMixVal.setOnClickListener {
+            gpuColorState = gpuColorState.copy(lutIntensity = 1.0f)
             pushGpuColorStateAndRefreshUi()
         }
 
@@ -1599,16 +1648,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
      * exact screen coordinates so touch tracking never jumps) while giving the active row a slim pill.
      */
     private fun setColorDrawerPeekMode(activeRow: LinearLayout?) {
-        val allRows = listOf(rowColorExp, rowColorCon, rowColorSat, rowColorShd, rowColorHil, rowColorVig)
+        val hasLut = activeLutSourceId.isNotEmpty()
+        val allRows = listOf(rowColorLutMix, rowColorExp, rowColorCon, rowColorSat, rowColorShd, rowColorHil, rowColorVig)
         if (activeRow != null) {
             colorControlDrawer.setBackgroundColor(Color.TRANSPARENT)
             colorDrawerHeaderRow.visibility = View.INVISIBLE
             colorLooksPresetRow.visibility = View.INVISIBLE
+            colorLutBarRow.visibility = View.INVISIBLE
             scrollColorSliders.isVerticalScrollBarEnabled = false
             allRows.forEach { row ->
                 if (row == activeRow) {
                     row.visibility = View.VISIBLE
                     row.setBackgroundResource(R.drawable.bg_hud_pill)
+                } else if (row == rowColorLutMix && !hasLut) {
+                    row.visibility = View.GONE
+                    row.setBackgroundColor(Color.TRANSPARENT)
                 } else {
                     row.visibility = View.INVISIBLE
                     row.setBackgroundColor(Color.TRANSPARENT)
@@ -1618,9 +1672,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             colorControlDrawer.setBackgroundResource(R.drawable.bg_hud_pill)
             colorDrawerHeaderRow.visibility = View.VISIBLE
             colorLooksPresetRow.visibility = View.VISIBLE
+            colorLutBarRow.visibility = View.VISIBLE
             scrollColorSliders.isVerticalScrollBarEnabled = true
             allRows.forEach { row ->
-                row.visibility = View.VISIBLE
+                row.visibility = if (row == rowColorLutMix && !hasLut) View.GONE else View.VISIBLE
                 row.setBackgroundColor(Color.TRANSPARENT)
             }
         }
@@ -1632,22 +1687,263 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             txtColorDrawerTitle.visibility = View.INVISIBLE
             btnColorReset.visibility = View.INVISIBLE
             colorLooksPresetRow.visibility = View.INVISIBLE
+            colorLutBarRow.visibility = View.INVISIBLE
             scrollColorSliders.visibility = View.INVISIBLE
         } else {
             colorControlDrawer.setBackgroundResource(R.drawable.bg_hud_pill)
             txtColorDrawerTitle.visibility = View.VISIBLE
             btnColorReset.visibility = View.VISIBLE
             colorLooksPresetRow.visibility = View.VISIBLE
+            colorLutBarRow.visibility = View.VISIBLE
             scrollColorSliders.visibility = View.VISIBLE
         }
     }
 
     private fun applyBuiltInLook(tag: String, state: GpuColorState) {
         activeLookTag = tag
-        gpuColorState = state.copy(isBypassed = false)
+        gpuColorState = state.copy(lutIntensity = gpuColorState.lutIntensity, isBypassed = false)
         // Unified tone curve: LOG automatically enables hardware FLAT sensor curve; others stay STANDARD
         engine.setToneProfile(if (tag == "LOG") ToneProfile.FLAT else ToneProfile.STANDARD)
         pushGpuColorStateAndRefreshUi()
+    }
+
+    private fun showImportCubeSourceMenu() {
+        val options = arrayOf(
+            "Import .cube from Phone / Downloads",
+            "Download .cube from Direct URL (Internet)",
+            "Browse Free .cube LUTs (Web)"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Add 3D .cube LUT")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> launchCubeFilePicker()
+                    1 -> showDownloadCubeUrlDialog()
+                    2 -> {
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://freshluts.com/")))
+                            showSingleToast("Download any .cube file, then tap + .CUBE → Phone / Downloads", Toast.LENGTH_LONG)
+                        } catch (_: Exception) {
+                            showSingleToast("Download any .cube file in Chrome, then import via + .CUBE")
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun launchCubeFilePicker() {
+        try {
+            // Use */* because Android doesn't register a standard MIME type for .cube files
+            importCubeLauncher.launch(arrayOf("*/*"))
+        } catch (_: Exception) {
+            showSingleToast("File picker unavailable on this device")
+        }
+    }
+
+    private fun importCubeLutFromUri(uri: Uri) {
+        Thread {
+            try {
+                var displayName = "Custom_LUT.cube"
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        val n = c.getString(0)
+                        if (!n.isNullOrBlank()) displayName = n
+                    }
+                }
+                if (!displayName.lowercase().endsWith(".cube")) {
+                    throw IllegalArgumentException("Please select a valid .cube 3D LUT file (selected: $displayName)")
+                }
+                val text = contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                    ?: throw IllegalStateException("Cannot read selected file.")
+                val saved = CubeLutLibrary.saveCubeTextToLibrary(this, displayName, text)
+                val lutData = CubeLutLibrary.loadLutById(this, saved.sourceId)
+                    ?: throw IllegalStateException("Saved LUT could not be loaded.")
+                runOnUiThread {
+                    applyLoadedCubeLut(lutData)
+                    showSingleToast("Imported 3D LUT: ${lutData.displayName} (${lutData.size}³)", Toast.LENGTH_LONG)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "LUT import failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun showDownloadCubeUrlDialog() {
+        val input = EditText(this).apply {
+            hint = "https://.../my_cinema_lut.cube"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF888888.toInt())
+            setPadding(36, 28, 36, 28)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Download .cube LUT from URL")
+            .setMessage("Paste a direct .cube file link (e.g. GitHub raw .cube URL). It will be verified & saved permanently in your LUT library.")
+            .setView(input)
+            .setPositiveButton("Download") { _, _ ->
+                val urlStr = input.text.toString().trim()
+                if (!urlStr.startsWith("http://", ignoreCase = true) && !urlStr.startsWith("https://", ignoreCase = true)) {
+                    showSingleToast("Enter a valid https:// .cube URL")
+                    return@setPositiveButton
+                }
+                downloadCubeLutFromUrl(urlStr)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun downloadCubeLutFromUrl(rawUrl: String) {
+        showSingleToast("Downloading .cube LUT...")
+        Thread {
+            var conn: HttpURLConnection? = null
+            try {
+                // Convert GitHub blob links cleanly to raw links for convenience!
+                val resolvedUrl = if (rawUrl.contains("github.com/") && rawUrl.contains("/blob/")) {
+                    rawUrl.replace("github.com/", "raw.githubusercontent.com/").replace("/blob/", "/")
+                } else {
+                    rawUrl
+                }
+                conn = (URL(resolvedUrl).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 8000
+                    readTimeout = 12000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "idgaf-camera-SaviorCinemaEngine")
+                }
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) {
+                    throw IllegalStateException("HTTP ${conn.responseCode} from server")
+                }
+                // Cap download size to 16 MB (even a 65^3 .cube LUT is ~7.5 MB)
+                val contentLength = conn.contentLengthLong
+                if (contentLength > 16L * 1024L * 1024L) {
+                    throw IllegalArgumentException("File too large (> 16 MB) to be a .cube LUT.")
+                }
+                val text = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val fileName = resolvedUrl.substringBefore('?').substringAfterLast('/').ifBlank { "Web_LUT.cube" }
+                val saved = CubeLutLibrary.saveCubeTextToLibrary(this, fileName, text)
+                val lutData = CubeLutLibrary.loadLutById(this, saved.sourceId)
+                    ?: throw IllegalStateException("Downloaded LUT could not be parsed.")
+                runOnUiThread {
+                    applyLoadedCubeLut(lutData)
+                    showSingleToast("Downloaded & Loaded: ${lutData.displayName} (${lutData.size}³)", Toast.LENGTH_LONG)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                conn?.disconnect()
+            }
+        }.start()
+    }
+
+    private fun showCubeLutLibraryDialog() {
+        val builtins = CubeLutLibrary.getBuiltInEntries()
+        val userLuts = CubeLutLibrary.listSavedUserLuts(this)
+
+        val labels = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+
+        labels.add(if (activeLutSourceId.isEmpty()) "✓ NONE (No 3D LUT)" else "NONE (No 3D LUT)")
+        actions.add {
+            clearActiveCubeLut()
+            pushGpuColorStateAndRefreshUi()
+            showSingleToast("3D LUT: OFF")
+        }
+
+        builtins.forEach { entry ->
+            val mark = if (activeLutSourceId == entry.sourceId) "✓ " else ""
+            labels.add("${mark}★ ${entry.displayName} (Built-In 33³)")
+            actions.add { loadAndActivateCubeLut(entry.sourceId, silent = false) }
+        }
+
+        userLuts.forEach { entry ->
+            val mark = if (activeLutSourceId == entry.sourceId) "✓ " else ""
+            labels.add("${mark}📁 ${entry.displayName} (.cube)")
+            actions.add { loadAndActivateCubeLut(entry.sourceId, silent = false) }
+        }
+
+        labels.add("+ Import .cube from Phone / Downloads...")
+        actions.add { launchCubeFilePicker() }
+
+        labels.add("+ Download .cube from Direct URL...")
+        actions.add { showDownloadCubeUrlDialog() }
+
+        if (userLuts.isNotEmpty()) {
+            labels.add("🗑 Delete Saved .cube LUT...")
+            actions.add { showDeleteUserLutDialog(userLuts) }
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("3D .cube LUT Library")
+            .setItems(labels.toTypedArray()) { _, which ->
+                actions.getOrNull(which)?.invoke()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showDeleteUserLutDialog(userLuts: List<SavedLutEntry>) {
+        val names = userLuts.map { it.displayName }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Delete Saved .cube LUT")
+            .setItems(names) { _, which ->
+                val target = userLuts[which]
+                if (CubeLutLibrary.deleteUserLut(this, target.sourceId)) {
+                    if (activeLutSourceId == target.sourceId) {
+                        clearActiveCubeLut()
+                        pushGpuColorStateAndRefreshUi()
+                    }
+                    showSingleToast("Deleted LUT: ${target.displayName}")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun loadAndActivateCubeLut(sourceId: String, silent: Boolean) {
+        if (sourceId.isBlank()) {
+            clearActiveCubeLut()
+            pushGpuColorStateAndRefreshUi()
+            return
+        }
+        Thread {
+            try {
+                val lut = CubeLutLibrary.loadLutById(this, sourceId)
+                runOnUiThread {
+                    if (lut != null) {
+                        applyLoadedCubeLut(lut)
+                        if (!silent) showSingleToast("3D LUT Active: ${lut.displayName} (${lut.size}³)")
+                    } else if (!silent) {
+                        showSingleToast("LUT file not found")
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!silent) Toast.makeText(this, "LUT load error: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun applyLoadedCubeLut(lut: CubeLutData) {
+        activeLutSourceId = lut.sourceId
+        activeLutDisplayName = lut.displayName
+        engine.setCubeLut(lut)
+        if (gpuColorState.lutIntensity < 0.05f) {
+            gpuColorState = gpuColorState.copy(lutIntensity = 1.0f)
+        }
+        pushGpuColorStateAndRefreshUi()
+    }
+
+    private fun clearActiveCubeLut() {
+        activeLutSourceId = ""
+        activeLutDisplayName = "NONE"
+        engine.setCubeLut(null)
     }
 
     private fun pushGpuColorStateAndRefreshUi() {
@@ -1659,6 +1955,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         seekColorShd.progress = ((gpuColorState.shadows * 100f) + 50f).roundToInt().coerceIn(0, 100)
         seekColorHil.progress = ((gpuColorState.highlights * 100f) + 50f).roundToInt().coerceIn(0, 100)
         seekColorVig.progress = (gpuColorState.vignette * 100f).roundToInt().coerceIn(0, 85)
+        seekColorLutMix.progress = (gpuColorState.lutIntensity * 100f).roundToInt().coerceIn(0, 100)
         suppressColorSeek = false
 
         val orange = 0xFFFF5F1F.toInt()
@@ -1685,7 +1982,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtColorVigVal.text = "${vigInt}%"
         txtColorVigVal.setTextColor(if (vigInt > 0) orange else white)
 
-        styleToolPill(btnLookNone, activeLookTag == "NONE" && gpuColorState.isNeutral())
+        val hasLut = activeLutSourceId.isNotEmpty()
+        val lutPct = (gpuColorState.lutIntensity * 100f).roundToInt().coerceIn(0, 100)
+        txtColorLutMixVal.text = "${lutPct}%"
+        btnSelectCubeLut.text = if (hasLut) "3D LUT: $activeLutDisplayName ▾" else "3D LUT: NONE ▾"
+        styleToolPill(btnSelectCubeLut, hasLut)
+        if (colorControlDrawer.visibility == View.VISIBLE && colorDrawerHeaderRow.visibility == View.VISIBLE) {
+            rowColorLutMix.visibility = if (hasLut) View.VISIBLE else View.GONE
+        }
+
+        styleToolPill(btnLookNone, activeLookTag == "NONE" && gpuColorState.isNeutral(hasLut))
         styleToolPill(btnLookLog, activeLookTag == "LOG")
         styleToolPill(btnLookCine, activeLookTag == "CINE")
         styleToolPill(btnLookPunch, activeLookTag == "PUNCH")
@@ -1695,7 +2001,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun updateLookTopPillVisual() {
         val drawerOpen = colorControlDrawer.visibility == View.VISIBLE
-        val hasGrade = !gpuColorState.isNeutral()
+        val hasGrade = !gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())
         when {
             drawerOpen -> styleToolPill(btnColorPanelToggle, true)
             hasGrade -> {
@@ -2928,8 +3234,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             updateAudioDrawerUi()
         }
 
-        // 3. Rescue GPU Color Studio (reset LOOK cleanly back to NONE), Tone & Stabilization + Lock & EV
-        if (!gpuColorState.isNeutral() || activeLookTag != "NONE") {
+        // 3. Rescue GPU Color Studio (reset LOOK & 3D LUT cleanly back to NONE), Tone & Stabilization + Lock & EV
+        if (!gpuColorState.isNeutral(activeLutSourceId.isNotEmpty()) || activeLookTag != "NONE" || activeLutSourceId.isNotEmpty()) {
+            clearActiveCubeLut()
             applyBuiltInLook("NONE", GpuColorState())
         }
         styleToolPill(btnProStab, true)

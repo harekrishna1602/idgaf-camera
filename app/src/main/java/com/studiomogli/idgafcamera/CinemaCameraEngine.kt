@@ -335,6 +335,7 @@ class CinemaCameraEngine(
         }
         glRenderer?.colorState = gpuColorState
         glRenderer?.mirrorFrontExport = mirrorFrontExport
+        glRenderer?.setCubeLut(activeCubeLut)
         if (lenses.isEmpty()) {
             discoverLenses()
         }
@@ -356,6 +357,8 @@ class CinemaCameraEngine(
 
     @Volatile var gpuColorState: GpuColorState = GpuColorState()
         private set
+    @Volatile var activeCubeLut: CubeLutData? = null
+        private set
     @Volatile var mirrorFrontExport: Boolean = false
         private set
 
@@ -366,6 +369,11 @@ class CinemaCameraEngine(
     fun updateGpuColorState(state: GpuColorState) {
         gpuColorState = state
         glRenderer?.colorState = state
+    }
+
+    fun setCubeLut(lut: CubeLutData?) {
+        activeCubeLut = lut
+        glRenderer?.setCubeLut(lut)
     }
 
     fun setMirrorFrontExport(enabled: Boolean) {

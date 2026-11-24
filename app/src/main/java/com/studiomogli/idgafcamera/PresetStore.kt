@@ -39,6 +39,8 @@ data class CameraPreset(
     val gpuShadows: Float = 0.0f,
     val gpuHighlights: Float = 0.0f,
     val gpuVignette: Float = 0.0f,
+    val lutSourceId: String = "",
+    val lutIntensity: Float = 1.0f,
     val mirrorFrontExport: Boolean = false
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
@@ -76,6 +78,8 @@ data class CameraPreset(
         put("gpuShadows", gpuShadows.toDouble())
         put("gpuHighlights", gpuHighlights.toDouble())
         put("gpuVignette", gpuVignette.toDouble())
+        put("lutSourceId", lutSourceId)
+        put("lutIntensity", lutIntensity.toDouble())
         put("mirrorFrontExport", mirrorFrontExport)
     }
 
@@ -115,6 +119,8 @@ data class CameraPreset(
             gpuShadows = obj.optDouble("gpuShadows", 0.0).toFloat(),
             gpuHighlights = obj.optDouble("gpuHighlights", 0.0).toFloat(),
             gpuVignette = obj.optDouble("gpuVignette", 0.0).toFloat(),
+            lutSourceId = obj.optString("lutSourceId", ""),
+            lutIntensity = obj.optDouble("lutIntensity", 1.0).toFloat(),
             mirrorFrontExport = obj.optBoolean("mirrorFrontExport", false)
         )
     }
