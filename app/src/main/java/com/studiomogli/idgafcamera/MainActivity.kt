@@ -1267,8 +1267,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.0.2"
-    } catch (_: Exception) { "0.7.0.2" }
+        info.versionName ?: "0.7.0.3"
+    } catch (_: Exception) { "0.7.0.3" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")

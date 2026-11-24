@@ -37,9 +37,9 @@ enum class PeakingColor(val label: String, val argb: Int) {
 }
 
 enum class PeakingSensitivity(val label: String, val shortLabel: String, val gpuThreshold: Float) {
-    LOW("LOW", "L", 0.56f),
-    MED("MED", "M", 0.34f),
-    HIGH("HIGH", "H", 0.18f)
+    LOW("LOW", "L", 0.24f),
+    MED("MED", "M", 0.15f),
+    HIGH("HIGH", "H", 0.095f)
 }
 
 enum class ZebraMode(val label: String, val shortLabel: String, val gpuCode: Int) {

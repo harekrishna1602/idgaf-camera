@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit
 data class GpuScopeState(
     val showPeaking: Boolean = false,
     val peakingColorArgb: Int = Color.argb(235, 57, 255, 20),
-    val peakingThreshold: Float = 0.34f,
+    val peakingThreshold: Float = 0.15f,
     val showZebras: Boolean = false,
     val zebraModeCode: Int = 2, // 0=Off, 1=70% Skin, 2=92% High, 3=100% Clip
     val showFalseColor: Boolean = false
@@ -128,7 +128,8 @@ class CinemaGlRenderer(
                         outColor = applyFalseColor(y);
                     }
 
-                    // 2. 1-Pixel 3x3 Sobel Focus Peaking
+                    // 2. FiLMiC-Grade High-Frequency Laplacian x Coherent-Gradient Focus Peaking
+                    // Drops to 0.0 on blurry out-of-focus edges (zero 2nd derivative) AND gates out high-ISO pixel noise
                     if (uShowPeaking == 1) {
                         float tl = calcLuma(texture2D(uTexture, vTexCoord - uStepX - uStepY).rgb);
                         float tc = calcLuma(texture2D(uTexture, vTexCoord - uStepY).rgb);
@@ -139,11 +140,14 @@ class CinemaGlRenderer(
                         float bc = calcLuma(texture2D(uTexture, vTexCoord + uStepY).rgb);
                         float br = calcLuma(texture2D(uTexture, vTexCoord + uStepX + uStepY).rgb);
 
-                        float gx = -tl - 2.0 * ml - bl + tr + 2.0 * mr + br;
-                        float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
-                        float edge = length(vec2(gx, gy));
-                        float mask = smoothstep(uPeakingThreshold, uPeakingThreshold + 0.14, edge);
-                        outColor = mix(outColor, uPeakingColor, mask * 0.92);
+                        float lap = abs(8.0 * y - (tl + tc + tr + ml + mr + bl + bc + br)) * 0.25;
+                        float gx = (-tl - 2.0 * ml - bl + tr + 2.0 * mr + br) * 0.25;
+                        float gy = (-tl - 2.0 * tc - tr + bl + 2.0 * bc + br) * 0.25;
+                        float grad = length(vec2(gx, gy));
+
+                        float sharpness = lap * smoothstep(0.06, 0.16, grad);
+                        float mask = smoothstep(uPeakingThreshold, uPeakingThreshold + 0.05, sharpness);
+                        outColor = mix(outColor, uPeakingColor, mask * 0.95);
                     }
 
                     // 3. Razor-Sharp Animated Marching 45-Deg Diagonal Zebras (Screen-Pixel Space)

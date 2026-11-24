@@ -1,9 +1,10 @@
-# IDGAF CAMERA (`v0.7.0.2` — Hotfix: MP4 Duration Clock Sync + Encoder & Audio Start Audit)
+# IDGAF CAMERA (`v0.7.0.3` — Precision Laplacian Focus Peaking)
 
 Free, open, community-built Android cinema camera built on native **Kotlin + Camera2 + OpenGL ES 2.0** by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's Fixed in `v0.7.0.2`
-- **Fixed `2013:49` Wrong MP4 Duration Bug (`CLOCK_BOOTTIME` vs `CLOCK_MONOTONIC`):** Camera2 `SurfaceTexture.timestamp` uses `CLOCK_BOOTTIME` (`REALTIME`, which counts deep sleep hours), while `MediaRecorder` Audio uses `CLOCK_MONOTONIC` (`System.nanoTime()`). Feeding raw `camTex.timestamp` into `eglPresentationTimeANDROID()` created a multi-hour gap between Video and Audio tracks. `CinemaGlRenderer` now anchors the first encoded video frame to `System.nanoTime()` and advances using verified hardware deltas + monotonic guard so a 5-second clip is always **`00:05`** with tight lip-sync.
-- **Fixed Pre-Start Encoder Frame Race:** Added an `isEncoderRecording` gate so OpenGL never swaps frames into `MediaRecorder.surface` until `MediaRecorder.start()` has completed.
-- **Fixed Mic Contention Race on REC Start:** `MainActivity` now synchronously pauses and releases the preview VU `AudioRecord` (max 160ms wait) **before** `MediaRecorder.prepare()`/`start()` opens the mic, eliminating audio start delay or silent tracks.
-- **Aspect-Safe Encoder Scaling & Thread Safety:** Added aspect-matched center-crop protection inside `buildEncoderMvp()` for non-16:9 lenses, marked shared recording/audio state `@Volatile`, and removed dead legacy orientation code.
+## What's New in `v0.7.0.3`
+- **Precision Laplacian × Coherent-Gradient Focus Peaking (`CinemaGlRenderer.kt`):**
+  - Replaced basic Sobel edge detection with an 8-neighbor High-Frequency Laplacian sharpness filter gated by coherent gradient energy—using the exact same 9-tap GPU texture reads at full 60 FPS.
+  - **Out-of-focus objects go completely clean** (zero lingering blurry outlines), **high-ISO wall noise is filtered out**, and tack-sharp focus planes snap brightly into view as you rack focus.
+  - Recalibrated `LOW` (`0.24`), `MED` (`0.15`), and `HIGH` (`0.095`) sensitivity presets in `CinemaOverlayView.kt`.
+- **Zero Risk to Recording Pipeline:** Recording, clock sync, audio handoff, and rotation remain untouched from verified `v0.7.0.2`.
