@@ -86,7 +86,34 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnProStab: TextView
     private lateinit var btnProTorch: TextView
     private lateinit var btnProTimer: TextView
+    private lateinit var btnProMirrorFront: TextView
     private lateinit var btnProPresets: TextView
+
+    // Phase 7.2A Live GPU Color Studio Drawer
+    private lateinit var btnColorPanelToggle: TextView
+    private lateinit var colorControlDrawer: LinearLayout
+    private lateinit var btnColorCompareAB: TextView
+    private lateinit var btnColorReset: TextView
+    private lateinit var btnLookNone: TextView
+    private lateinit var btnLookLog: TextView
+    private lateinit var btnLookCine: TextView
+    private lateinit var btnLookPunch: TextView
+    private lateinit var btnLookNoir: TextView
+    private lateinit var seekColorExp: SeekBar
+    private lateinit var txtColorExpVal: TextView
+    private lateinit var seekColorCon: SeekBar
+    private lateinit var txtColorConVal: TextView
+    private lateinit var seekColorSat: SeekBar
+    private lateinit var txtColorSatVal: TextView
+    private lateinit var seekColorShd: SeekBar
+    private lateinit var txtColorShdVal: TextView
+    private lateinit var seekColorHil: SeekBar
+    private lateinit var txtColorHilVal: TextView
+    private lateinit var seekColorVig: SeekBar
+    private lateinit var txtColorVigVal: TextView
+    private var gpuColorState: GpuColorState = GpuColorState()
+    private var activeLookTag: String = "NONE"
+    private var suppressColorSeek: Boolean = false
     private lateinit var txtTimerCountdown: TextView
     private val timerOptions = listOf(0, 3, 5)
     private var timerIdx = 0
@@ -467,7 +494,29 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProStab = findViewById(R.id.btnProStab)
         btnProTorch = findViewById(R.id.btnProTorch)
         btnProTimer = findViewById(R.id.btnProTimer)
+        btnProMirrorFront = findViewById(R.id.btnProMirrorFront)
         btnProPresets = findViewById(R.id.btnProPresets)
+        btnColorPanelToggle = findViewById(R.id.btnColorPanelToggle)
+        colorControlDrawer = findViewById(R.id.colorControlDrawer)
+        btnColorCompareAB = findViewById(R.id.btnColorCompareAB)
+        btnColorReset = findViewById(R.id.btnColorReset)
+        btnLookNone = findViewById(R.id.btnLookNone)
+        btnLookLog = findViewById(R.id.btnLookLog)
+        btnLookCine = findViewById(R.id.btnLookCine)
+        btnLookPunch = findViewById(R.id.btnLookPunch)
+        btnLookNoir = findViewById(R.id.btnLookNoir)
+        seekColorExp = findViewById(R.id.seekColorExp)
+        txtColorExpVal = findViewById(R.id.txtColorExpVal)
+        seekColorCon = findViewById(R.id.seekColorCon)
+        txtColorConVal = findViewById(R.id.txtColorConVal)
+        seekColorSat = findViewById(R.id.seekColorSat)
+        txtColorSatVal = findViewById(R.id.txtColorSatVal)
+        seekColorShd = findViewById(R.id.seekColorShd)
+        txtColorShdVal = findViewById(R.id.txtColorShdVal)
+        seekColorHil = findViewById(R.id.seekColorHil)
+        txtColorHilVal = findViewById(R.id.txtColorHilVal)
+        seekColorVig = findViewById(R.id.seekColorVig)
+        txtColorVigVal = findViewById(R.id.txtColorVigVal)
         txtTimerCountdown = findViewById(R.id.txtTimerCountdown)
         txtSysTelemetry = findViewById(R.id.txtSysTelemetry)
         btnUpdateApp = findViewById(R.id.btnUpdateApp)
@@ -551,6 +600,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         setupProAudioAndCodecBar()
         setupCinemaZoomRocker()
         setupAudioControllerDrawer()
+        setupColorStudioDrawer()
 
         findViewById<TextView>(R.id.btnBrandCredits).setOnClickListener {
             showStudioMogliCreditsDialog()
@@ -880,6 +930,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         return activePanel != ProControlPanel.NONE ||
             zoomPopoutDrawer.visibility == View.VISIBLE ||
             audioControlDrawer.visibility == View.VISIBLE ||
+            colorControlDrawer.visibility == View.VISIBLE ||
             monitorToolsBar.visibility == View.VISIBLE ||
             proSettingsBar.visibility == View.VISIBLE
     }
@@ -896,6 +947,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         if (except != "AUDIO" && audioControlDrawer.visibility == View.VISIBLE) {
             audioControlDrawer.visibility = View.GONE
             btnAudioPanelToggle.setBackgroundResource(R.drawable.bg_hud_pill)
+        }
+        if (except != "LOOK" && colorControlDrawer.visibility == View.VISIBLE) {
+            colorControlDrawer.visibility = View.GONE
+            updateLookTopPillVisual()
         }
     }
 
@@ -1001,6 +1056,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             styleToolPill(btnProTimer, sec > 0)
         }
 
+        btnProMirrorFront.setOnClickListener {
+            val next = !engine.mirrorFrontExport
+            engine.setMirrorFrontExport(next)
+            updateMirrorFrontPillUi()
+            showSingleToast(if (next) "Front MP4 Export: MIRRORED (Selfie)" else "Front MP4 Export: NATURAL (Un-Mirrored)")
+        }
+
         btnProPresets.setOnClickListener {
             showPresetsDialog()
         }
@@ -1073,7 +1135,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     aspectGuideName = overlayView.aspectGuide.name,
                     peakingColorName = overlayView.peakingColor.name,
                     peakingSensitivityName = overlayView.peakingSensitivity.name,
-                    zebraModeName = overlayView.zebraMode.name
+                    zebraModeName = overlayView.zebraMode.name,
+                    gpuExposureLift = gpuColorState.exposureLift,
+                    gpuContrast = gpuColorState.contrast,
+                    gpuSaturation = gpuColorState.saturation,
+                    gpuShadows = gpuColorState.shadows,
+                    gpuHighlights = gpuColorState.highlights,
+                    gpuVignette = gpuColorState.vignette,
+                    mirrorFrontExport = engine.mirrorFrontExport
                 )
                 presetStore.save(preset)
                 Toast.makeText(this, "Saved template: $name", Toast.LENGTH_SHORT).show()
@@ -1145,6 +1214,20 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         overlayView.zebraMode = try { ZebraMode.valueOf(p.zebraModeName) } catch (_: Exception) { ZebraMode.IRE_92 }
         updateMonitorPillLabels()
         syncAnalysisLoop()
+
+        gpuColorState = GpuColorState(
+            exposureLift = p.gpuExposureLift.coerceIn(-1.5f, 1.5f),
+            contrast = p.gpuContrast.coerceIn(0.50f, 1.60f),
+            saturation = p.gpuSaturation.coerceIn(0.0f, 1.80f),
+            shadows = p.gpuShadows.coerceIn(-0.50f, 0.50f),
+            highlights = p.gpuHighlights.coerceIn(-0.50f, 0.50f),
+            vignette = p.gpuVignette.coerceIn(0.0f, 0.85f),
+            isBypassed = false
+        )
+        activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+        pushGpuColorStateAndRefreshUi()
+        engine.setMirrorFrontExport(p.mirrorFrontExport)
+        updateMirrorFrontPillUi()
 
         btnResolution.text = currentResolution.label
         btnFps.text = "${p.fps} FPS"
@@ -1267,8 +1350,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.0.3"
-    } catch (_: Exception) { "0.7.0.3" }
+        info.versionName ?: "0.7.1"
+    } catch (_: Exception) { "0.7.1" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1324,6 +1407,220 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         updateAudioDrawerUi()
+    }
+
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupColorStudioDrawer() {
+        btnColorPanelToggle.setOnClickListener {
+            val showing = colorControlDrawer.visibility == View.VISIBLE
+            if (!showing) closeTopDrawers(except = "LOOK")
+            colorControlDrawer.visibility = if (showing) View.GONE else View.VISIBLE
+            updateLookTopPillVisual()
+        }
+
+        // Press-and-hold A/B Compare: releasing always restores your live grade so you can never forget bypass ON!
+        btnColorCompareAB.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    gpuColorState = gpuColorState.copy(isBypassed = true)
+                    engine.updateGpuColorState(gpuColorState)
+                    styleToolPill(btnColorCompareAB, true)
+                    btnColorCompareAB.text = "RAW"
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    gpuColorState = gpuColorState.copy(isBypassed = false)
+                    engine.updateGpuColorState(gpuColorState)
+                    styleToolPill(btnColorCompareAB, false)
+                    btnColorCompareAB.text = "HOLD RAW"
+                }
+            }
+            true
+        }
+
+        btnColorReset.setOnClickListener {
+            applyBuiltInLook("NONE", GpuColorState())
+            showSingleToast("GPU Color Reset to Neutral")
+        }
+
+        btnLookNone.setOnClickListener {
+            applyBuiltInLook("NONE", GpuColorState())
+        }
+        btnLookLog.setOnClickListener {
+            applyBuiltInLook(
+                "LOG",
+                GpuColorState(
+                    exposureLift = 0.0f,
+                    contrast = 0.78f,
+                    saturation = 0.72f,
+                    shadows = 0.34f,
+                    highlights = -0.32f,
+                    vignette = 0.0f
+                )
+            )
+        }
+        btnLookCine.setOnClickListener {
+            applyBuiltInLook(
+                "CINE",
+                GpuColorState(
+                    exposureLift = 0.0f,
+                    contrast = 1.18f,
+                    saturation = 0.92f,
+                    shadows = -0.14f,
+                    highlights = -0.16f,
+                    vignette = 0.28f
+                )
+            )
+        }
+        btnLookPunch.setOnClickListener {
+            applyBuiltInLook(
+                "PUNCH",
+                GpuColorState(
+                    exposureLift = 0.10f,
+                    contrast = 1.14f,
+                    saturation = 1.28f,
+                    shadows = 0.06f,
+                    highlights = 0.10f,
+                    vignette = 0.14f
+                )
+            )
+        }
+        btnLookNoir.setOnClickListener {
+            applyBuiltInLook(
+                "NOIR",
+                GpuColorState(
+                    exposureLift = 0.0f,
+                    contrast = 1.34f,
+                    saturation = 0.0f,
+                    shadows = -0.22f,
+                    highlights = 0.12f,
+                    vignette = 0.42f
+                )
+            )
+        }
+
+        val bindSeek = { sb: SeekBar, onChange: (Int) -> Unit ->
+            sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (!fromUser || suppressColorSeek) return
+                    activeLookTag = "CUSTOM"
+                    onChange(progress)
+                    pushGpuColorStateAndRefreshUi()
+                }
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+        }
+
+        bindSeek(seekColorExp) { p -> gpuColorState = gpuColorState.copy(exposureLift = (p - 15) * 0.1f) }
+        bindSeek(seekColorCon) { p -> gpuColorState = gpuColorState.copy(contrast = 0.50f + p * 0.01f) }
+        bindSeek(seekColorSat) { p -> gpuColorState = gpuColorState.copy(saturation = p * 0.01f) }
+        bindSeek(seekColorShd) { p -> gpuColorState = gpuColorState.copy(shadows = (p - 50) * 0.01f) }
+        bindSeek(seekColorHil) { p -> gpuColorState = gpuColorState.copy(highlights = (p - 50) * 0.01f) }
+        bindSeek(seekColorVig) { p -> gpuColorState = gpuColorState.copy(vignette = p * 0.01f) }
+
+        // Tap any readout to reset just that single parameter to neutral!
+        txtColorExpVal.setOnClickListener {
+            gpuColorState = gpuColorState.copy(exposureLift = 0f)
+            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            pushGpuColorStateAndRefreshUi()
+        }
+        txtColorConVal.setOnClickListener {
+            gpuColorState = gpuColorState.copy(contrast = 1.0f)
+            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            pushGpuColorStateAndRefreshUi()
+        }
+        txtColorSatVal.setOnClickListener {
+            gpuColorState = gpuColorState.copy(saturation = 1.0f)
+            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            pushGpuColorStateAndRefreshUi()
+        }
+        txtColorShdVal.setOnClickListener {
+            gpuColorState = gpuColorState.copy(shadows = 0f)
+            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            pushGpuColorStateAndRefreshUi()
+        }
+        txtColorHilVal.setOnClickListener {
+            gpuColorState = gpuColorState.copy(highlights = 0f)
+            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            pushGpuColorStateAndRefreshUi()
+        }
+        txtColorVigVal.setOnClickListener {
+            gpuColorState = gpuColorState.copy(vignette = 0f)
+            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            pushGpuColorStateAndRefreshUi()
+        }
+
+        pushGpuColorStateAndRefreshUi()
+        updateMirrorFrontPillUi()
+    }
+
+    private fun applyBuiltInLook(tag: String, state: GpuColorState) {
+        activeLookTag = tag
+        gpuColorState = state.copy(isBypassed = false)
+        pushGpuColorStateAndRefreshUi()
+    }
+
+    private fun pushGpuColorStateAndRefreshUi() {
+        engine.updateGpuColorState(gpuColorState)
+        suppressColorSeek = true
+        seekColorExp.progress = ((gpuColorState.exposureLift / 0.1f) + 15f).roundToInt().coerceIn(0, 30)
+        seekColorCon.progress = (((gpuColorState.contrast - 0.50f) / 0.01f)).roundToInt().coerceIn(0, 110)
+        seekColorSat.progress = (gpuColorState.saturation * 100f).roundToInt().coerceIn(0, 180)
+        seekColorShd.progress = ((gpuColorState.shadows * 100f) + 50f).roundToInt().coerceIn(0, 100)
+        seekColorHil.progress = ((gpuColorState.highlights * 100f) + 50f).roundToInt().coerceIn(0, 100)
+        seekColorVig.progress = (gpuColorState.vignette * 100f).roundToInt().coerceIn(0, 85)
+        suppressColorSeek = false
+
+        val orange = 0xFFFF5F1F.toInt()
+        val white = 0xFFFFFFFF.toInt()
+
+        txtColorExpVal.text = formatEv(gpuColorState.exposureLift)
+        txtColorExpVal.setTextColor(if (kotlin.math.abs(gpuColorState.exposureLift) >= 0.05f) orange else white)
+
+        txtColorConVal.text = String.format(Locale.US, "%.2f", gpuColorState.contrast)
+        txtColorConVal.setTextColor(if (kotlin.math.abs(gpuColorState.contrast - 1.0f) >= 0.02f) orange else white)
+
+        txtColorSatVal.text = String.format(Locale.US, "%.2f", gpuColorState.saturation)
+        txtColorSatVal.setTextColor(if (kotlin.math.abs(gpuColorState.saturation - 1.0f) >= 0.02f) orange else white)
+
+        val shdInt = (gpuColorState.shadows * 100f).roundToInt()
+        txtColorShdVal.text = if (shdInt > 0) "+$shdInt" else "$shdInt"
+        txtColorShdVal.setTextColor(if (shdInt != 0) orange else white)
+
+        val hilInt = (gpuColorState.highlights * 100f).roundToInt()
+        txtColorHilVal.text = if (hilInt > 0) "+$hilInt" else "$hilInt"
+        txtColorHilVal.setTextColor(if (hilInt != 0) orange else white)
+
+        val vigInt = (gpuColorState.vignette * 100f).roundToInt()
+        txtColorVigVal.text = "${vigInt}%"
+        txtColorVigVal.setTextColor(if (vigInt > 0) orange else white)
+
+        styleToolPill(btnLookNone, activeLookTag == "NONE" && gpuColorState.isNeutral())
+        styleToolPill(btnLookLog, activeLookTag == "LOG")
+        styleToolPill(btnLookCine, activeLookTag == "CINE")
+        styleToolPill(btnLookPunch, activeLookTag == "PUNCH")
+        styleToolPill(btnLookNoir, activeLookTag == "NOIR")
+        updateLookTopPillVisual()
+    }
+
+    private fun updateLookTopPillVisual() {
+        val drawerOpen = colorControlDrawer.visibility == View.VISIBLE
+        val hasGrade = !gpuColorState.isNeutral()
+        when {
+            drawerOpen -> styleToolPill(btnColorPanelToggle, true)
+            hasGrade -> {
+                btnColorPanelToggle.setBackgroundResource(R.drawable.bg_dock_pill_active)
+                btnColorPanelToggle.setTextColor(0xFFFF5F1F.toInt())
+            }
+            else -> styleToolPill(btnColorPanelToggle, false)
+        }
+    }
+
+    private fun updateMirrorFrontPillUi() {
+        val on = engine.mirrorFrontExport
+        btnProMirrorFront.text = if (on) "MIRROR: ON" else "MIRROR: OFF"
+        styleToolPill(btnProMirrorFront, on)
     }
 
     private fun selectAudioPreamp(mode: AudioPreampMode) {
@@ -2316,6 +2613,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             displayRotation = lastDisplayRotation
         )
         engine.updateGpuScopes(overlayView.toGpuScopeState())
+        engine.updateGpuColorState(gpuColorState)
     }
 
     private fun showFocusReticle(x: Float, y: Float) {
@@ -2497,7 +2795,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             updateAudioDrawerUi()
         }
 
-        // 3. Rescue Tone & Stabilization pills + Lock & EV readouts
+        // 3. Rescue Tone, GPU Exposure Lift & Stabilization pills + Lock & EV readouts
+        if (kotlin.math.abs(gpuColorState.exposureLift) > 0.01f) {
+            gpuColorState = gpuColorState.copy(exposureLift = 0f, isBypassed = false)
+            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
+            pushGpuColorStateAndRefreshUi()
+        }
         toneIdx = 0
         btnProTone.text = ToneProfile.STANDARD.label
         styleToolPill(btnProTone, false)

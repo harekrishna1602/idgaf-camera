@@ -32,7 +32,14 @@ data class CameraPreset(
     val aspectGuideName: String = AspectGuide.OFF.name,
     val peakingColorName: String = PeakingColor.GREEN.name,
     val peakingSensitivityName: String = PeakingSensitivity.MED.name,
-    val zebraModeName: String = ZebraMode.IRE_92.name
+    val zebraModeName: String = ZebraMode.IRE_92.name,
+    val gpuExposureLift: Float = 0.0f,
+    val gpuContrast: Float = 1.0f,
+    val gpuSaturation: Float = 1.0f,
+    val gpuShadows: Float = 0.0f,
+    val gpuHighlights: Float = 0.0f,
+    val gpuVignette: Float = 0.0f,
+    val mirrorFrontExport: Boolean = false
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("name", name)
@@ -63,6 +70,13 @@ data class CameraPreset(
         put("peakingColorName", peakingColorName)
         put("peakingSensitivityName", peakingSensitivityName)
         put("zebraModeName", zebraModeName)
+        put("gpuExposureLift", gpuExposureLift.toDouble())
+        put("gpuContrast", gpuContrast.toDouble())
+        put("gpuSaturation", gpuSaturation.toDouble())
+        put("gpuShadows", gpuShadows.toDouble())
+        put("gpuHighlights", gpuHighlights.toDouble())
+        put("gpuVignette", gpuVignette.toDouble())
+        put("mirrorFrontExport", mirrorFrontExport)
     }
 
     companion object {
@@ -94,7 +108,14 @@ data class CameraPreset(
             aspectGuideName = obj.optString("aspectGuideName", AspectGuide.OFF.name),
             peakingColorName = obj.optString("peakingColorName", PeakingColor.GREEN.name),
             peakingSensitivityName = obj.optString("peakingSensitivityName", PeakingSensitivity.MED.name),
-            zebraModeName = obj.optString("zebraModeName", ZebraMode.IRE_92.name)
+            zebraModeName = obj.optString("zebraModeName", ZebraMode.IRE_92.name),
+            gpuExposureLift = obj.optDouble("gpuExposureLift", 0.0).toFloat(),
+            gpuContrast = obj.optDouble("gpuContrast", 1.0).toFloat(),
+            gpuSaturation = obj.optDouble("gpuSaturation", 1.0).toFloat(),
+            gpuShadows = obj.optDouble("gpuShadows", 0.0).toFloat(),
+            gpuHighlights = obj.optDouble("gpuHighlights", 0.0).toFloat(),
+            gpuVignette = obj.optDouble("gpuVignette", 0.0).toFloat(),
+            mirrorFrontExport = obj.optBoolean("mirrorFrontExport", false)
         )
     }
 }

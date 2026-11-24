@@ -331,6 +331,8 @@ class CinemaCameraEngine(
         } else {
             glRenderer?.start()
         }
+        glRenderer?.colorState = gpuColorState
+        glRenderer?.mirrorFrontExport = mirrorFrontExport
         if (lenses.isEmpty()) {
             discoverLenses()
         }
@@ -350,8 +352,23 @@ class CinemaCameraEngine(
         backgroundHandler = null
     }
 
+    @Volatile var gpuColorState: GpuColorState = GpuColorState()
+        private set
+    @Volatile var mirrorFrontExport: Boolean = false
+        private set
+
     fun updateGpuScopes(state: GpuScopeState) {
         glRenderer?.scopeState = state
+    }
+
+    fun updateGpuColorState(state: GpuColorState) {
+        gpuColorState = state
+        glRenderer?.colorState = state
+    }
+
+    fun setMirrorFrontExport(enabled: Boolean) {
+        mirrorFrontExport = enabled
+        glRenderer?.mirrorFrontExport = enabled
     }
 
     fun onPreviewSizeChanged(width: Int, height: Int) {

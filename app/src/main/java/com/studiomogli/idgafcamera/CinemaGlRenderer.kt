@@ -29,6 +29,24 @@ data class GpuScopeState(
     val showFalseColor: Boolean = false
 )
 
+data class GpuColorState(
+    val exposureLift: Float = 0.0f, // -1.5 .. +1.5 EV stops
+    val contrast: Float = 1.0f,     // 0.50 .. 1.60
+    val saturation: Float = 1.0f,   // 0.00 .. 1.80
+    val shadows: Float = 0.0f,      // -0.50 .. +0.50
+    val highlights: Float = 0.0f,   // -0.50 .. +0.50
+    val vignette: Float = 0.0f,     // 0.00 .. 0.85
+    val isBypassed: Boolean = false
+) {
+    fun isNeutral(): Boolean =
+        kotlin.math.abs(exposureLift) < 0.01f &&
+            kotlin.math.abs(contrast - 1.0f) < 0.01f &&
+            kotlin.math.abs(saturation - 1.0f) < 0.01f &&
+            kotlin.math.abs(shadows) < 0.01f &&
+            kotlin.math.abs(highlights) < 0.01f &&
+            vignette < 0.01f
+}
+
 /**
  * Phase 7.1 Dual-Surface OpenGL ES 2.0 GPU Pipeline:
  * - Camera2 renders into a single external OES SurfaceTexture managed on IdgafGlThread.
@@ -64,9 +82,11 @@ class CinemaGlRenderer(
             uniform mat4 uMvpMatrix;
             uniform mat4 uStMatrix;
             varying vec2 vTexCoord;
+            varying vec2 vQuadCoord;
             void main() {
                 gl_Position = uMvpMatrix * aPosition;
                 vTexCoord = (uStMatrix * aTexCoord).xy;
+                vQuadCoord = aPosition.xy;
             }
         """
 
@@ -85,11 +105,16 @@ class CinemaGlRenderer(
             uniform vec2 uStepY;
             uniform float uTimeSec;
 
-            // Phase 7.2-ready GPU Color Grade uniforms (neutral defaults in v0.7.0)
+            // Phase 7.2A Live GPU Color Grade uniforms (baked cleanly into both preview & MP4 encoder passes)
+            uniform float uExposureMul;
             uniform float uContrast;
             uniform float uSaturation;
+            uniform float uShadows;
+            uniform float uHighlights;
+            uniform float uVignette;
 
             varying vec2 vTexCoord;
+            varying vec2 vQuadCoord;
 
             float calcLuma(vec3 c) {
                 return dot(c, vec3(0.299, 0.587, 0.114));
@@ -106,15 +131,40 @@ class CinemaGlRenderer(
             }
 
             void main() {
-                vec3 baseColor = texture2D(uTexture, vTexCoord).rgb;
+                vec3 rawColor = texture2D(uTexture, vTexCoord).rgb;
+                float rawY = calcLuma(rawColor);
+                vec3 baseColor = rawColor;
 
-                // Optional GPU color grade (baked into both preview & encoder passes)
+                // 1. Live GPU Exposure Lift (allows pushing past phone hardware AE +1.0 EV ceiling)
+                if (abs(uExposureMul - 1.0) > 0.001) {
+                    baseColor = clamp(baseColor * uExposureMul, 0.0, 1.0);
+                }
+
+                // 2. Smooth Shadows & Highlights Recovery / Punch (quadratic luma weights)
+                if (abs(uShadows) > 0.001 || abs(uHighlights) > 0.001) {
+                    float ly = calcLuma(baseColor);
+                    float shdW = (1.0 - ly) * (1.0 - ly);
+                    float hilW = ly * ly;
+                    float delta = uShadows * shdW * 0.48 + uHighlights * hilW * 0.48;
+                    baseColor = clamp(baseColor + vec3(delta), 0.0, 1.0);
+                }
+
+                // 3. Contrast around 0.50 midpoint
                 if (abs(uContrast - 1.0) > 0.001) {
                     baseColor = clamp((baseColor - 0.5) * uContrast + 0.5, 0.0, 1.0);
                 }
+
+                // 4. Saturation (0.0 = Monochrome, 1.0 = Neutral, 1.8 = Vivid)
                 if (abs(uSaturation - 1.0) > 0.001) {
-                    float ly = calcLuma(baseColor);
-                    baseColor = clamp(mix(vec3(ly), baseColor, uSaturation), 0.0, 1.0);
+                    float ly2 = calcLuma(baseColor);
+                    baseColor = clamp(mix(vec3(ly2), baseColor, uSaturation), 0.0, 1.0);
+                }
+
+                // 5. Cinema Optical Vignette (elliptical to frame via vQuadCoord; identical on preview & MP4)
+                if (uVignette > 0.001) {
+                    float d = length(vQuadCoord) * 0.7071;
+                    float vig = 1.0 - uVignette * smoothstep(0.32, 1.08, d);
+                    baseColor *= clamp(vig, 0.0, 1.0);
                 }
 
                 vec3 outColor = baseColor;
@@ -123,13 +173,13 @@ class CinemaGlRenderer(
                 if (uEnableScopes == 1) {
                     float y = calcLuma(baseColor);
 
-                    // 1. Full-HD Rec.709 False Color
+                    // 1. Full-HD Rec.709 False Color (monitors graded output)
                     if (uShowFalseColor == 1) {
                         outColor = applyFalseColor(y);
                     }
 
                     // 2. FiLMiC-Grade High-Frequency Laplacian x Coherent-Gradient Focus Peaking
-                    // Drops to 0.0 on blurry out-of-focus edges (zero 2nd derivative) AND gates out high-ISO pixel noise
+                    // Uses rawY against raw neighbors so color grade/exposure lift never causes false peaking!
                     if (uShowPeaking == 1) {
                         float tl = calcLuma(texture2D(uTexture, vTexCoord - uStepX - uStepY).rgb);
                         float tc = calcLuma(texture2D(uTexture, vTexCoord - uStepY).rgb);
@@ -140,7 +190,7 @@ class CinemaGlRenderer(
                         float bc = calcLuma(texture2D(uTexture, vTexCoord + uStepY).rgb);
                         float br = calcLuma(texture2D(uTexture, vTexCoord + uStepX + uStepY).rgb);
 
-                        float lap = abs(8.0 * y - (tl + tc + tr + ml + mr + bl + bc + br)) * 0.25;
+                        float lap = abs(8.0 * rawY - (tl + tc + tr + ml + mr + bl + bc + br)) * 0.25;
                         float gx = (-tl - 2.0 * ml - bl + tr + 2.0 * mr + br) * 0.25;
                         float gy = (-tl - 2.0 * tc - tr + bl + 2.0 * bc + br) * 0.25;
                         float grad = length(vec2(gx, gy));
@@ -204,8 +254,12 @@ class CinemaGlRenderer(
     private var uStepXLoc: Int = -1
     private var uStepYLoc: Int = -1
     private var uTimeSecLoc: Int = -1
+    private var uExposureMulLoc: Int = -1
     private var uContrastLoc: Int = -1
     private var uSaturationLoc: Int = -1
+    private var uShadowsLoc: Int = -1
+    private var uHighlightsLoc: Int = -1
+    private var uVignetteLoc: Int = -1
 
     private val vertexBuf: FloatBuffer = ByteBuffer.allocateDirect(FULL_QUAD_VERTICES.size * 4)
         .order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
@@ -227,8 +281,8 @@ class CinemaGlRenderer(
     private val startTimeMs = System.currentTimeMillis()
 
     @Volatile var scopeState: GpuScopeState = GpuScopeState()
-    @Volatile var gpuContrast: Float = 1.0f
-    @Volatile var gpuSaturation: Float = 1.0f
+    @Volatile var colorState: GpuColorState = GpuColorState()
+    @Volatile var mirrorFrontExport: Boolean = false
 
     @Volatile private var previewWidth: Int = 0
     @Volatile private var previewHeight: Int = 0
@@ -654,7 +708,7 @@ class CinemaGlRenderer(
         // Determinant of upper-left 2x2 of stMatrix: negative = unmirrored (standard GL Y-flip),
         // positive = HAL applied horizontal selfie mirror (front camera). Un-mirror for clean readable MP4.
         val stDet = stMatrix[0] * stMatrix[5] - stMatrix[1] * stMatrix[4]
-        val unMirrorX = if (isFrontCamera && stDet > 0f) -1.0f else 1.0f
+        val unMirrorX = if (isFrontCamera && stDet > 0f && !mirrorFrontExport) -1.0f else 1.0f
 
         Matrix.setIdentityM(outMvp, 0)
         Matrix.scaleM(outMvp, 0, scaleX * unMirrorX, scaleY, 1.0f)
@@ -706,8 +760,23 @@ class CinemaGlRenderer(
         GLES20.glUniform2f(uStepYLoc, stepYx, stepYy)
         GLES20.glUniform1f(uTimeSecLoc, timeSec)
 
-        GLES20.glUniform1f(uContrastLoc, gpuContrast)
-        GLES20.glUniform1f(uSaturationLoc, gpuSaturation)
+        val cs = colorState
+        if (cs.isBypassed) {
+            GLES20.glUniform1f(uExposureMulLoc, 1.0f)
+            GLES20.glUniform1f(uContrastLoc, 1.0f)
+            GLES20.glUniform1f(uSaturationLoc, 1.0f)
+            GLES20.glUniform1f(uShadowsLoc, 0.0f)
+            GLES20.glUniform1f(uHighlightsLoc, 0.0f)
+            GLES20.glUniform1f(uVignetteLoc, 0.0f)
+        } else {
+            val expMul = Math.pow(2.0, cs.exposureLift.toDouble()).toFloat()
+            GLES20.glUniform1f(uExposureMulLoc, expMul)
+            GLES20.glUniform1f(uContrastLoc, cs.contrast)
+            GLES20.glUniform1f(uSaturationLoc, cs.saturation)
+            GLES20.glUniform1f(uShadowsLoc, cs.shadows)
+            GLES20.glUniform1f(uHighlightsLoc, cs.highlights)
+            GLES20.glUniform1f(uVignetteLoc, cs.vignette)
+        }
 
         GLES20.glEnableVertexAttribArray(aPositionLoc)
         GLES20.glVertexAttribPointer(aPositionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
@@ -804,8 +873,12 @@ class CinemaGlRenderer(
             uStepXLoc = GLES20.glGetUniformLocation(programId, "uStepX")
             uStepYLoc = GLES20.glGetUniformLocation(programId, "uStepY")
             uTimeSecLoc = GLES20.glGetUniformLocation(programId, "uTimeSec")
+            uExposureMulLoc = GLES20.glGetUniformLocation(programId, "uExposureMul")
             uContrastLoc = GLES20.glGetUniformLocation(programId, "uContrast")
             uSaturationLoc = GLES20.glGetUniformLocation(programId, "uSaturation")
+            uShadowsLoc = GLES20.glGetUniformLocation(programId, "uShadows")
+            uHighlightsLoc = GLES20.glGetUniformLocation(programId, "uHighlights")
+            uVignetteLoc = GLES20.glGetUniformLocation(programId, "uVignette")
 
             val textures = IntArray(1)
             GLES20.glGenTextures(1, textures, 0)

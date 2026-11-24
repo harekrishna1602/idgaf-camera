@@ -165,6 +165,20 @@
             android:visibility="gone" />
 
         <TextView
+            android:id="@+id/btnColorPanelToggle"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/bg_hud_pill"
+            android:gravity="center"
+            android:paddingStart="9dp"
+            android:paddingEnd="9dp"
+            android:text="LOOK"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <TextView
             android:id="@+id/btnProSettingsToggle"
             android:layout_width="wrap_content"
             android:layout_height="32dp"
@@ -474,6 +488,20 @@
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/btnProMirrorFront"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="MIRROR: OFF"
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
                 android:id="@+id/btnProPresets"
                 android:layout_width="wrap_content"
                 android:layout_height="26dp"
@@ -487,6 +515,382 @@
                 android:textStyle="bold" />
         </LinearLayout>
     </HorizontalScrollView>
+
+
+    <!-- FLOATING GPU COLOR CONTROL STUDIO DRAWER (Toggled by LOOK pill — Phase 7.2A) -->
+    <LinearLayout
+        android:id="@+id/colorControlDrawer"
+        android:layout_width="356dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="56dp"
+        android:background="@drawable/bg_hud_pill"
+        android:orientation="vertical"
+        android:padding="10dp"
+        android:visibility="gone">
+
+        <!-- Header: Title + Hold A/B Raw Compare + Reset -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="monospace"
+                android:text="GPU COLOR STUDIO • LIVE"
+                android:textColor="#FF5F1F"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnColorCompareAB"
+                android:layout_width="wrap_content"
+                android:layout_height="24dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:paddingStart="9dp"
+                android:paddingEnd="9dp"
+                android:text="HOLD RAW"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnColorReset"
+                android:layout_width="wrap_content"
+                android:layout_height="24dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:paddingStart="9dp"
+                android:paddingEnd="9dp"
+                android:text="RESET"
+                android:textColor="#FF5F1F"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- 1-Tap Starter Cinema Looks Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/btnLookNone"
+                android:layout_width="0dp"
+                android:layout_height="25dp"
+                android:layout_marginEnd="4dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_lens_active"
+                android:gravity="center"
+                android:text="NONE"
+                android:textColor="#0B0D10"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnLookLog"
+                android:layout_width="0dp"
+                android:layout_height="25dp"
+                android:layout_marginEnd="4dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="LOG"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnLookCine"
+                android:layout_width="0dp"
+                android:layout_height="25dp"
+                android:layout_marginEnd="4dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="CINE"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnLookPunch"
+                android:layout_width="0dp"
+                android:layout_height="25dp"
+                android:layout_marginEnd="4dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="PUNCH"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnLookNoir"
+                android:layout_width="0dp"
+                android:layout_height="25dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="NOIR"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Scrollable 6 Precision Sliders (fits cleanly on every phone height) -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="156dp"
+            android:layout_marginTop="6dp"
+            android:fadeScrollbars="false"
+            android:scrollbars="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingEnd="4dp">
+
+                <!-- 1. Exposure Lift (-1.5 to +1.5 EV) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="26dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="34dp"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="EXP"
+                        android:textColor="#8E96A4"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+
+                    <SeekBar
+                        android:id="@+id/seekColorExp"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="30"
+                        android:progress="15"
+                        android:progressTint="#FF5F1F"
+                        android:thumbTint="#FFFFFF" />
+
+                    <TextView
+                        android:id="@+id/txtColorExpVal"
+                        android:layout_width="44dp"
+                        android:layout_height="match_parent"
+                        android:fontFamily="monospace"
+                        android:gravity="end|center_vertical"
+                        android:text="0.0"
+                        android:textColor="#FFFFFF"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- 2. Contrast (0.50 to 1.60) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="26dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="34dp"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="CON"
+                        android:textColor="#8E96A4"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+
+                    <SeekBar
+                        android:id="@+id/seekColorCon"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="110"
+                        android:progress="50"
+                        android:progressTint="#FF5F1F"
+                        android:thumbTint="#FFFFFF" />
+
+                    <TextView
+                        android:id="@+id/txtColorConVal"
+                        android:layout_width="44dp"
+                        android:layout_height="match_parent"
+                        android:fontFamily="monospace"
+                        android:gravity="end|center_vertical"
+                        android:text="1.00"
+                        android:textColor="#FFFFFF"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- 3. Saturation (0.00 to 1.80) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="26dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="34dp"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="SAT"
+                        android:textColor="#8E96A4"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+
+                    <SeekBar
+                        android:id="@+id/seekColorSat"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="180"
+                        android:progress="100"
+                        android:progressTint="#FF5F1F"
+                        android:thumbTint="#FFFFFF" />
+
+                    <TextView
+                        android:id="@+id/txtColorSatVal"
+                        android:layout_width="44dp"
+                        android:layout_height="match_parent"
+                        android:fontFamily="monospace"
+                        android:gravity="end|center_vertical"
+                        android:text="1.00"
+                        android:textColor="#FFFFFF"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- 4. Shadows (-50 to +50) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="26dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="34dp"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="SHD"
+                        android:textColor="#8E96A4"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+
+                    <SeekBar
+                        android:id="@+id/seekColorShd"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="100"
+                        android:progress="50"
+                        android:progressTint="#FF5F1F"
+                        android:thumbTint="#FFFFFF" />
+
+                    <TextView
+                        android:id="@+id/txtColorShdVal"
+                        android:layout_width="44dp"
+                        android:layout_height="match_parent"
+                        android:fontFamily="monospace"
+                        android:gravity="end|center_vertical"
+                        android:text="0"
+                        android:textColor="#FFFFFF"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- 5. Highlights (-50 to +50) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="26dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="34dp"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="HIL"
+                        android:textColor="#8E96A4"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+
+                    <SeekBar
+                        android:id="@+id/seekColorHil"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="100"
+                        android:progress="50"
+                        android:progressTint="#FF5F1F"
+                        android:thumbTint="#FFFFFF" />
+
+                    <TextView
+                        android:id="@+id/txtColorHilVal"
+                        android:layout_width="44dp"
+                        android:layout_height="match_parent"
+                        android:fontFamily="monospace"
+                        android:gravity="end|center_vertical"
+                        android:text="0"
+                        android:textColor="#FFFFFF"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- 6. Optical Vignette (0% to 85%) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="26dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="34dp"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="VIG"
+                        android:textColor="#8E96A4"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+
+                    <SeekBar
+                        android:id="@+id/seekColorVig"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="85"
+                        android:progress="0"
+                        android:progressTint="#FF5F1F"
+                        android:thumbTint="#FFFFFF" />
+
+                    <TextView
+                        android:id="@+id/txtColorVigVal"
+                        android:layout_width="44dp"
+                        android:layout_height="match_parent"
+                        android:fontFamily="monospace"
+                        android:gravity="end|center_vertical"
+                        android:text="0%"
+                        android:textColor="#FFFFFF"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
+    </LinearLayout>
 
     <!-- FLOATING PRO AUDIO CONTROLLER DRAWER (Opened by tapping VU Meter) -->
     <LinearLayout
