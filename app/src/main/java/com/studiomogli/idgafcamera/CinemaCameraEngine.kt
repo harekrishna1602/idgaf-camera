@@ -209,6 +209,7 @@ class CinemaCameraEngine(
         private set
     private var autoPilotStartMs: Long = 0L
     private var autoPilotFramesSeen: Int = 0
+    @Volatile private var pendingAutoPilotOnOpen: Boolean = false
 
     var currentZoomRatio: Float = 1.0f
         private set
@@ -518,7 +519,7 @@ class CinemaCameraEngine(
      * lets the sensor meter the real visible scene, then Stage 2 locks Exposure + WB steadily while
      * keeping continuous autofocus (AF-C) active. Does NOT start recording automatically.
      */
-    fun engageAutoPilot() {
+    fun engageAutoPilot(resetToFps: Int? = null) {
         isAeAfLocked = false
         evCompensationIndex = 0
         isManualExposure = false
@@ -530,6 +531,19 @@ class CinemaCameraEngine(
         toneProfile = ToneProfile.STANDARD
         hasCalibratedWbAnchor = false
 
+        // If FPS was stuck on a custom/low rate (e.g. 1 FPS), cleanly reopen camera at normal FPS first,
+        // then automatically run scene metering & lock the instant the new session configures!
+        if (resetToFps != null && targetFps != resetToFps && !isRecording) {
+            targetFps = resetToFps.coerceIn(1, capabilities.maxHardwareFps.coerceIn(15, 60))
+            pendingAutoPilotOnOpen = true
+            autoPilotState = AutoPilotState.METERING
+            listener.onAutoPilotStateChanged(AutoPilotState.METERING, null)
+            closeCamera()
+            openActiveCamera()
+            return
+        }
+
+        pendingAutoPilotOnOpen = false
         autoPilotState = AutoPilotState.METERING
         autoPilotStartMs = System.currentTimeMillis()
         autoPilotFramesSeen = 0
@@ -561,6 +575,7 @@ class CinemaCameraEngine(
      * Disengages Auto Pilot and releases Exposure & WB back to standard Auto (keeps AF-C active).
      */
     fun disengageAutoPilot() {
+        pendingAutoPilotOnOpen = false
         if (autoPilotState == AutoPilotState.OFF) return
         autoPilotState = AutoPilotState.OFF
         isManualExposure = false
@@ -1194,6 +1209,10 @@ class CinemaCameraEngine(
                                 lens,
                                 capabilities
                             )
+                            if (pendingAutoPilotOnOpen) {
+                                pendingAutoPilotOnOpen = false
+                                engageAutoPilot(resetToFps = null)
+                            }
                         } catch (e: Exception) {
                             listener.onError("Preview start failed: ${e.message}")
                         }
@@ -1477,7 +1496,7 @@ class CinemaCameraEngine(
 
     fun closeCamera() {
         if (isRecording) stopRecording()
-        if (autoPilotState == AutoPilotState.METERING) clearAutoPilotSilently()
+        if (autoPilotState == AutoPilotState.METERING && !pendingAutoPilotOnOpen) clearAutoPilotSilently()
         closeSession()
         try {
             cameraDevice?.close()

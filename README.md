@@ -1,13 +1,13 @@
-# IDGAF CAMERA (`v0.7.1.1` — Audit Release: GPU Frame Pacer, Peek-Through LOOK Grading & Muted REC Guard)
+# IDGAF CAMERA (`v0.7.1.2` — Savior Cinema Engine)
 
-Free, open, community-built Android cinema camera built on native **Kotlin + Camera2 + OpenGL ES 2.0** by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
+*A love letter to indie filmmakers — by Savior San.*
 
-## What's Fixed & Upgraded in `v0.7.1.1`
-- **True GPU Frame-Pacer for Custom / Low FPS (`1–60 FPS`):**
-  - `CinemaGlRenderer` now gates Pass 2 (encoder) to exact `1_000_000_000L / targetFps` cadence—so `1 FPS` records **1 frame/sec** (5 frames in a 5-second clip) with real-time synced audio while keeping the live viewfinder smooth at 30 FPS.
-  - Automatically checks active lens `maxHardwareFps` (clamping `60 FPS` cleanly if the hardware lens caps at `30 FPS`) and aligns `180°` shutter math with `targetFps`.
-- **Peek-Through `LOOK` Grading Mode:** Holding/dragging any slider inside `LOOK` hides the panel background, header, presets, and all other rows cleanly (`View.INVISIBLE` so touch position never jumps), leaving **only that single slider + name + live value** floating over the full unobstructed camera frame. Releasing brings the studio drawer right back.
-- **`PILOT` Full Look Reset:** Auto Pilot now resets `LOOK` completely back to `NONE` (clearing `NOIR`, `CINE`, `LOG`, and all 6 sliders) alongside exposure, WB, focus, and audio.
-- **Unified `LOOK` Studio & Clean `PRO` Bar:** Removed redundant `STD/FLAT/CINE` from `PRO` (`LOOK → LOG` now auto-engages hardware `ToneProfile.FLAT`), renamed `EXP` → `LIFT` inside `LOOK` to distinguish from Bottom Dock hardware `EV`.
-- **Unified Pro Audio Drawer & Muted REC Guard:** Moved `MIC` input selector (`AUTO / INT / EXT`) from `PRO` into the VU Meter Audio Drawer, added a red-bordered `MUTED` alert state to the top-bar VU pill, and added a pre-record **`UNMUTE & REC` / `REC SILENT` / `Cancel`** safety prompt when tapping `REC` while muted.
-- **Preset Restore Fixes:** Loading a template now clears `AE/AF LOCK` first and restores `180°` shutter lock state accurately.
+Free, open Android cinema camera powered by the **Savior Cinema Engine** (native **Kotlin + Camera2 + OpenGL ES 2.0**) by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
+
+## What's New & Fixed in `v0.7.1.2`
+- **Savior Cinema Engine Credits:** Updated the credits dialog to **Savior Cinema Engine** with the signature line *"A love letter to indie filmmakers — by Savior San."*
+- **`PILOT` FPS Rescue (`1 FPS` → Normal `30 FPS`):** Tapping **`PILOT`** now resets any custom/low frame rate (like `1 FPS`) back to normal `30 FPS` and automatically runs race-free two-stage scene metering & lock once the camera reopens.
+- **Audio Drawer Overlap Fixed:** Opening the Pro Audio Drawer now cleanly hides the left camera switch rail (`lensRail`) and elevates the drawer so the lens flip button never blocks audio controls. Closing the drawer brings the lens rail right back.
+- **Peek-Through `HOLD RAW` A/B Compare:** Pressing and holding **`HOLD RAW`** inside `LOOK` now hides the panel background, presets, title, and sliders so you compare raw vs. graded across the full unobstructed frame.
+- **Clean Mutual Drawer Exclusion:** Opening the Zoom Popout Drawer now auto-closes open top drawers (`LOOK` / `PRO` / `MON` / `AUDIO`) and vice versa so UI panels never collide.
+- **Time-Lapse Logged in Roadmap:** Added **Phase 7.2C — Pro Time-Lapse & Intervalometer Engine** to `ROADMAP.md`.

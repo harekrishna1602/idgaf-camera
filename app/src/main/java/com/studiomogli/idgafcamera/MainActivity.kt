@@ -93,6 +93,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnColorPanelToggle: TextView
     private lateinit var colorControlDrawer: LinearLayout
     private lateinit var colorDrawerHeaderRow: LinearLayout
+    private lateinit var txtColorDrawerTitle: TextView
     private lateinit var colorLooksPresetRow: LinearLayout
     private lateinit var scrollColorSliders: ScrollView
     private lateinit var rowColorExp: LinearLayout
@@ -510,6 +511,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnColorPanelToggle = findViewById(R.id.btnColorPanelToggle)
         colorControlDrawer = findViewById(R.id.colorControlDrawer)
         colorDrawerHeaderRow = findViewById(R.id.colorDrawerHeaderRow)
+        txtColorDrawerTitle = findViewById(R.id.txtColorDrawerTitle)
         colorLooksPresetRow = findViewById(R.id.colorLooksPresetRow)
         scrollColorSliders = findViewById(R.id.scrollColorSliders)
         rowColorExp = findViewById(R.id.rowColorExp)
@@ -982,12 +984,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         if (except != "AUDIO" && audioControlDrawer.visibility == View.VISIBLE) {
             audioControlDrawer.visibility = View.GONE
+            lensRail.visibility = View.VISIBLE
             updateAudioTopPillVisual()
         }
         if (except != "LOOK" && colorControlDrawer.visibility == View.VISIBLE) {
             setColorDrawerPeekMode(null)
+            setColorDrawerRawComparePeek(false)
             colorControlDrawer.visibility = View.GONE
             updateLookTopPillVisual()
+        }
+        if (except != "ZOOM" && zoomPopoutDrawer.visibility == View.VISIBLE) {
+            zoomPopoutDrawer.visibility = View.GONE
         }
     }
 
@@ -1280,7 +1287,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
 
         view.findViewById<TextView>(R.id.txtCreditsVersion).text =
-            "v${getCurrentVersionName()} • Community Cinema Engine"
+            "v${getCurrentVersionName()} • Savior Cinema Engine"
 
         view.findViewById<TextView>(R.id.btnCreditsWebsite).setOnClickListener {
             try {
@@ -1364,8 +1371,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.1.1"
-    } catch (_: Exception) { "0.7.1.1" }
+        info.versionName ?: "0.7.1.2"
+    } catch (_: Exception) { "0.7.1.2" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1385,7 +1392,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnAudioPanelToggle.setOnClickListener {
             val showing = audioControlDrawer.visibility == View.VISIBLE
             if (!showing) closeTopDrawers(except = "AUDIO")
-            audioControlDrawer.visibility = if (showing) View.GONE else View.VISIBLE
+            val nextVisible = !showing
+            audioControlDrawer.visibility = if (nextVisible) View.VISIBLE else View.GONE
+            // Hide left lens rail while Pro Audio Drawer is open so camera switch button never overlaps audio controls
+            lensRail.visibility = if (nextVisible) View.GONE else View.VISIBLE
             updateAudioTopPillVisual()
         }
 
@@ -1433,23 +1443,28 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnColorPanelToggle.setOnClickListener {
             val showing = colorControlDrawer.visibility == View.VISIBLE
             if (!showing) closeTopDrawers(except = "LOOK")
-            if (showing) setColorDrawerPeekMode(null)
+            if (showing) {
+                setColorDrawerPeekMode(null)
+                setColorDrawerRawComparePeek(false)
+            }
             colorControlDrawer.visibility = if (showing) View.GONE else View.VISIBLE
             updateLookTopPillVisual()
         }
 
-        // Press-and-hold A/B Compare: releasing always restores your live grade so you can never forget bypass ON!
+        // Press-and-hold Peek-Through A/B Compare: hides drawer clutter while held so you see the full frame raw!
         btnColorCompareAB.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     gpuColorState = gpuColorState.copy(isBypassed = true)
                     engine.updateGpuColorState(gpuColorState)
+                    setColorDrawerRawComparePeek(true)
                     styleToolPill(btnColorCompareAB, true)
                     btnColorCompareAB.text = "RAW"
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     gpuColorState = gpuColorState.copy(isBypassed = false)
                     engine.updateGpuColorState(gpuColorState)
+                    setColorDrawerRawComparePeek(false)
                     styleToolPill(btnColorCompareAB, false)
                     btnColorCompareAB.text = "HOLD RAW"
                 }
@@ -1608,6 +1623,22 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 row.visibility = View.VISIBLE
                 row.setBackgroundColor(Color.TRANSPARENT)
             }
+        }
+    }
+
+    private fun setColorDrawerRawComparePeek(active: Boolean) {
+        if (active) {
+            colorControlDrawer.setBackgroundColor(Color.TRANSPARENT)
+            txtColorDrawerTitle.visibility = View.INVISIBLE
+            btnColorReset.visibility = View.INVISIBLE
+            colorLooksPresetRow.visibility = View.INVISIBLE
+            scrollColorSliders.visibility = View.INVISIBLE
+        } else {
+            colorControlDrawer.setBackgroundResource(R.drawable.bg_hud_pill)
+            txtColorDrawerTitle.visibility = View.VISIBLE
+            btnColorReset.visibility = View.VISIBLE
+            colorLooksPresetRow.visibility = View.VISIBLE
+            scrollColorSliders.visibility = View.VISIBLE
         }
     }
 
@@ -2016,6 +2047,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         txtZoomReadout.setOnClickListener {
             val showing = zoomPopoutDrawer.visibility == View.VISIBLE
+            if (!showing) closeTopDrawers(except = "ZOOM")
             zoomPopoutDrawer.visibility = if (showing) View.GONE else View.VISIBLE
             if (!showing) updateZoomReadout()
         }
@@ -2903,10 +2935,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         styleToolPill(btnProStab, true)
         updateLockUi(false)
 
-        // 4. Launch two-stage scene meter & lock in Camera2 engine (does NOT start recording)
-        engine.engageAutoPilot()
+        // 4. Reset custom/low FPS (e.g. 1 FPS) cleanly back to normal 30 FPS & launch two-stage scene meter + lock
+        val normalFps = minOf(30, engine.capabilities.maxHardwareFps.coerceIn(15, 60))
+        val fpsChanged = (currentFps != normalFps || engine.targetFps != normalFps)
+        if (fpsChanged) {
+            currentFps = normalFps
+            btnFps.text = "$normalFps FPS"
+        }
+        engine.engageAutoPilot(resetToFps = normalFps)
         updateEvDisplay()
-        showSingleToast("Auto Pilot metering scene...")
+        showSingleToast(if (fpsChanged) "Auto Pilot: resetting to $normalFps FPS & metering..." else "Auto Pilot metering scene...")
     }
 
     private fun updateAutoPilotUi(state: AutoPilotState) {
