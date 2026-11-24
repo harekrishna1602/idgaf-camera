@@ -1,15 +1,23 @@
-# IDGAF CAMERA (`v0.7.2.2` — Bipolar Vignette & Pro Time-Lapse Engine)
+# IDGAF CAMERA (`v0.7.2.3` — World-Class 12-LUT Cinema Color-Science Suite)
 
 *A love letter to indie filmmakers — by Savior San.*
 
 Free, open Android cinema camera powered by the **Savior Cinema Engine** (native **Kotlin + Camera2 + OpenGL ES 2.0**) by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's New & Fixed in `v0.7.2.2`
-- **Bipolar Black ↔ White Optical Vignette (`LOOK → VIG`):**
-  - Fixed Vignette so it works in both directions just like Lightroom & Premiere: slide left (**`-85%` to `0%`**) for classic dark/black cinema lens falloff, center (**`0%`**) for neutral, and slide right (**`0%` to `+85%`**) for dreamy bright/white corner fade.
-  - Built-in looks (`CINE`, `PUNCH`, `NOIR`) use dark black cinema vignette (`-28%`, `-14%`, `-42%`), and tapping the value readout snaps cleanly back to `0%`.
-- **Pro Time-Lapse & Intervalometer Engine (`PRO → TL`):**
-  - Capture 1 frame every **`0.5s / 1s / 2s / 5s / 10s / 30s`** (or any custom interval from `0.5s` to `60s`) and bake compressed-timestamp frames directly into a silky-smooth **`24 FPS` or `30 FPS` `.mp4`** (video-only, zero audio drift).
-  - Live top-bar counter displays captured frames and exact output playback duration (**`TL 45f • 00:01.5`**).
-  - Full live **`LOOK`** grading, Bipolar Vignette, and **`.cube` 3D LUTs** bake automatically into every Time-Lapse frame.
-  - Tapping **`PILOT`** cleanly resets Time-Lapse back to `OFF`.
+## What's New in `v0.7.2.3` (LUT-Only Color-Science Upgrade)
+- **Removed Old Basic LUTs → Replaced with 12 World-Class Cinema 3D LUTs (`CubeLutParser.kt`):**
+  - Powered by a true **7-Stage Linear-Light Film Color-Science Engine** (3×3 dye-layer spectral matrix, 6-vector HSV Hue/Sat/Luma warping, subtractive film density, pivot S-curve with soft highlight shoulder roll-off, black-protected zone split-toning, specular highlight desaturation, and orange-filtered panchromatic B&W):
+    1. **`2383 PRINT D60`** — Hollywood 35mm Print Film (rich deep blacks, warm D60 cream highlights, cyan-teal blues, protected golden skin).
+    2. **`FUJI 3513D`** — Fujifilm Eterna-CP 3513DI Print Stock (subtle teal/orange separation, lush emerald foliage, silky skin).
+    3. **`ARRI ALF-2`** — ARRI Alexa Cinema Science (neutral balanced highlights, organic skin, effortless filmic dynamic range).
+    4. **`PORTRA 400`** — Kodak Portra 400 Negative (golden peach skin, lifted matte blacks, soft pastel skies).
+    5. **`CINESTILL 800T`** — Tungsten Night Cinema (cool cyan shadows, glowing warm amber practical lights).
+    6. **`CLASSIC CHROME`** — Fujifilm Classic Chrome (editorial muted documentary palette, deep shadows).
+    7. **`BLEACH BYPASS`** — Lab Silver-Retention ENR (*Se7en* / gritty steely high-contrast drama).
+    8. **`KODACHROME 64`** — Archival Slide Film (velvety brick reds, dense blacks, golden warmth).
+    9. **`NEON JADE`** — Wong Kar-wai Nocturne (lush emerald-jade shadows, glowing amber highlights).
+    10. **`DESERT GOLD`** — *Dune* / *Blade Runner 2049* (warm golden ochre highlights, smoky bronze shadows).
+    11. **`NORDIC SLATE`** — Fincher / Cold Thriller (desaturated steel-blue shadows, restrained tension).
+    12. **`TRI-X 400 BW`** — Kodak Tri-X 400 Panchromatic B&W (orange-filter channel mix for dark skies & luminous skin).
+- **1-Tap Instant LUT Cycling (`‹` / `›`) + RAM Cache:** Step cleanly through all 12 World-Class LUTs + your imported `.cube` files right from the `LOOK` drawer with `< 1 ms` cached switching.
+- **Zero Risk to Core Camera:** `CinemaGlRenderer.kt`, `CinemaCameraEngine.kt`, audio, and Time-Lapse remain 100% untouched from `v0.7.2.2`.

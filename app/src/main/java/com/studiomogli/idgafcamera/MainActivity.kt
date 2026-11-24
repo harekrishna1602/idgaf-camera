@@ -98,7 +98,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var txtColorDrawerTitle: TextView
     private lateinit var colorLooksPresetRow: LinearLayout
     private lateinit var colorLutBarRow: LinearLayout
+    private lateinit var btnLutPrev: TextView
     private lateinit var btnSelectCubeLut: TextView
+    private lateinit var btnLutNext: TextView
     private lateinit var btnImportCubeQuick: TextView
     private lateinit var scrollColorSliders: ScrollView
     private lateinit var rowColorLutMix: LinearLayout
@@ -534,7 +536,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtColorDrawerTitle = findViewById(R.id.txtColorDrawerTitle)
         colorLooksPresetRow = findViewById(R.id.colorLooksPresetRow)
         colorLutBarRow = findViewById(R.id.colorLutBarRow)
+        btnLutPrev = findViewById(R.id.btnLutPrev)
         btnSelectCubeLut = findViewById(R.id.btnSelectCubeLut)
+        btnLutNext = findViewById(R.id.btnLutNext)
         btnImportCubeQuick = findViewById(R.id.btnImportCubeQuick)
         scrollColorSliders = findViewById(R.id.scrollColorSliders)
         rowColorLutMix = findViewById(R.id.rowColorLutMix)
@@ -1532,8 +1536,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.2.2"
-    } catch (_: Exception) { "0.7.2.2" }
+        info.versionName ?: "0.7.2.3"
+    } catch (_: Exception) { "0.7.2.3" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1642,8 +1646,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             showSingleToast("GPU Color & 3D LUT Reset")
         }
 
+        btnLutPrev.setOnClickListener {
+            stepActiveCubeLut(delta = -1)
+        }
+
         btnSelectCubeLut.setOnClickListener {
             showCubeLutLibraryDialog()
+        }
+
+        btnLutNext.setOnClickListener {
+            stepActiveCubeLut(delta = +1)
         }
 
         btnImportCubeQuick.setOnClickListener {
@@ -1970,6 +1982,23 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }.start()
     }
 
+    private fun stepActiveCubeLut(delta: Int) {
+        val allIds = mutableListOf("")
+        CubeLutLibrary.getBuiltInEntries().forEach { allIds.add(it.sourceId) }
+        CubeLutLibrary.listSavedUserLuts(this).forEach { allIds.add(it.sourceId) }
+        if (allIds.size <= 1) return
+        val curIdx = allIds.indexOf(activeLutSourceId).let { if (it < 0) 0 else it }
+        val nextIdx = (curIdx + delta + allIds.size) % allIds.size
+        val nextId = allIds[nextIdx]
+        if (nextId.isEmpty()) {
+            clearActiveCubeLut()
+            pushGpuColorStateAndRefreshUi()
+            showSingleToast("3D LUT: NONE")
+        } else {
+            loadAndActivateCubeLut(nextId, silent = false)
+        }
+    }
+
     private fun showCubeLutLibraryDialog() {
         val builtins = CubeLutLibrary.getBuiltInEntries()
         val userLuts = CubeLutLibrary.listSavedUserLuts(this)
@@ -1986,7 +2015,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         builtins.forEach { entry ->
             val mark = if (activeLutSourceId == entry.sourceId) "✓ " else ""
-            labels.add("${mark}★ ${entry.displayName} (Built-In 33³)")
+            labels.add("${mark}★ ${entry.displayName} — ${entry.subtitle}")
             actions.add { loadAndActivateCubeLut(entry.sourceId, silent = false) }
         }
 
@@ -2008,7 +2037,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("3D .cube LUT Library")
+            .setTitle("World-Class 3D LUT Library (33³)")
             .setItems(labels.toTypedArray()) { _, which ->
                 actions.getOrNull(which)?.invoke()
             }
@@ -2046,7 +2075,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 runOnUiThread {
                     if (lut != null) {
                         applyLoadedCubeLut(lut)
-                        if (!silent) showSingleToast("3D LUT Active: ${lut.displayName} (${lut.size}³)")
+                        if (!silent) showSingleToast("LUT: ${lut.displayName} (${lut.size}³)")
                     } else if (!silent) {
                         showSingleToast("LUT file not found")
                     }

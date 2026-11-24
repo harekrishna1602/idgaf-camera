@@ -623,7 +623,7 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- Phase 7.2B Real 3D .cube LUT Bar -->
+        <!-- Phase 7.2B/7.2.3 World-Class 3D .cube LUT Bar (with 1-Tap < / > Instant Cycling) -->
         <LinearLayout
             android:id="@+id/colorLutBarRow"
             android:layout_width="match_parent"
@@ -633,21 +633,45 @@
             android:orientation="horizontal">
 
             <TextView
+                android:id="@+id/btnLutPrev"
+                android:layout_width="28dp"
+                android:layout_height="26dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="‹"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
                 android:id="@+id/btnSelectCubeLut"
                 android:layout_width="0dp"
                 android:layout_height="26dp"
-                android:layout_marginEnd="5dp"
+                android:layout_marginEnd="4dp"
                 android:layout_weight="1"
                 android:background="@drawable/bg_hud_pill"
                 android:ellipsize="end"
                 android:fontFamily="monospace"
                 android:gravity="center_vertical"
-                android:paddingStart="9dp"
-                android:paddingEnd="9dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
                 android:singleLine="true"
                 android:text="3D LUT: NONE ▾"
                 android:textColor="#FFFFFF"
                 android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnLutNext"
+                android:layout_width="28dp"
+                android:layout_height="26dp"
+                android:layout_marginEnd="5dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="›"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -657,8 +681,8 @@
                 android:background="@drawable/bg_hud_pill"
                 android:fontFamily="monospace"
                 android:gravity="center"
-                android:paddingStart="9dp"
-                android:paddingEnd="9dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
                 android:text="+ .CUBE"
                 android:textColor="#FF5F1F"
                 android:textSize="9sp"

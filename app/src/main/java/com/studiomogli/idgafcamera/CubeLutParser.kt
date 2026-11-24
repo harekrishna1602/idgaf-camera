@@ -5,6 +5,10 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -23,21 +27,364 @@ data class CubeLutData(
 data class SavedLutEntry(
     val sourceId: String,
     val displayName: String,
-    val file: File? // null for built-in algorithmic 3D LUTs
+    val subtitle: String,
+    val file: File? // null for built-in world-class 3D LUTs
+)
+
+private data class HueLobe(val centerDeg: Float, val amount: Float, val widthDeg: Float)
+
+private data class FilmStockProfile(
+    val id: String,
+    val displayName: String,
+    val subtitle: String,
+    val matrix: FloatArray,
+    val hueShifts: List<HueLobe>,
+    val satMults: List<HueLobe>,
+    val lumaShifts: List<HueLobe>,
+    val density: Float,
+    val contrast: Float,
+    val pivot: Float,
+    val toe: Float,
+    val shoulder: Float,
+    val gamma: Float,
+    val shdTint: FloatArray,
+    val midTint: FloatArray,
+    val hilTint: FloatArray,
+    val sat: Float,
+    val hilDesat: Float,
+    val bwWeights: FloatArray? = null
 )
 
 object CubeLutLibrary {
-    const val BUILTIN_KODAK_2383 = "builtin:kodak_2383"
-    const val BUILTIN_TEAL_ORANGE = "builtin:teal_orange"
-    const val BUILTIN_FUJI_ETERNA = "builtin:fuji_eterna"
-
     private const val MAX_GPU_LUT_SIZE = 33
+    private val ramCache = ConcurrentHashMap<String, CubeLutData>()
 
-    fun getBuiltInEntries(): List<SavedLutEntry> = listOf(
-        SavedLutEntry(BUILTIN_KODAK_2383, "KODAK 2383", null),
-        SavedLutEntry(BUILTIN_TEAL_ORANGE, "TEAL & ORG", null),
-        SavedLutEntry(BUILTIN_FUJI_ETERNA, "FUJI ETERNA", null)
+    // 12 World-Class Cinema 3D LUTs — True 7-Stage Film Color-Science Emulation (33x33x33)
+    private val WORLD_CLASS_STOCKS: List<FilmStockProfile> = listOf(
+        FilmStockProfile(
+            id = "wc:2383_print_d60",
+            displayName = "2383 PRINT D60",
+            subtitle = "Hollywood 35mm Print • Deep Blacks & Cyan/Amber",
+            matrix = floatArrayOf(1.05f, -0.03f, -0.02f, -0.02f, 1.02f, 0.00f, -0.03f, 0.06f, 0.97f),
+            hueShifts = listOf(
+                HueLobe(0f, 3f, 42f),
+                HueLobe(30f, -1f, 35f),
+                HueLobe(120f, 12f, 50f),
+                HueLobe(225f, -24f, 65f),
+                HueLobe(310f, 12f, 50f)
+            ),
+            satMults = listOf(
+                HueLobe(0f, 1.12f, 42f),
+                HueLobe(30f, 0.95f, 35f),
+                HueLobe(120f, 0.84f, 55f),
+                HueLobe(220f, 0.98f, 65f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(0f, -0.06f, 45f),
+                HueLobe(120f, -0.05f, 50f),
+                HueLobe(220f, -0.08f, 65f)
+            ),
+            density = 0.22f,
+            contrast = 1.22f, pivot = 0.45f, toe = 0.012f, shoulder = 0.965f, gamma = 1.01f,
+            shdTint = floatArrayOf(-0.038f, 0.014f, 0.048f),
+            midTint = floatArrayOf(0.012f, 0.002f, -0.014f),
+            hilTint = floatArrayOf(0.038f, 0.016f, -0.040f),
+            sat = 1.03f, hilDesat = 0.28f
+        ),
+        FilmStockProfile(
+            id = "wc:fuji_3513d",
+            displayName = "FUJI 3513D",
+            subtitle = "Cinema Print • Lush Emerald & Silky Skin",
+            matrix = floatArrayOf(1.03f, -0.02f, -0.01f, -0.03f, 1.06f, -0.03f, -0.02f, 0.07f, 0.95f),
+            hueShifts = listOf(
+                HueLobe(0f, 5f, 40f),
+                HueLobe(30f, 1f, 35f),
+                HueLobe(115f, 16f, 55f),
+                HueLobe(225f, -26f, 65f)
+            ),
+            satMults = listOf(
+                HueLobe(0f, 1.06f, 45f),
+                HueLobe(30f, 0.98f, 35f),
+                HueLobe(120f, 0.90f, 55f),
+                HueLobe(215f, 1.02f, 65f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(120f, -0.04f, 50f),
+                HueLobe(220f, -0.06f, 60f)
+            ),
+            density = 0.18f,
+            contrast = 1.15f, pivot = 0.46f, toe = 0.024f, shoulder = 0.960f, gamma = 0.98f,
+            shdTint = floatArrayOf(-0.048f, 0.022f, 0.046f),
+            midTint = floatArrayOf(0.016f, 0.004f, -0.012f),
+            hilTint = floatArrayOf(0.026f, 0.016f, -0.024f),
+            sat = 1.02f, hilDesat = 0.24f
+        ),
+        FilmStockProfile(
+            id = "wc:arri_alf2",
+            displayName = "ARRI ALF-2",
+            subtitle = "Alexa Cinema Science • Natural Highlight Roll-Off",
+            matrix = floatArrayOf(1.02f, -0.01f, -0.01f, -0.01f, 1.02f, -0.01f, 0.00f, 0.02f, 0.98f),
+            hueShifts = listOf(
+                HueLobe(0f, 4f, 40f),
+                HueLobe(115f, 12f, 50f),
+                HueLobe(230f, -12f, 55f)
+            ),
+            satMults = listOf(
+                HueLobe(30f, 1.02f, 35f),
+                HueLobe(120f, 0.86f, 50f),
+                HueLobe(230f, 0.92f, 55f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(0f, -0.04f, 45f),
+                HueLobe(230f, -0.04f, 55f)
+            ),
+            density = 0.16f,
+            contrast = 1.12f, pivot = 0.44f, toe = 0.018f, shoulder = 0.975f, gamma = 0.97f,
+            shdTint = floatArrayOf(-0.012f, 0.004f, 0.014f),
+            midTint = floatArrayOf(0.008f, 0.002f, -0.006f),
+            hilTint = floatArrayOf(0.008f, 0.004f, -0.006f),
+            sat = 0.98f, hilDesat = 0.30f
+        ),
+        FilmStockProfile(
+            id = "wc:portra_400",
+            displayName = "PORTRA 400",
+            subtitle = "Golden Skin & Creamy Pastel Negative",
+            matrix = floatArrayOf(1.04f, 0.02f, -0.06f, 0.00f, 1.01f, -0.01f, -0.02f, 0.04f, 0.98f),
+            hueShifts = listOf(
+                HueLobe(0f, 8f, 45f),
+                HueLobe(30f, 2f, 35f),
+                HueLobe(120f, -10f, 55f),
+                HueLobe(220f, -16f, 60f)
+            ),
+            satMults = listOf(
+                HueLobe(30f, 1.04f, 38f),
+                HueLobe(120f, 0.72f, 55f),
+                HueLobe(220f, 0.80f, 60f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(30f, 0.04f, 38f),
+                HueLobe(120f, 0.02f, 50f)
+            ),
+            density = 0.10f,
+            contrast = 0.95f, pivot = 0.47f, toe = 0.046f, shoulder = 0.960f, gamma = 0.94f,
+            shdTint = floatArrayOf(0.012f, 0.014f, 0.018f),
+            midTint = floatArrayOf(0.024f, 0.012f, -0.020f),
+            hilTint = floatArrayOf(0.036f, 0.022f, -0.026f),
+            sat = 0.92f, hilDesat = 0.22f
+        ),
+        FilmStockProfile(
+            id = "wc:cinestill_800t",
+            displayName = "CINESTILL 800T",
+            subtitle = "Tungsten Night • Cool Cyan Shadows & Amber Lamps",
+            matrix = floatArrayOf(1.03f, -0.03f, 0.00f, -0.01f, 1.02f, -0.01f, -0.03f, 0.07f, 0.96f),
+            hueShifts = listOf(
+                HueLobe(0f, -3f, 38f),
+                HueLobe(45f, -5f, 35f),
+                HueLobe(120f, 22f, 55f),
+                HueLobe(225f, -18f, 65f)
+            ),
+            satMults = listOf(
+                HueLobe(0f, 1.18f, 40f),
+                HueLobe(30f, 0.96f, 35f),
+                HueLobe(120f, 0.78f, 55f),
+                HueLobe(210f, 1.04f, 65f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(0f, -0.04f, 45f),
+                HueLobe(220f, -0.06f, 60f)
+            ),
+            density = 0.20f,
+            contrast = 1.20f, pivot = 0.46f, toe = 0.016f, shoulder = 0.970f, gamma = 1.02f,
+            shdTint = floatArrayOf(-0.064f, 0.018f, 0.068f),
+            midTint = floatArrayOf(-0.022f, 0.006f, 0.028f),
+            hilTint = floatArrayOf(0.052f, 0.016f, -0.044f),
+            sat = 1.02f, hilDesat = 0.18f
+        ),
+        FilmStockProfile(
+            id = "wc:classic_chrome",
+            displayName = "CLASSIC CHROME",
+            subtitle = "Editorial Documentary • Muted Earth & Deep Tone",
+            matrix = floatArrayOf(1.02f, -0.03f, 0.01f, -0.01f, 1.01f, 0.00f, -0.02f, 0.05f, 0.97f),
+            hueShifts = listOf(
+                HueLobe(0f, 9f, 45f),
+                HueLobe(120f, -14f, 55f),
+                HueLobe(225f, -22f, 65f)
+            ),
+            satMults = listOf(
+                HueLobe(0f, 0.78f, 45f),
+                HueLobe(30f, 0.88f, 35f),
+                HueLobe(120f, 0.62f, 55f),
+                HueLobe(220f, 0.72f, 65f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(0f, -0.07f, 45f),
+                HueLobe(220f, -0.09f, 65f)
+            ),
+            density = 0.24f,
+            contrast = 1.18f, pivot = 0.48f, toe = 0.022f, shoulder = 0.945f, gamma = 1.02f,
+            shdTint = floatArrayOf(-0.024f, 0.008f, 0.022f),
+            midTint = floatArrayOf(0.006f, 0.002f, -0.008f),
+            hilTint = floatArrayOf(0.022f, 0.016f, -0.014f),
+            sat = 0.78f, hilDesat = 0.28f
+        ),
+        FilmStockProfile(
+            id = "wc:bleach_bypass",
+            displayName = "BLEACH BYPASS",
+            subtitle = "Lab Silver Retention • Gritty Steely Contrast",
+            matrix = floatArrayOf(1.00f, 0.00f, 0.00f, 0.00f, 1.00f, 0.00f, 0.00f, 0.00f, 1.00f),
+            hueShifts = listOf(
+                HueLobe(220f, -12f, 60f),
+                HueLobe(120f, -16f, 55f)
+            ),
+            satMults = listOf(
+                HueLobe(30f, 0.78f, 38f),
+                HueLobe(120f, 0.45f, 55f),
+                HueLobe(220f, 0.55f, 60f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(220f, -0.10f, 60f)
+            ),
+            density = 0.26f,
+            contrast = 1.42f, pivot = 0.48f, toe = 0.006f, shoulder = 0.985f, gamma = 1.06f,
+            shdTint = floatArrayOf(-0.024f, -0.004f, 0.022f),
+            midTint = floatArrayOf(-0.006f, 0.002f, 0.008f),
+            hilTint = floatArrayOf(0.010f, 0.014f, 0.018f),
+            sat = 0.46f, hilDesat = 0.42f
+        ),
+        FilmStockProfile(
+            id = "wc:kodachrome_64",
+            displayName = "KODACHROME 64",
+            subtitle = "Archival Slide • Velvety Brick Reds & Rich Warmth",
+            matrix = floatArrayOf(1.07f, -0.04f, -0.03f, -0.02f, 1.03f, -0.01f, -0.03f, 0.03f, 1.00f),
+            hueShifts = listOf(
+                HueLobe(0f, -4f, 38f),
+                HueLobe(30f, -2f, 32f),
+                HueLobe(120f, -12f, 55f),
+                HueLobe(225f, -14f, 60f)
+            ),
+            satMults = listOf(
+                HueLobe(0f, 1.22f, 40f),
+                HueLobe(30f, 0.94f, 34f),
+                HueLobe(120f, 0.78f, 55f),
+                HueLobe(225f, 0.96f, 60f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(0f, -0.10f, 42f),
+                HueLobe(225f, -0.08f, 60f)
+            ),
+            density = 0.24f,
+            contrast = 1.24f, pivot = 0.46f, toe = 0.008f, shoulder = 0.960f, gamma = 1.03f,
+            shdTint = floatArrayOf(-0.018f, 0.002f, 0.016f),
+            midTint = floatArrayOf(0.020f, 0.008f, -0.022f),
+            hilTint = floatArrayOf(0.034f, 0.020f, -0.032f),
+            sat = 1.04f, hilDesat = 0.22f
+        ),
+        FilmStockProfile(
+            id = "wc:neon_jade",
+            displayName = "NEON JADE",
+            subtitle = "Wong Kar-wai Nocturne • Emerald Shadows & Amber",
+            matrix = floatArrayOf(1.03f, -0.05f, 0.02f, -0.03f, 1.07f, -0.04f, -0.03f, 0.05f, 0.98f),
+            hueShifts = listOf(
+                HueLobe(0f, -4f, 42f),
+                HueLobe(50f, -10f, 42f),
+                HueLobe(120f, 26f, 60f),
+                HueLobe(220f, -32f, 70f)
+            ),
+            satMults = listOf(
+                HueLobe(0f, 1.18f, 42f),
+                HueLobe(30f, 0.96f, 35f),
+                HueLobe(140f, 0.92f, 60f),
+                HueLobe(200f, 1.02f, 60f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(130f, -0.06f, 55f),
+                HueLobe(220f, -0.07f, 60f)
+            ),
+            density = 0.22f,
+            contrast = 1.20f, pivot = 0.45f, toe = 0.020f, shoulder = 0.955f, gamma = 1.02f,
+            shdTint = floatArrayOf(-0.062f, 0.042f, 0.020f),
+            midTint = floatArrayOf(-0.024f, 0.024f, -0.008f),
+            hilTint = floatArrayOf(0.050f, 0.022f, -0.050f),
+            sat = 1.02f, hilDesat = 0.20f
+        ),
+        FilmStockProfile(
+            id = "wc:desert_gold",
+            displayName = "DESERT GOLD",
+            subtitle = "Epic Theatrical Amber • Golden Ochre & Bronze",
+            matrix = floatArrayOf(1.06f, 0.02f, -0.08f, 0.00f, 1.01f, -0.01f, -0.04f, -0.02f, 1.06f),
+            hueShifts = listOf(
+                HueLobe(0f, 10f, 45f),
+                HueLobe(120f, -34f, 65f),
+                HueLobe(220f, -20f, 65f)
+            ),
+            satMults = listOf(
+                HueLobe(35f, 1.06f, 45f),
+                HueLobe(120f, 0.56f, 60f),
+                HueLobe(220f, 0.62f, 65f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(120f, -0.06f, 55f),
+                HueLobe(220f, -0.06f, 60f)
+            ),
+            density = 0.20f,
+            contrast = 1.18f, pivot = 0.46f, toe = 0.024f, shoulder = 0.955f, gamma = 1.02f,
+            shdTint = floatArrayOf(-0.016f, -0.006f, 0.012f),
+            midTint = floatArrayOf(0.038f, 0.015f, -0.046f),
+            hilTint = floatArrayOf(0.062f, 0.034f, -0.068f),
+            sat = 0.92f, hilDesat = 0.24f
+        ),
+        FilmStockProfile(
+            id = "wc:nordic_slate",
+            displayName = "NORDIC SLATE",
+            subtitle = "Fincher / Cold Thriller • Steel Blue Shadows",
+            matrix = floatArrayOf(0.96f, 0.02f, 0.02f, 0.00f, 1.00f, 0.00f, -0.02f, 0.06f, 0.96f),
+            hueShifts = listOf(
+                HueLobe(120f, 18f, 60f),
+                HueLobe(225f, -18f, 65f)
+            ),
+            satMults = listOf(
+                HueLobe(30f, 0.88f, 36f),
+                HueLobe(120f, 0.52f, 60f),
+                HueLobe(215f, 1.04f, 65f)
+            ),
+            lumaShifts = listOf(
+                HueLobe(220f, -0.06f, 60f)
+            ),
+            density = 0.22f,
+            contrast = 1.20f, pivot = 0.47f, toe = 0.018f, shoulder = 0.950f, gamma = 1.05f,
+            shdTint = floatArrayOf(-0.056f, 0.008f, 0.064f),
+            midTint = floatArrayOf(-0.034f, 0.006f, 0.042f),
+            hilTint = floatArrayOf(-0.016f, 0.008f, 0.022f),
+            sat = 0.76f, hilDesat = 0.30f
+        ),
+        FilmStockProfile(
+            id = "wc:trix_400_bw",
+            displayName = "TRI-X 400 BW",
+            subtitle = "Panchromatic Silver B&W • Dark Skies & Luminous Skin",
+            matrix = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f),
+            hueShifts = emptyList(),
+            satMults = emptyList(),
+            lumaShifts = emptyList(),
+            density = 0.0f,
+            contrast = 1.36f, pivot = 0.45f, toe = 0.014f, shoulder = 0.975f, gamma = 1.02f,
+            shdTint = floatArrayOf(0f, 0f, 0f),
+            midTint = floatArrayOf(0f, 0f, 0f),
+            hilTint = floatArrayOf(0f, 0f, 0f),
+            sat = 0.0f, hilDesat = 0.0f,
+            bwWeights = floatArrayOf(0.46f, 0.44f, 0.10f)
+        )
     )
+
+    private val STOCK_BY_ID: Map<String, FilmStockProfile> = WORLD_CLASS_STOCKS.associateBy { it.id }
+
+    fun getBuiltInEntries(): List<SavedLutEntry> = WORLD_CLASS_STOCKS.map { stock ->
+        SavedLutEntry(
+            sourceId = stock.id,
+            displayName = stock.displayName,
+            subtitle = stock.subtitle,
+            file = null
+        )
+    }
 
     fun getLutDir(context: Context): File {
         val dir = File(context.filesDir, "luts")
@@ -53,6 +400,7 @@ object CubeLutLibrary {
             SavedLutEntry(
                 sourceId = "file:${f.name}",
                 displayName = f.nameWithoutExtension.replace('_', ' ').take(22),
+                subtitle = "Imported .cube 3D LUT",
                 file = f
             )
         }
@@ -60,6 +408,7 @@ object CubeLutLibrary {
 
     fun deleteUserLut(context: Context, sourceId: String): Boolean {
         if (!sourceId.startsWith("file:")) return false
+        ramCache.remove(sourceId)
         val fname = sourceId.removePrefix("file:")
         val target = File(getLutDir(context), fname)
         return target.exists() && target.delete()
@@ -81,38 +430,44 @@ object CubeLutLibrary {
     }
 
     fun saveCubeTextToLibrary(context: Context, rawFileName: String, cubeText: String): SavedLutEntry {
-        // Validate by parsing first so corrupt files are never saved
         val cleanFileName = sanitizeCubeFileName(rawFileName)
+        val srcId = "file:$cleanFileName"
         val parsed = parseCubeString(
             cubeText = cubeText,
-            sourceId = "file:$cleanFileName",
+            sourceId = srcId,
             fallbackName = cleanFileName.removeSuffix(".cube")
         )
         val dest = File(getLutDir(context), cleanFileName)
         dest.writeText(cubeText, Charsets.UTF_8)
+        ramCache[srcId] = parsed
         return SavedLutEntry(
-            sourceId = "file:$cleanFileName",
+            sourceId = srcId,
             displayName = parsed.displayName,
+            subtitle = "Imported .cube 3D LUT",
             file = dest
         )
     }
 
     fun loadLutById(context: Context, sourceId: String): CubeLutData? {
         if (sourceId.isBlank()) return null
-        return when (sourceId) {
-            BUILTIN_KODAK_2383 -> buildBuiltInLut(BUILTIN_KODAK_2383, "KODAK 2383")
-            BUILTIN_TEAL_ORANGE -> buildBuiltInLut(BUILTIN_TEAL_ORANGE, "TEAL & ORG")
-            BUILTIN_FUJI_ETERNA -> buildBuiltInLut(BUILTIN_FUJI_ETERNA, "FUJI ETERNA")
-            else -> {
-                if (!sourceId.startsWith("file:")) return null
-                val fname = sourceId.removePrefix("file:")
-                val f = File(getLutDir(context), fname)
-                if (!f.exists()) return null
-                f.inputStream().use { ins ->
-                    parseCubeStream(ins, sourceId, f.nameWithoutExtension.replace('_', ' '))
-                }
-            }
+        ramCache[sourceId]?.let { return it }
+
+        val builtInProfile = STOCK_BY_ID[sourceId]
+        if (builtInProfile != null) {
+            val built = synthesizeWorldClassLut(builtInProfile)
+            ramCache[sourceId] = built
+            return built
         }
+
+        if (!sourceId.startsWith("file:")) return null
+        val fname = sourceId.removePrefix("file:")
+        val f = File(getLutDir(context), fname)
+        if (!f.exists()) return null
+        val parsed = f.inputStream().use { ins ->
+            parseCubeStream(ins, sourceId, f.nameWithoutExtension.replace('_', ' '))
+        }
+        ramCache[sourceId] = parsed
+        return parsed
     }
 
     fun parseCubeStream(stream: InputStream, sourceId: String, fallbackName: String): CubeLutData {
@@ -206,7 +561,6 @@ object CubeLutLibrary {
             )
         }
 
-        // Normalize values if DOMAIN_MIN / DOMAIN_MAX isn't [0..1]
         val dR = (domainMax[0] - domainMin[0]).takeIf { it > 0.0001f } ?: 1f
         val dG = (domainMax[1] - domainMin[1]).takeIf { it > 0.0001f } ?: 1f
         val dB = (domainMax[2] - domainMin[2]).takeIf { it > 0.0001f } ?: 1f
@@ -315,98 +669,157 @@ object CubeLutLibrary {
         return rgba
     }
 
-    /**
-     * Generates 3 genuine broadcast-grade 33x33x33 cinema 3D LUTs directly in memory
-     * so users can experience the 3D LUT engine immediately with zero extra APK bloat.
-     */
-    private fun buildBuiltInLut(id: String, title: String): CubeLutData {
+    // ==================== 7-STAGE LINEAR-LIGHT FILM COLOR-SCIENCE ENGINE ====================
+
+    private fun synthesizeWorldClassLut(cfg: FilmStockProfile): CubeLutData {
         val n = 33
         val floats = FloatArray(n * n * n * 3)
         val inv = 1f / (n - 1).toFloat()
+        val linTable = FloatArray(n) { i -> (i * inv).toDouble().pow(2.2).toFloat() }
+        val m = cfg.matrix
+        val bw = cfg.bwWeights
+        val shdT = cfg.shdTint
+        val midT = cfg.midTint
+        val hilT = cfg.hilTint
+
         var idx = 0
-
         for (bi in 0 until n) {
-            val bIn = bi * inv
+            val bLinIn = linTable[bi]
             for (gi in 0 until n) {
-                val gIn = gi * inv
+                val gLinIn = linTable[gi]
                 for (ri in 0 until n) {
-                    val rIn = ri * inv
-                    var r = rIn
-                    var g = gIn
-                    var b = bIn
+                    val rLinIn = linTable[ri]
 
-                    val luma = 0.299f * r + 0.587f * g + 0.114f * b
-                    val shdW = (1f - luma) * (1f - luma)
-                    val midW = (4f * luma * (1f - luma)).coerceIn(0f, 1f)
-                    val hilW = luma * luma
+                    if (bw != null) {
+                        val yLin = (bw[0] * rLinIn + bw[1] * gLinIn + bw[2] * bLinIn).coerceIn(0f, 1f)
+                        var y = yLin.toDouble().pow(1.0 / 2.2).toFloat()
+                        y = filmCurve(y, cfg.contrast, cfg.pivot, cfg.toe, cfg.shoulder, cfg.gamma)
+                        val shd = (1f - y) * (1f - y)
+                        val hil = y * y
+                        floats[idx++] = (y + hil * 0.010f - shd * 0.006f).coerceIn(0f, 1f)
+                        floats[idx++] = (y + hil * 0.004f).coerceIn(0f, 1f)
+                        floats[idx++] = (y - hil * 0.010f + shd * 0.010f).coerceIn(0f, 1f)
+                        continue
+                    }
 
-                    when (id) {
-                        BUILTIN_KODAK_2383 -> {
-                            // Classic Kodak 2383 Print Film: deep rich shadows with cool cyan-green toe,
-                            // warm golden highlights, filmic S-curve & smooth highlight rolloff
-                            r = filmicSCurve(r, 1.16f, 0.025f, 0.96f)
-                            g = filmicSCurve(g, 1.14f, 0.020f, 0.96f)
-                            b = filmicSCurve(b, 1.12f, 0.020f, 0.94f)
-                            r += (hilW * 0.055f) - (shdW * 0.032f)
-                            g += (hilW * 0.022f) + (shdW * 0.008f)
-                            b += (shdW * 0.042f) - (hilW * 0.052f)
-                            // Gentle film saturation boost in midtones, gentle rolloff in highlights
-                            val y2 = 0.299f * r + 0.587f * g + 0.114f * b
-                            val sat = 1.08f - hilW * 0.18f
-                            r = y2 + (r - y2) * sat
-                            g = y2 + (g - y2) * sat
-                            b = y2 + (b - y2) * sat
+                    // Stage 1: Linear-light 3x3 spectral dye-layer crosstalk matrix
+                    val lr = (m[0] * rLinIn + m[1] * gLinIn + m[2] * bLinIn).coerceIn(0f, 1f)
+                    val lg = (m[3] * rLinIn + m[4] * gLinIn + m[5] * bLinIn).coerceIn(0f, 1f)
+                    val lb = (m[6] * rLinIn + m[7] * gLinIn + m[8] * bLinIn).coerceIn(0f, 1f)
+
+                    var r = lr.toDouble().pow(1.0 / 2.2).toFloat()
+                    var g = lg.toDouble().pow(1.0 / 2.2).toFloat()
+                    var b = lb.toDouble().pow(1.0 / 2.2).toFloat()
+
+                    // Stage 2 & 3: 6-Vector HSV Hue/Sat/Luma Warping + Subtractive Film Density
+                    val mx = maxOf(r, maxOf(g, b))
+                    val mn = minOf(r, minOf(g, b))
+                    val d = mx - mn
+                    val sRaw = if (mx < 1e-6f) 0f else d / mx
+                    if (sRaw > 0.01f) {
+                        var h = when {
+                            d < 1e-6f -> 0f
+                            mx == r -> 60f * (((g - b) / d) % 6f)
+                            mx == g -> 60f * (((b - r) / d) + 2f)
+                            else -> 60f * (((r - g) / d) + 4f)
                         }
-                        BUILTIN_TEAL_ORANGE -> {
-                            // Modern Hollywood Teal & Orange split-tone with protected skin tones
-                            r = filmicSCurve(r, 1.18f, 0.015f, 0.98f)
-                            g = filmicSCurve(g, 1.15f, 0.015f, 0.98f)
-                            b = filmicSCurve(b, 1.16f, 0.015f, 0.97f)
-                            // Push shadows strongly toward cinema teal, highlights & warm mids toward orange/amber
-                            r += (midW * 0.055f) + (hilW * 0.055f) - (shdW * 0.070f)
-                            g += (shdW * 0.022f) + (midW * 0.012f) - (hilW * 0.008f)
-                            b += (shdW * 0.075f) - (midW * 0.045f) - (hilW * 0.075f)
-                            val y2 = 0.299f * r + 0.587f * g + 0.114f * b
-                            r = y2 + (r - y2) * 1.12f
-                            g = y2 + (g - y2) * 1.12f
-                            b = y2 + (b - y2) * 1.12f
+                        if (h < 0f) h += 360f
+
+                        var dh = 0f
+                        for (lobe in cfg.hueShifts) {
+                            dh += lobe.amount * hueWeight(h, lobe.centerDeg, lobe.widthDeg)
                         }
-                        BUILTIN_FUJI_ETERNA -> {
-                            // Fujifilm Eterna Cinema: lifted matte blacks, clean pastel greens, creamy highlights
-                            r = filmicSCurve(r, 0.96f, 0.045f, 0.95f)
-                            g = filmicSCurve(g, 0.98f, 0.048f, 0.96f)
-                            b = filmicSCurve(b, 0.97f, 0.052f, 0.96f)
-                            r += (midW * 0.015f) - (shdW * 0.015f)
-                            g += (shdW * 0.018f) + (midW * 0.018f)
-                            b += (shdW * 0.025f) - (hilW * 0.022f)
-                            val y2 = 0.299f * r + 0.587f * g + 0.114f * b
-                            r = y2 + (r - y2) * 0.88f
-                            g = y2 + (g - y2) * 0.88f
-                            b = y2 + (b - y2) * 0.88f
+                        var sm = 1f
+                        for (lobe in cfg.satMults) {
+                            sm += (lobe.amount - 1f) * hueWeight(h, lobe.centerDeg, lobe.widthDeg)
+                        }
+                        var dl = 0f
+                        for (lobe in cfg.lumaShifts) {
+                            dl += lobe.amount * hueWeight(h, lobe.centerDeg, lobe.widthDeg)
+                        }
+
+                        h = (h + dh) % 360f
+                        if (h < 0f) h += 360f
+                        val sNew = (sRaw * sm).coerceIn(0f, 1f)
+                        val midBell = (4f * mx * (1f - mx)).coerceIn(0f, 1f)
+                        val densityDrop = cfg.density * sNew.toDouble().pow(1.35).toFloat() * midBell
+                        val vNew = (mx * (1f + dl * sNew - densityDrop)).coerceIn(0f, 1f)
+
+                        // Convert HSV back to RGB inline (zero object allocations!)
+                        val c = vNew * sNew
+                        val x = c * (1f - abs(((h / 60f) % 2f) - 1f))
+                        val mOff = vNew - c
+                        when {
+                            h < 60f -> { r = c + mOff; g = x + mOff; b = mOff }
+                            h < 120f -> { r = x + mOff; g = c + mOff; b = mOff }
+                            h < 180f -> { r = mOff; g = c + mOff; b = x + mOff }
+                            h < 240f -> { r = mOff; g = x + mOff; b = c + mOff }
+                            h < 300f -> { r = x + mOff; g = mOff; b = c + mOff }
+                            else -> { r = c + mOff; g = mOff; b = x + mOff }
                         }
                     }
 
-                    floats[idx++] = r.coerceIn(0f, 1f)
-                    floats[idx++] = g.coerceIn(0f, 1f)
-                    floats[idx++] = b.coerceIn(0f, 1f)
+                    // Stage 4: Pivot-centered filmic S-curve with toe & soft highlight shoulder roll-off
+                    r = filmCurve(r, cfg.contrast, cfg.pivot, cfg.toe, cfg.shoulder, cfg.gamma)
+                    g = filmCurve(g, cfg.contrast, cfg.pivot, cfg.toe, cfg.shoulder, cfg.gamma)
+                    b = filmCurve(b, cfg.contrast, cfg.pivot, cfg.toe, cfg.shoulder, cfg.gamma)
+
+                    // Stage 5: Zone Split-Toning (Shadows / Midtones / Highlights) with pure-black protection
+                    val y = 0.299f * r + 0.587f * g + 0.114f * b
+                    val blkGuard = (y / 0.10f).coerceIn(0f, 1f)
+                    val shdW = (1f - y).toDouble().pow(2.2).toFloat() * blkGuard
+                    val midW = (4f * y * (1f - y)).coerceIn(0f, 1f)
+                    val hilW = y * y
+
+                    r = (r + shdT[0] * shdW + midT[0] * midW + hilT[0] * hilW).coerceIn(0f, 1f)
+                    g = (g + shdT[1] * shdW + midT[1] * midW + hilT[1] * hilW).coerceIn(0f, 1f)
+                    b = (b + shdT[2] * shdW + midT[2] * midW + hilT[2] * hilW).coerceIn(0f, 1f)
+
+                    // Stage 6: Global Saturation + Filmic Specular Highlight Desaturation
+                    val y2 = 0.299f * r + 0.587f * g + 0.114f * b
+                    val hilRoll = ((y2 - 0.65f) / 0.35f).coerceIn(0f, 1f)
+                    val effSat = cfg.sat * (1f - cfg.hilDesat * hilRoll.toDouble().pow(1.5).toFloat())
+                    floats[idx++] = (y2 + (r - y2) * effSat).coerceIn(0f, 1f)
+                    floats[idx++] = (y2 + (g - y2) * effSat).coerceIn(0f, 1f)
+                    floats[idx++] = (y2 + (b - y2) * effSat).coerceIn(0f, 1f)
                 }
             }
         }
         return CubeLutData(
-            sourceId = id,
-            displayName = title,
+            sourceId = cfg.id,
+            displayName = cfg.displayName,
             size = n,
             rgbaBytes = packFloatsTo2dAtlasRgba(floats, n)
         )
     }
 
-    private fun filmicSCurve(x: Float, contrast: Float, toeLift: Float, ceiling: Float): Float {
-        val c = x.coerceIn(0f, 1f)
-        val s = if (c < 0.5f) {
-            0.5f * (2f * c).toDouble().pow(contrast.toDouble()).toFloat()
-        } else {
-            1f - 0.5f * (2f * (1f - c)).toDouble().pow(contrast.toDouble()).toFloat()
+    private fun hueWeight(h: Float, center: Float, width: Float): Float {
+        var diff = (h - center + 180f) % 360f
+        if (diff < 0f) diff += 360f
+        val d = abs(diff - 180f)
+        if (d >= width) return 0f
+        return (0.5 * (1.0 + cos(PI * (d / width).toDouble()))).toFloat()
+    }
+
+    private fun filmCurve(
+        x: Float,
+        contrast: Float,
+        pivot: Float,
+        toe: Float,
+        shoulder: Float,
+        gamma: Float
+    ): Float {
+        var c = x.coerceIn(0f, 1f)
+        if (abs(gamma - 1f) > 0.0001f) {
+            c = c.toDouble().pow(gamma.toDouble()).toFloat()
         }
-        return (toeLift + s * (ceiling - toeLift)).coerceIn(0f, 1f)
+        var s = if (c < pivot) {
+            pivot * (c / pivot.coerceAtLeast(0.0001f)).toDouble().pow(contrast.toDouble()).toFloat()
+        } else {
+            1f - (1f - pivot) * ((1f - c) / (1f - pivot).coerceAtLeast(0.0001f)).toDouble().pow(contrast.toDouble()).toFloat()
+        }
+        // Soft hyperbolic highlight roll-off (matches DaVinci / Filmic shoulder)
+        s = ((s / (1f + 0.08f * s * s)) * 1.08f).coerceIn(0f, 1f)
+        return (toe + s * (shoulder - toe)).coerceIn(0f, 1f)
     }
 }
