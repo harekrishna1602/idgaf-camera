@@ -202,8 +202,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnPullFocusAB: TextView
     private var focusPullDurationMs: Long = 1200L
     private lateinit var proSeekBar: SeekBar
-    private lateinit var wbTintRow: LinearLayout
-    private lateinit var wbTintSeekBar: SeekBar
+    private lateinit var wbGradientPanel: LinearLayout
+    private lateinit var wbGradientPad: WbGradientPadView
+    private lateinit var btnWbPreset3200: TextView
+    private lateinit var btnWbPreset4300: TextView
+    private lateinit var btnWbPreset5600: TextView
+    private lateinit var btnWbPreset6500: TextView
     private lateinit var txtWbTintVal: TextView
 
     private var activePanel: ProControlPanel = ProControlPanel.NONE
@@ -286,9 +290,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     isAnalyzingFrame.set(false)
                 } else {
                     try {
-                        // Symmetric 144x144 raw buffer avoids directional bias when rotated 90 deg by previewTransform
-                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 144 && it.height == 144 }
-                            ?: Bitmap.createBitmap(144, 144, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
+                        // Aspect-matched 108x192 (9:16) buffer matches raw SurfaceTexture so rotated landscape scopes have 1:1 square pixels
+                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 108 && it.height == 192 }
+                            ?: Bitmap.createBitmap(108, 192, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
                         textureView.getBitmap(reusable)
                         worker.post {
                             try {
@@ -523,8 +527,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnPullTime = findViewById(R.id.btnPullTime)
         btnPullFocusAB = findViewById(R.id.btnPullFocusAB)
         proSeekBar = findViewById(R.id.proSeekBar)
-        wbTintRow = findViewById(R.id.wbTintRow)
-        wbTintSeekBar = findViewById(R.id.wbTintSeekBar)
+        wbGradientPanel = findViewById(R.id.wbGradientPanel)
+        wbGradientPad = findViewById(R.id.wbGradientPad)
+        btnWbPreset3200 = findViewById(R.id.btnWbPreset3200)
+        btnWbPreset4300 = findViewById(R.id.btnWbPreset4300)
+        btnWbPreset5600 = findViewById(R.id.btnWbPreset5600)
+        btnWbPreset6500 = findViewById(R.id.btnWbPreset6500)
         txtWbTintVal = findViewById(R.id.txtWbTintVal)
 
         engine = CinemaCameraEngine(this, this)
@@ -596,6 +604,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun setupTopAndRightControls() {
         btnAutoPilot.setOnClickListener {
+            if (engine.isRecording) {
+                showSingleToast("Stop recording to toggle Auto Pilot")
+                return@setOnClickListener
+            }
             when (engine.autoPilotState) {
                 AutoPilotState.OFF -> triggerAutoPilotRescue()
                 AutoPilotState.METERING -> {
@@ -610,6 +622,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnAutoPilot.setOnLongClickListener {
+            if (engine.isRecording) {
+                showSingleToast("Stop recording to re-meter Auto Pilot")
+                return@setOnLongClickListener true
+            }
             triggerAutoPilotRescue()
             true
         }
@@ -1242,8 +1258,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.6.13"
-    } catch (_: Exception) { "0.6.13" }
+        info.versionName ?: "0.6.14"
+    } catch (_: Exception) { "0.6.14" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1964,29 +1980,30 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
-        wbTintSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (!fromUser || suppressSeekCallback) return
-                val tint = progress - 50 // -50 (Green) .. +50 (Magenta)
-                engine.setManualWhiteBalanceTint(tint)
-                updateTintDisplay(tint)
-                txtSliderReadout.text = "${engine.manualKelvin}K"
-                updateAutoButtonVisual(isManual = true)
-            }
-            override fun onStartTrackingTouch(sb: SeekBar?) {
-                isUserDraggingProSeek = true
-            }
-            override fun onStopTrackingTouch(sb: SeekBar?) {
-                isUserDraggingProSeek = false
-            }
-        })
+        wbGradientPad.onDragStateChanged = { dragging ->
+            isUserDraggingProSeek = dragging
+        }
+        wbGradientPad.onWbChanged = { kelvin, tint ->
+            engine.setManualWhiteBalance(kelvin, tint)
+            txtSliderReadout.text = "${kelvin}K"
+            updateTintDisplay(tint)
+            updateWbPresetHighlights(kelvin, isManual = true)
+            updateAutoButtonVisual(isManual = true)
+        }
+
+        val applyWbPreset = { kelvin: Int ->
+            engine.setManualWhiteBalance(kelvin, engine.manualTint)
+            refreshSliderState()
+        }
+        btnWbPreset3200.setOnClickListener { applyWbPreset(3200) }
+        btnWbPreset4300.setOnClickListener { applyWbPreset(4300) }
+        btnWbPreset5600.setOnClickListener { applyWbPreset(5600) }
+        btnWbPreset6500.setOnClickListener { applyWbPreset(6500) }
 
         txtWbTintVal.setOnClickListener {
             engine.setManualWhiteBalanceTint(0)
-            suppressSeekCallback = true
-            wbTintSeekBar.progress = 50
-            suppressSeekCallback = false
-            updateTintDisplay(0)
+            refreshSliderState()
+            showSingleToast("Tint reset to 0")
         }
 
         proSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -2084,7 +2101,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnShutterUnit.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnSlider180.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         rackFocusRow.visibility = if (panel == ProControlPanel.FOCUS) View.VISIBLE else View.GONE
-        wbTintRow.visibility = if (panel == ProControlPanel.WB) View.VISIBLE else View.GONE
+        proSeekBar.visibility = if (panel == ProControlPanel.WB) View.GONE else View.VISIBLE
+        wbGradientPanel.visibility = if (panel == ProControlPanel.WB) View.VISIBLE else View.GONE
         refreshSliderState()
     }
 
@@ -2147,12 +2165,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             ProControlPanel.WB -> {
                 txtSliderTitle.text = "WHITE BAL"
-                proSeekBar.max = 100
                 val shownK = if (engine.isManualWb) engine.manualKelvin else (live?.kelvin ?: engine.getLiveKelvin())
-                proSeekBar.progress = ((shownK - 2500) / 60).coerceIn(0, 100)
+                val shownTint = if (engine.isManualWb) engine.manualTint else 0
                 txtSliderReadout.text = if (engine.isManualWb) "${shownK}K" else "AWB • ${shownK}K"
-                wbTintSeekBar.progress = (engine.manualTint + 50).coerceIn(0, 100)
-                updateTintDisplay(engine.manualTint)
+                wbGradientPad.setState(shownK, shownTint, engine.isManualWb)
+                updateTintDisplay(shownTint)
+                updateWbPresetHighlights(shownK, engine.isManualWb)
                 updateAutoButtonVisual(engine.isManualWb)
             }
             ProControlPanel.NONE -> {}
@@ -2192,7 +2210,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun updateTintDisplay(tint: Int) {
-        txtWbTintVal.text = if (tint > 0) "+$tint" else "$tint"
+        txtWbTintVal.text = when {
+            tint > 0 -> "TINT +$tint"
+            tint < 0 -> "TINT $tint"
+            else -> "TINT 0"
+        }
         txtWbTintVal.setTextColor(
             when {
                 tint > 0 -> 0xFFE879F9.toInt() // Magenta
@@ -2200,6 +2222,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 else -> 0xFFFFFFFF.toInt()
             }
         )
+    }
+
+    private fun updateWbPresetHighlights(kelvin: Int, isManual: Boolean) {
+        styleToolPill(btnWbPreset3200, isManual && kotlin.math.abs(kelvin - 3200) <= 100)
+        styleToolPill(btnWbPreset4300, isManual && kotlin.math.abs(kelvin - 4300) <= 100)
+        styleToolPill(btnWbPreset5600, isManual && kotlin.math.abs(kelvin - 5600) <= 100)
+        styleToolPill(btnWbPreset6500, isManual && kotlin.math.abs(kelvin - 6500) <= 100)
     }
 
     private fun formatEv(stops: Float): String {
@@ -2507,6 +2536,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_stop)
             btnShutterInner.animate().scaleX(0.54f).scaleY(0.54f).setDuration(140L).start()
             txtTimecode.setTextColor(0xFFFF3B30.toInt())
+            btnAutoPilot.alpha = 0.45f
             uiHandler.removeCallbacks(timecodeRunnable)
             uiHandler.post(timecodeRunnable)
         }
@@ -2519,6 +2549,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_rec)
             btnShutterInner.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140L).start()
             txtTimecode.setTextColor(0xFFFFFFFF.toInt())
+            btnAutoPilot.alpha = 1.0f
             txtTimecode.text = "00:00:00"
             if (savedUri != null) {
                 lastSavedUri = savedUri

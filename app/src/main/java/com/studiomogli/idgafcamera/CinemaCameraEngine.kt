@@ -524,7 +524,7 @@ class CinemaCameraEngine(
         }
     }
 
-    private fun finalizeAutoPilotSceneLock() {
+    private fun finalizeAutoPilotSceneLock(pushRequest: Boolean = true) {
         if (autoPilotState != AutoPilotState.METERING) return
 
         // Freeze exact converged Exposure & White Balance so the shot stays rock-steady without pumping
@@ -542,7 +542,9 @@ class CinemaCameraEngine(
         isAeAfLocked = false
 
         autoPilotState = AutoPilotState.LOCKED
-        pushUpdatedRepeatingRequest()
+        if (pushRequest) {
+            pushUpdatedRepeatingRequest()
+        }
 
         val denom = (1_000_000_000.0 / manualShutterNs.coerceAtLeast(1L).toDouble()).toInt().coerceAtLeast(1)
         val summary = "PILOT LOCKED • ISO $manualIso • 1/${denom}s • ${manualKelvin}K • AF-C"
@@ -683,6 +685,14 @@ class CinemaCameraEngine(
 
     fun setAutoFocus() {
         isManualFocus = false
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun setManualWhiteBalance(kelvin: Int, tint: Int) {
+        clearAutoPilotSilently()
+        isManualWb = true
+        manualKelvin = kelvin.coerceIn(2500, 8500)
+        manualTint = tint.coerceIn(-50, 50)
         pushUpdatedRepeatingRequest()
     }
 
@@ -1184,6 +1194,12 @@ class CinemaCameraEngine(
         val camera = cameraDevice ?: return
         val texture = surfaceTexture ?: return
         val lens = getActiveLens() ?: return
+
+        // Audit fix: if user taps REC while Auto Pilot is still metering, snap-lock Exposure + WB
+        // right now BEFORE MediaRecorder starts so exposure/color never jump mid-recording!
+        if (autoPilotState == AutoPilotState.METERING) {
+            finalizeAutoPilotSceneLock(pushRequest = false)
+        }
 
         try {
             closeSession()

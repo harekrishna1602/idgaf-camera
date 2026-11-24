@@ -159,6 +159,7 @@ class CinemaOverlayView @JvmOverloads constructor(
     private val frontBinsB = FloatArray(64)
     private val frontBinsY = FloatArray(64)
     private var hasHighlightClip = false
+    private var zebraPhase = 0
 
     // Precomputed 256-level ARRI/SmallHD-inspired Rec.709 IRE False Color LUT
     private val falseColorLut = IntArray(256).apply {
@@ -404,15 +405,17 @@ class CinemaOverlayView @JvmOverloads constructor(
         if (doZebra) {
             zebraPixels.fill(0)
             val mode = zebraMode
+            val phase = zebraPhase
+            zebraPhase = (zebraPhase + 1) and 3
             val zebraColor = when (mode) {
-                ZebraMode.IRE_70 -> Color.argb(215, 255, 204, 0)  // Warm Yellow for 70% Skin Band
-                ZebraMode.IRE_92 -> Color.argb(215, 255, 59, 48)  // Warning Red for 92% IRE
-                ZebraMode.IRE_100 -> Color.argb(230, 255, 23, 68) // Hot Clip Red for 100% IRE
+                ZebraMode.IRE_70 -> Color.argb(220, 255, 204, 0)  // Warm Yellow for 70% Skin Band
+                ZebraMode.IRE_92 -> Color.argb(220, 255, 59, 48)  // Warning Red for 92% IRE
+                ZebraMode.IRE_100 -> Color.argb(235, 255, 23, 68) // Hot Clip Red for 100% IRE
             }
             for (y in 0 until h) {
                 val row = y * w
                 for (x in 0 until w) {
-                    if (((x + y) and 3) < 2) {
+                    if (((x + y + phase) and 3) < 2) {
                         val lv = lumaBuf[row + x]
                         val hit = when (mode) {
                             ZebraMode.IRE_70 -> lv in 170..192
