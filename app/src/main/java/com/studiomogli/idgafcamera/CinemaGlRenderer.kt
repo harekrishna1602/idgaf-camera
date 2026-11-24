@@ -130,6 +130,7 @@ class CinemaGlRenderer(
             uniform int uEraMode;
             uniform float uEraWear;
             uniform float uEraFps;
+            uniform int uEraFilter;
             uniform float uViewportAspect;
 
             varying vec2 vTexCoord;
@@ -160,7 +161,6 @@ class CinemaGlRenderer(
             }
 
             // Strictly bounded non-tiling procedural hash (all intermediates < 24.0 -> 100% artifact-free in BOTH highp FP32 & mediump FP16).
-            // Eliminates repeated triangle/diamond moire bands on Mali/Adreno GPUs by splitting integer coordinates before nonlinear folding.
             float filmHash(vec2 cell, float seed) {
                 vec2 cLo = mod(cell, vec2(127.0, 113.0));
                 vec2 cHi = floor(cell / vec2(127.0, 113.0));
@@ -172,293 +172,320 @@ class CinemaGlRenderer(
                 return fract(a * 7.919 + b * 11.31 + a * b * 13.17);
             }
 
-            // Organic silver-halide Gaussian-like grain crystal in [-0.5, +0.5] using two decorrelated taps (zero triangles, zero tiling)
-            float organicGrain(vec2 cell, float tick) {
-                float h1 = filmHash(cell, tick);
-                float h2 = filmHash(cell + vec2(37.0, 53.0), tick + 19.0);
-                return 0.5 * (h1 + h2) - 0.5;
+            // Smooth bilinear silver-halide emulsion grain in [-0.5, +0.5]:
+            // Eliminates hard digital square pixels & TV-static snow so grain looks like optically scanned 35mm silver crystals.
+            float smoothSilverGrain(vec2 p, float pitch, float tick) {
+                vec2 g = p * pitch;
+                vec2 i = floor(g);
+                vec2 f = fract(g);
+                vec2 u = f * f * (3.0 - 2.0 * f);
+                float h00 = filmHash(i, tick);
+                float h10 = filmHash(i + vec2(1.0, 0.0), tick);
+                float h01 = filmHash(i + vec2(0.0, 1.0), tick);
+                float h11 = filmHash(i + vec2(1.0, 1.0), tick);
+                return mix(mix(h00, h10, u.x), mix(h01, h11, u.x), u.y) - 0.5;
             }
 
-            // Era 1 (1920s Classic Silent 35mm): True optical emulation with night-and-day FRESH vs ARCHIVE stocks.
-            // - FRESH (uEraWear = 0.0): Day-1 Premiere Nitrate — crisp center, soft Petzval edges, uncoated highlight glow,
-            //   deep inky silver-gelatin blacks, cool-ivory silver tone, ultra-fine grain, ZERO scratches/dust.
-            // - ARCHIVE (uEraWear = 1.0): 100-Year Vault Transfer — genuine gate weave, generational copy softening,
-            //   aged sepia-amber nitrate patina, milky faded shadows, projector shutter flicker, clumped silver grain,
-            //   3 razor-thin wandering dark/light hairline tramline scratches & circular single-frame micro-dust/pinholes.
+            // Era 1 (1920s Classic Silent 35mm — Pathé / Bell & Howell 2709 Orthochromatic Nitrate):
+            // - Hardware ISP oversharpening is turned OFF in Camera2 before reaching this shader.
+            // - 8-tap two-ring uncoated Petzval/Cooke lens optics: radial corner softness + wide highlight veiling halation.
+            // - True D-Max split-toned H&D curve: deep velvety blacks (no muddy grey fade), luminous warm celluloid highlights.
+            // - Smooth 2-octave bilinear silver-halide grain (zero square blocks, zero triangles).
+            // - uEraFilter chemical tint baths: 0 = SILVER, 1 = AMBER, 2 = COBALT (Silent Night), 3 = SEPIA.
             vec3 applyEra1920sSilent(vec3 rawRgb) {
-                // 1. Baked 1.333:1 Silent Aperture Gate with soft anti-aliased rounded brass-gate corners
                 float aspect = max(uViewportAspect, 0.5);
-                vec2 gatePos = vec2(vScreenPos.x * aspect, vScreenPos.y);
+                float wear = clamp(uEraWear, 0.0, 1.0);
+                float frameTick = floor(uTimeSec * max(uEraFps, 12.0));
+
+                // 1. Real intermittent-claw gate weave (moves BOTH film image and aperture border slightly in ARCHIVE!)
+                vec2 weaveScreen = vec2(0.0);
+                vec2 weaveUv = vTexCoord;
+                if (wear > 0.15) {
+                    float wx = (filmHash(vec2(frameTick, 13.0), 1.0) - 0.5) * 0.0028 * wear;
+                    float wy = (filmHash(vec2(frameTick, 29.0), 2.0) - 0.5) * 0.0064 * wear;
+                    weaveUv = clamp(vTexCoord + vec2(wx, wy), vec2(0.002), vec2(0.998));
+                    weaveScreen = vec2(wx * 0.65, wy * 0.85);
+                }
+
+                // 2. Baked 1.333:1 Silent Brass Aperture Gate with optical feathered edge
+                vec2 gatePos = vec2((vScreenPos.x + weaveScreen.x) * aspect, vScreenPos.y + weaveScreen.y);
                 float gateHalfH = 0.965;
                 float gateHalfW = 1.3333 * gateHalfH;
-                float cornerR = 0.085;
+                float cornerR = 0.082;
                 vec2 q = abs(gatePos) - vec2(gateHalfW - cornerR, gateHalfH - cornerR);
                 float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - cornerR;
-                float gateMask = 1.0 - smoothstep(-0.007, 0.007, sdf);
+                float gateMask = 1.0 - smoothstep(-0.009, 0.007, sdf);
                 if (gateMask <= 0.001) {
                     return vec3(0.0);
                 }
 
-                float wear = clamp(uEraWear, 0.0, 1.0);
                 vec2 gateUv = vec2(gatePos.x / gateHalfW, gatePos.y / gateHalfH);
                 float rDist = length(gateUv) * 0.7071;
                 float r2 = rDist * rDist;
 
-                // Quantize time to authentic silent-film frame ticks (16 or 18 FPS)
-                float frameTick = floor(uTimeSec * max(uEraFps, 12.0));
-
-                // 2. Intermittent-Claw Gate Weave (rock-steady in FRESH, authentic shrunken-nitrate jitter in ARCHIVE)
-                vec2 weaveUv = vTexCoord;
-                if (wear > 0.15) {
-                    float wx = (filmHash(vec2(frameTick, 13.0), 1.0) - 0.5) * 0.0032 * wear;
-                    float wy = (filmHash(vec2(frameTick, 29.0), 2.0) - 0.5) * 0.0078 * wear;
-                    weaveUv = clamp(vTexCoord + vec2(wx, wy), vec2(0.002), vec2(0.998));
-                }
-
-                // 3. Uncoated 1920s Petzval/Cooke Lens Optics: radial corner softening + bright-edge highlight halation
-                vec3 centerSample = (wear > 0.15) ? texture2D(uTexture, weaveUv).rgb : rawRgb;
-                float blurSpan = mix(0.85, 2.15, wear) + r2 * mix(1.85, 3.40, wear);
-                vec2 dA = (uStepX + uStepY) * blurSpan;
-                vec2 dB = (uStepX - uStepY) * blurSpan;
-                vec3 softAvg = 0.25 * (
-                    texture2D(uTexture, clamp(weaveUv + dA, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - dA, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv + dB, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - dB, vec2(0.002), vec2(0.998))).rgb
+                // 3. 8-Tap Two-Ring Uncoated Petzval/Cooke Glass: inner MTF rolloff + outer wide highlight halation
+                vec3 c0 = (wear > 0.15) ? texture2D(uTexture, weaveUv).rgb : rawRgb;
+                float innerSpan = mix(1.05, 1.95, wear) + r2 * mix(2.10, 3.60, wear);
+                vec2 inA = (uStepX + uStepY) * innerSpan;
+                vec2 inB = (uStepX - uStepY) * innerSpan;
+                vec3 innerBlur = 0.25 * (
+                    texture2D(uTexture, clamp(weaveUv + inA, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv - inA, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv + inB, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv - inB, vec2(0.002), vec2(0.998))).rgb
                 );
 
-                // True 1920s Red-Blind Orthochromatic Emulsion Sensitivity (dark reds, luminous blue skies)
-                float yCenter = dot(centerSample, vec3(0.08, 0.58, 0.34));
-                float ySoft = dot(softAvg, vec3(0.08, 0.58, 0.34));
-                float softMix = clamp(mix(0.10, 0.38, wear) + r2 * mix(0.28, 0.36, wear), 0.0, 0.72);
-                float y = mix(yCenter, ySoft, softMix);
-                // Uncoated silver-halide highlight bloom
-                float bloom = max(ySoft - 0.68, 0.0) * mix(0.24, 0.42, wear);
-                y = clamp(y + bloom, 0.0, 1.0);
+                float haloSpan = mix(4.2, 6.4, wear);
+                vec2 hX = uStepX * haloSpan;
+                vec2 hY = uStepY * haloSpan;
+                vec3 haloBlur = 0.25 * (
+                    texture2D(uTexture, clamp(weaveUv + hX, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv - hX, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv + hY, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv - hY, vec2(0.002), vec2(0.998))).rgb
+                );
 
-                // 4. Hand-Crank / Projector Shutter Flicker + Distinct FRESH vs ARCHIVE Tone Curves
-                float flickerAmp = mix(0.018, 0.095, wear);
+                // Red-Blind 1920s Orthochromatic Nitrate Emulsion (rich dark reds, bright luminous blues)
+                vec3 orthoW = vec3(0.08, 0.58, 0.34);
+                float yCenter = dot(c0, orthoW);
+                float yInner = dot(innerBlur, orthoW);
+                float yHalo = dot(haloBlur, orthoW);
+
+                float softMix = clamp(mix(0.18, 0.42, wear) + r2 * mix(0.28, 0.34, wear), 0.0, 0.74);
+                float y = mix(yCenter, yInner, softMix);
+                // Real uncoated optical highlight bloom & veiling glare (spills gently across dark borders!)
+                float glare = max(yHalo - 0.62, 0.0) * mix(0.32, 0.48, wear) + max(yInner - 0.74, 0.0) * 0.16;
+                y = clamp(y + glare, 0.0, 1.0);
+
+                // 4. Hand-Crank Exposure Breathing + Authentic D-Max Silver-Halide H&D Curve (NO muddy lifted blacks!)
+                float flickerAmp = mix(0.014, 0.068, wear);
                 float flicker = 1.0 + (filmHash(vec2(frameTick, 7.0), 3.0) - 0.5) * 2.0 * flickerAmp;
-                float lampBreath = 1.0 + sin(frameTick * 0.43 + vScreenPos.y * 1.4) * 0.032 * wear;
-                y = clamp(y * flicker * lampBreath, 0.0, 1.0);
+                float arcBreath = 1.0 + sin(frameTick * 0.37 + gateUv.y * 1.3) * 0.024 * wear;
+                y = clamp(y * flicker * arcBreath, 0.0, 1.0);
 
-                float contrast = mix(1.36, 1.16, wear);
-                float gammaVal = mix(1.03, 0.96, wear);
-                float toe = mix(0.012, 0.082, wear);
-                float shoulder = mix(0.985, 0.895, wear);
-                y = clamp((y - 0.45) * contrast + 0.48, 0.0, 1.0);
-                y = pow(y, gammaVal);
-                y = clamp((y / (1.0 + 0.12 * y * y)) * 1.12, 0.0, 1.0);
+                float contrast = mix(1.34, 1.22, wear);
+                float toe = mix(0.008, 0.036, wear);
+                float shoulder = mix(0.985, 0.920, wear);
+                y = clamp((y - 0.45) * contrast + 0.47, 0.0, 1.0);
+                // Smooth silver-halide highlight shoulder rolloff
+                y = clamp((y / (1.0 + 0.14 * y * y)) * 1.14, 0.0, 1.0);
                 y = clamp(toe + y * (shoulder - toe), 0.0, 1.0);
 
-                // 5. True Isotropic Organic 35mm Silver-Halide Emulsion Grain (integer cell pitch, zero patterns!)
-                vec2 gFineCell = floor((gatePos + vec2(2.0, 2.0)) * 280.0);
-                float gTotal = organicGrain(gFineCell, frameTick) * mix(0.068, 0.145, wear);
+                // 5. True 2-Octave Smooth Bilinear Silver-Halide Emulsion Grain (zero pixel blocks!)
+                vec2 gPos = gatePos + vec2(2.0, 2.0);
+                float gFine = smoothSilverGrain(gPos, 410.0, frameTick);
+                float gClump = smoothSilverGrain(gPos, 170.0, frameTick + 37.0);
+                float gOrganic = gFine * 0.65 + gClump * 0.35;
+                float grainAmp = mix(0.072, 0.155, wear);
+                // Signal-dependent emulsion response: strongest in midtones, gentle in deep D-max blacks & specular whites
+                float grainEnv = 0.25 + 0.75 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
+                y = clamp(y + gOrganic * grainAmp * grainEnv, 0.0, 1.0);
+
+                // 6. ARCHIVE-ONLY Subtle Real-World Physical Wear (ZERO in FRESH; NO cartoon bars or blurry grid dots!)
                 if (wear > 0.25) {
-                    vec2 gClumpCell = floor((gatePos + vec2(2.0, 2.0)) * 118.0);
-                    gTotal += organicGrain(gClumpCell, frameTick + 41.0) * 0.088 * wear;
-                }
-                float grainMask = 0.42 + 0.58 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
-                y = clamp(y + gTotal * grainMask, 0.0, 1.0);
+                    // A. Rare, razor-thin (~1px) organic emulsion hairline scratch (appears naturally in brief bursts)
+                    float burst1 = floor(frameTick * 0.07);
+                    float burst2 = floor(frameTick * 0.13);
+                    float active1 = step(0.60, filmHash(vec2(burst1, 5.0), 11.0));
+                    float active2 = step(0.72, filmHash(vec2(burst2, 9.0), 17.0));
 
-                // 6. ARCHIVE-ONLY True Physical Film Artifacts (ZERO artifacts in FRESH!)
-                if (wear > 0.25) {
-                    // A. 3 Razor-Thin Organically Wandering Vertical Tramline Scratches (2 dark gouges + 1 bright base scratch)
-                    float slowT1 = floor(frameTick * 0.09);
-                    float slowT2 = floor(frameTick * 0.14);
-                    float slowT3 = floor(frameTick * 0.22);
+                    float sx1 = (filmHash(vec2(burst1, 2.0), 31.0) * 1.26 - 0.63) + sin(gatePos.y * 2.4 + burst1) * 0.0022;
+                    float sx2 = (filmHash(vec2(burst2, 6.0), 37.0) * 1.20 - 0.60) + sin(gatePos.y * 3.1 - burst2) * 0.0018;
+                    float fade1 = smoothstep(0.05, 0.45, filmHash(vec2(floor((gatePos.y + 2.0) * 2.5), burst1), 51.0));
+                    float fade2 = smoothstep(0.15, 0.55, filmHash(vec2(floor((gatePos.y + 2.0) * 3.0), burst2), 57.0));
 
-                    float vis1 = step(0.32, filmHash(vec2(slowT1, 5.0), 11.0));
-                    float vis2 = step(0.45, filmHash(vec2(slowT2, 9.0), 17.0));
-                    float vis3 = step(0.56, filmHash(vec2(slowT3, 17.0), 23.0));
+                    float darkLine = (1.0 - smoothstep(0.0, 0.00075, abs(vScreenPos.x - sx1))) * active1 * fade1 * 0.34;
+                    float lightLine = (1.0 - smoothstep(0.0, 0.00065, abs(vScreenPos.x - sx2))) * active2 * fade2 * 0.28;
+                    y = clamp(y - darkLine * wear + lightLine * wear, 0.0, 1.0);
 
-                    float x1 = (filmHash(vec2(slowT1, 2.0), 31.0) * 1.32 - 0.66) + sin(vScreenPos.y * 4.2 + slowT1) * 0.0045;
-                    float x2 = (filmHash(vec2(slowT2, 6.0), 37.0) * 1.24 - 0.62) + sin(vScreenPos.y * 6.5 - slowT2 * 1.7) * 0.0038;
-                    float x3 = (filmHash(vec2(slowT3, 14.0), 43.0) * 1.18 - 0.59) + sin(vScreenPos.y * 5.0 + slowT3 * 2.1) * 0.0040;
-
-                    float seg1 = smoothstep(0.15, 0.65, filmHash(vec2(floor((vScreenPos.y + 2.0) * 9.0), frameTick), 51.0));
-                    float seg2 = smoothstep(0.25, 0.75, filmHash(vec2(floor((vScreenPos.y + 2.0) * 12.0), frameTick), 57.0));
-                    float seg3 = smoothstep(0.30, 0.80, filmHash(vec2(floor((vScreenPos.y + 2.0) * 8.0), frameTick), 63.0));
-
-                    float darkS1 = (1.0 - smoothstep(0.0, 0.0012, abs(vScreenPos.x - x1))) * vis1 * seg1 * 0.48;
-                    float darkS2 = (1.0 - smoothstep(0.0, 0.0009, abs(vScreenPos.x - x2))) * vis2 * seg2 * 0.36;
-                    float brightS3 = (1.0 - smoothstep(0.0, 0.0010, abs(vScreenPos.x - x3))) * vis3 * seg3 * 0.42;
-
-                    y = clamp(y - (darkS1 + darkS2) * wear + brightS3 * wear, 0.0, 1.0);
-
-                    // B. Organic Circular/Elliptical Single-Frame Micro-Dust & Base Pinholes (integer gatePos grid!)
-                    vec2 dustGrid = (gatePos + vec2(2.0, 2.0)) * 72.0;
-                    vec2 cellId = floor(dustGrid);
-                    vec2 cellUv = fract(dustGrid);
-                    float dChance = filmHash(cellId, frameTick + 7.0);
-                    if (dChance > 0.9920) {
-                        vec2 speckCenter = vec2(
-                            0.25 + 0.50 * filmHash(cellId + vec2(11.0, 3.0), frameTick + 13.0),
-                            0.25 + 0.50 * filmHash(cellId + vec2(5.0, 19.0), frameTick + 29.0)
+                    // B. Sparse, razor-sharp focal-plane gate dust (real dust on the film gate is tiny & crisp, never big soft circles!)
+                    vec2 dustGrid = gPos * 108.0;
+                    vec2 cId = floor(dustGrid);
+                    vec2 cUv = fract(dustGrid);
+                    float dRoll = filmHash(cId, frameTick + 7.0);
+                    if (dRoll > 0.9968) {
+                        vec2 ctr = vec2(
+                            0.25 + 0.50 * filmHash(cId + vec2(11.0, 3.0), frameTick + 13.0),
+                            0.25 + 0.50 * filmHash(cId + vec2(5.0, 19.0), frameTick + 29.0)
                         );
-                        vec2 delta = (cellUv - speckCenter) * vec2(1.0, 1.45);
-                        float rad = 0.14 + 0.15 * filmHash(cellId + vec2(23.0, 7.0), frameTick + 5.0);
-                        float speckMask = 1.0 - smoothstep(rad * 0.55, rad, length(delta));
-                        if (dChance > 0.9974) {
-                            y = clamp(y + speckMask * 0.56 * wear, 0.0, 1.0);
+                        vec2 d = (cUv - ctr) * vec2(1.0, 1.65);
+                        float rad = 0.075 + 0.095 * filmHash(cId + vec2(23.0, 7.0), frameTick + 5.0);
+                        float speck = 1.0 - smoothstep(rad * 0.65, rad, length(d));
+                        if (dRoll > 0.9990) {
+                            y = clamp(y + speck * 0.48 * wear, 0.0, 1.0);
                         } else {
-                            y = clamp(y - speckMask * 0.60 * wear, 0.0, 1.0);
+                            y = clamp(y - speck * 0.68 * wear, 0.0, 1.0);
                         }
                     }
                 }
 
-                // 7. Optical Corner Falloff
-                float vigStrength = mix(0.26, 0.58, wear);
-                float vig = 1.0 - vigStrength * smoothstep(mix(0.46, 0.32, wear), 1.10, rDist);
+                // 7. Natural Petzval Optical Vignette
+                float vigStrength = mix(0.24, 0.46, wear);
+                float vig = 1.0 - vigStrength * smoothstep(mix(0.46, 0.34, wear), 1.12, rDist);
                 y *= clamp(vig, 0.0, 1.0);
 
-                // 8. Authentic Stock Base Tint: FRESH = crisp cool-ivory silver gelatin, ARCHIVE = 100-year amber-sepia nitrate!
-                vec3 freshTint = vec3(1.01, 1.00, 0.96);
-                vec3 archiveTint = vec3(1.11, 0.98, 0.78);
-                vec3 stockColor = clamp(y * mix(freshTint, archiveTint, wear), 0.0, 1.0);
+                // 8. Split-Toned D-Max Silver Base + Authentic 1920s Chemical Tint Baths (uEraFilter)
+                float baseW = smoothstep(0.08, 0.80, y);
+                vec3 shdTint = mix(vec3(0.99, 0.99, 0.98), vec3(1.02, 0.98, 0.90), wear);
+                vec3 hilTint = mix(vec3(1.01, 1.00, 0.96), vec3(1.09, 0.99, 0.82), wear);
+                if (uEraFilter == 1) {
+                    // AMBER Bath (1920s Interior / Candlelight)
+                    shdTint = vec3(1.04, 0.86, 0.58);
+                    hilTint = vec3(1.12, 0.94, 0.64);
+                } else if (uEraFilter == 2) {
+                    // COBALT Bath (1920s Silent Night / Moonlight — Nosferatu style)
+                    shdTint = vec3(0.62, 0.78, 1.08);
+                    hilTint = vec3(0.76, 0.90, 1.12);
+                } else if (uEraFilter == 3) {
+                    // SEPIA Bath (Classic Warm Archival Nitrate)
+                    shdTint = vec3(1.02, 0.90, 0.74);
+                    hilTint = vec3(1.12, 0.97, 0.76);
+                }
+                vec3 stockColor = clamp(y * mix(shdTint, hilTint, baseW), 0.0, 1.0);
                 return stockColor * gateMask;
             }
 
             // Era 2 (1950s Classic Monochrome — Satyajit Ray / Arriflex 35 / Kodak Plus-X & Double-X):
-            // - Baked 1.375:1 Academy Sound Ratio Gate with tighter machined 1950s corners
-            // - True Panchromatic Silver-Halide + subtle Wratten K2 Yellow Filter (glowing skin, moody skies, rich reds)
-            // - Cooke Speed Panchro coated-glass sharpness + soft silver-halide highlight halation
-            // - FRESH (uEraWear = 0.0): 1955 pure silver-gelatin premiere print (cool neutral silver, deep blacks, ultra-fine grain, spotless)
-            // - ARCHIVE (uEraWear = 1.0): 70-yr acetate vault print (warm cream-selenium base, lifted shadows, gentle micro-weave & flicker,
-            //   delicate hairline scratches, single-frame acetate dust & authentic top-right 35mm reel-changeover cue mark!)
+            // - Hardware ISP oversharpening is turned OFF in Camera2 before reaching this shader.
+            // - Baked 1.375:1 AMPAS Academy Sound Gate with subtle optical feathering.
+            // - uEraFilter screw-on B&W Glass Contrast Filters: 0 = YEL K2 (Classic), 1 = CLEAR, 2 = RED 25A (Noir), 3 = GRN X1 (Portrait).
+            // - 8-tap Cooke Speed Panchro coated-glass sharpness + luminous highlight halation.
+            // - Smooth 2-octave bilinear 35mm Double-X silver grain (zero square blocks, zero fake cue-mark button!).
             vec3 applyEra1950sMonochrome(vec3 rawRgb) {
-                // 1. Baked 1.375:1 AMPAS Academy Sound Gate (crisper machined corners than 1920s brass gate)
                 float aspect = max(uViewportAspect, 0.5);
-                vec2 gatePos = vec2(vScreenPos.x * aspect, vScreenPos.y);
+                float wear = clamp(uEraWear, 0.0, 1.0);
+                float activeFps = max(uEraFps, 12.0);
+                float frameTick = floor(uTimeSec * activeFps);
+
+                // 1. Pin-Registered Arriflex/Mitchell Gate (rock-solid in FRESH, micro-acetate breathing in ARCHIVE)
+                vec2 weaveScreen = vec2(0.0);
+                vec2 weaveUv = vTexCoord;
+                if (wear > 0.2) {
+                    float wx = (filmHash(vec2(frameTick, 19.0), 4.0) - 0.5) * 0.0012 * wear;
+                    float wy = (filmHash(vec2(frameTick, 37.0), 5.0) - 0.5) * 0.0026 * wear;
+                    weaveUv = clamp(vTexCoord + vec2(wx, wy), vec2(0.002), vec2(0.998));
+                    weaveScreen = vec2(wx * 0.6, wy * 0.75);
+                }
+
+                // 2. Baked 1.375:1 AMPAS Academy Sound Gate
+                vec2 gatePos = vec2((vScreenPos.x + weaveScreen.x) * aspect, vScreenPos.y + weaveScreen.y);
                 float gateHalfH = 0.972;
                 float gateHalfW = 1.375 * gateHalfH;
-                float cornerR = 0.032;
+                float cornerR = 0.030;
                 vec2 q = abs(gatePos) - vec2(gateHalfW - cornerR, gateHalfH - cornerR);
                 float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - cornerR;
-                float gateMask = 1.0 - smoothstep(-0.006, 0.006, sdf);
+                float gateMask = 1.0 - smoothstep(-0.008, 0.006, sdf);
                 if (gateMask <= 0.001) {
                     return vec3(0.0);
                 }
 
-                float wear = clamp(uEraWear, 0.0, 1.0);
                 vec2 gateUv = vec2(gatePos.x / gateHalfW, gatePos.y / gateHalfH);
                 float rDist = length(gateUv) * 0.7071;
                 float r2 = rDist * rDist;
 
-                // Quantize film grain/artifacts to active 1950s FPS cadence (default 24 FPS sync sound)
-                float activeFps = max(uEraFps, 12.0);
-                float frameTick = floor(uTimeSec * activeFps);
-
-                // 2. Pin-Registered Mitchell/Arriflex Gate (zero weave in FRESH, subtle 70-yr acetate breathing in ARCHIVE)
-                vec2 weaveUv = vTexCoord;
-                if (wear > 0.2) {
-                    float wx = (filmHash(vec2(frameTick, 19.0), 4.0) - 0.5) * 0.0014 * wear;
-                    float wy = (filmHash(vec2(frameTick, 37.0), 5.0) - 0.5) * 0.0032 * wear;
-                    weaveUv = clamp(vTexCoord + vec2(wx, wy), vec2(0.002), vec2(0.998));
-                }
-
-                // 3. Coated 1950s Cooke Speed Panchro Optics: crisp center resolution + gentle corner glow + highlight halation
-                vec3 centerSample = (wear > 0.2) ? texture2D(uTexture, weaveUv).rgb : rawRgb;
-                float blurSpan = mix(0.75, 1.55, wear) + r2 * mix(1.35, 2.30, wear);
-                vec2 dA = (uStepX + uStepY) * blurSpan;
-                vec2 dB = (uStepX - uStepY) * blurSpan;
-                vec3 softAvg = 0.25 * (
-                    texture2D(uTexture, clamp(weaveUv + dA, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - dA, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv + dB, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - dB, vec2(0.002), vec2(0.998))).rgb
+                // 3. 8-Tap Cooke Speed Panchro Coated Glass: creamy center acutance + wide silver-halide highlight halation
+                vec3 c0 = (wear > 0.2) ? texture2D(uTexture, weaveUv).rgb : rawRgb;
+                float innerSpan = mix(0.85, 1.45, wear) + r2 * mix(1.30, 2.25, wear);
+                vec2 inA = (uStepX + uStepY) * innerSpan;
+                vec2 inB = (uStepX - uStepY) * innerSpan;
+                vec3 innerBlur = 0.25 * (
+                    texture2D(uTexture, clamp(weaveUv + inA, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv - inA, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv + inB, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv - inB, vec2(0.002), vec2(0.998))).rgb
                 );
 
-                // 4. Authentic 1950s Panchromatic Silver-Halide + Wratten K2 Yellow Filter (sculptural skin, moody sky, rich red)
-                float yCenter = dot(centerSample, vec3(0.42, 0.46, 0.12));
-                float ySoft = dot(softAvg, vec3(0.42, 0.46, 0.12));
-                float softMix = clamp(mix(0.05, 0.22, wear) + r2 * mix(0.14, 0.22, wear), 0.0, 0.52);
-                float y = mix(yCenter, ySoft, softMix);
-                // Delicate silver-halide highlight halation around bright windows, sun-lit faces & lamps
-                float halation = max(ySoft - 0.72, 0.0) * mix(0.22, 0.34, wear);
+                float haloSpan = mix(3.8, 5.6, wear);
+                vec2 hX = uStepX * haloSpan;
+                vec2 hY = uStepY * haloSpan;
+                vec3 haloBlur = 0.25 * (
+                    texture2D(uTexture, clamp(weaveUv + hX, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv - hX, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv + hY, vec2(0.002), vec2(0.998))).rgb +
+                    texture2D(uTexture, clamp(weaveUv - hY, vec2(0.002), vec2(0.998))).rgb
+                );
+
+                // 4. Authentic 1950s Panchromatic Emulsion + Physical Screw-On Glass Contrast Filter (uEraFilter)
+                vec3 panW = vec3(0.42, 0.46, 0.12); // 0 = YEL K2 (Satyajit Ray / Classic Default)
+                if (uEraFilter == 1) {
+                    panW = vec3(0.30, 0.59, 0.11);  // 1 = CLEAR (Neutral Kodak Double-X)
+                } else if (uEraFilter == 2) {
+                    panW = vec3(0.68, 0.28, 0.04);  // 2 = RED 25A (Dramatic Black Skies / Film Noir)
+                } else if (uEraFilter == 3) {
+                    panW = vec3(0.22, 0.66, 0.12);  // 3 = GRN X1 (Sculptural Skin & Lush Foliage)
+                }
+
+                float yCenter = dot(c0, panW);
+                float yInner = dot(innerBlur, panW);
+                float yHalo = dot(haloBlur, panW);
+
+                float softMix = clamp(mix(0.10, 0.28, wear) + r2 * mix(0.16, 0.24, wear), 0.0, 0.56);
+                float y = mix(yCenter, yInner, softMix);
+                // Delicate silver-halide highlight halation around sunlit faces, windows & practical lamps
+                float halation = max(yHalo - 0.68, 0.0) * mix(0.26, 0.38, wear) + max(yInner - 0.78, 0.0) * 0.12;
                 y = clamp(y + halation, 0.0, 1.0);
 
-                // 5. Chiaroscuro Tone Curve (Subrata Mitra bounce-light midtones, velvety blacks, silky rolloff)
+                // 5. Chiaroscuro H&D Silver-Halide Curve (Subrata Mitra velvety midtones + true deep D-max blacks!)
                 if (wear > 0.2) {
-                    float flicker = 1.0 + (filmHash(vec2(frameTick, 11.0), 6.0) - 0.5) * 2.0 * (0.048 * wear);
+                    float flicker = 1.0 + (filmHash(vec2(frameTick, 11.0), 6.0) - 0.5) * 2.0 * (0.036 * wear);
                     y = clamp(y * flicker, 0.0, 1.0);
                 }
-                float contrast = mix(1.26, 1.14, wear);
-                float gammaVal = mix(1.02, 0.98, wear);
-                float toe = mix(0.014, 0.058, wear);
-                float shoulder = mix(0.982, 0.915, wear);
-                y = clamp((y - 0.46) * contrast + 0.48, 0.0, 1.0);
-                y = pow(y, gammaVal);
-                y = clamp((y / (1.0 + 0.10 * y * y)) * 1.10, 0.0, 1.0);
+                float contrast = mix(1.24, 1.16, wear);
+                float toe = mix(0.008, 0.028, wear);
+                float shoulder = mix(0.985, 0.935, wear);
+                y = clamp((y - 0.45) * contrast + 0.47, 0.0, 1.0);
+                y = clamp((y / (1.0 + 0.14 * y * y)) * 1.14, 0.0, 1.0);
                 y = clamp(toe + y * (shoulder - toe), 0.0, 1.0);
 
-                // 6. Fine Organic 35mm Kodak Plus-X / Double-X Silver Grain (true isotropic Gaussian, zero triangles!)
-                vec2 gFineCell = floor((gatePos + vec2(2.0, 2.0)) * 340.0);
-                float gTotal = organicGrain(gFineCell, frameTick) * mix(0.055, 0.112, wear);
-                if (wear > 0.25) {
-                    vec2 gMedCell = floor((gatePos + vec2(2.0, 2.0)) * 155.0);
-                    gTotal += organicGrain(gMedCell, frameTick + 37.0) * 0.058 * wear;
-                }
-                float grainMask = 0.40 + 0.60 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
-                y = clamp(y + gTotal * grainMask, 0.0, 1.0);
+                // 6. Fine 2-Octave Smooth Bilinear 35mm Kodak Plus-X / Double-X Silver Grain
+                vec2 gPos = gatePos + vec2(2.0, 2.0);
+                float gFine = smoothSilverGrain(gPos, 490.0, frameTick);
+                float gMed = smoothSilverGrain(gPos, 220.0, frameTick + 43.0);
+                float gOrganic = gFine * 0.72 + gMed * 0.28;
+                float grainAmp = mix(0.056, 0.118, wear);
+                float grainEnv = 0.22 + 0.78 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
+                y = clamp(y + gOrganic * grainAmp * grainEnv, 0.0, 1.0);
 
-                // 7. ARCHIVE-ONLY 1950s Acetate Vault Artifacts (ZERO artifacts in FRESH!)
+                // 7. ARCHIVE-ONLY Subtle 70-Yr Acetate Vault Wear (ZERO in FRESH; ZERO fake cartoon cue button!)
                 if (wear > 0.25) {
-                    // Delicate single dark + bright acetate hairline tramline scratches
-                    float slowT1 = floor(frameTick * 0.08);
-                    float slowT2 = floor(frameTick * 0.15);
-                    float vis1 = step(0.46, filmHash(vec2(slowT1, 6.0), 19.0));
-                    float vis2 = step(0.58, filmHash(vec2(slowT2, 13.0), 29.0));
-                    float x1 = (filmHash(vec2(slowT1, 3.0), 41.0) * 1.30 - 0.65) + sin(vScreenPos.y * 3.8 + slowT1) * 0.0028;
-                    float x2 = (filmHash(vec2(slowT2, 9.0), 47.0) * 1.24 - 0.62) + sin(vScreenPos.y * 5.2 - slowT2) * 0.0025;
-                    float seg1 = smoothstep(0.22, 0.72, filmHash(vec2(floor((vScreenPos.y + 2.0) * 10.0), frameTick), 53.0));
-                    float seg2 = smoothstep(0.32, 0.80, filmHash(vec2(floor((vScreenPos.y + 2.0) * 11.0), frameTick), 59.0));
-                    float darkS = (1.0 - smoothstep(0.0, 0.0009, abs(vScreenPos.x - x1))) * vis1 * seg1 * 0.34;
-                    float lightS = (1.0 - smoothstep(0.0, 0.0008, abs(vScreenPos.x - x2))) * vis2 * seg2 * 0.30;
-                    y = clamp(y - darkS * wear + lightS * wear, 0.0, 1.0);
+                    // Single rare ultra-fine acetate hairline scratch
+                    float burst = floor(frameTick * 0.08);
+                    float vis = step(0.68, filmHash(vec2(burst, 6.0), 19.0));
+                    float sx = (filmHash(vec2(burst, 3.0), 41.0) * 1.24 - 0.62) + sin(gatePos.y * 2.6 + burst) * 0.0016;
+                    float seg = smoothstep(0.12, 0.55, filmHash(vec2(floor((gatePos.y + 2.0) * 2.8), burst), 53.0));
+                    float scratch = (1.0 - smoothstep(0.0, 0.00060, abs(vScreenPos.x - sx))) * vis * seg * 0.26;
+                    y = clamp(y - scratch * wear, 0.0, 1.0);
 
-                    // Fine single-frame circular acetate micro-dust flecks
-                    vec2 dustGrid = (gatePos + vec2(2.0, 2.0)) * 86.0;
-                    vec2 cellId = floor(dustGrid);
-                    vec2 cellUv = fract(dustGrid);
-                    float dChance = filmHash(cellId, frameTick + 17.0);
-                    if (dChance > 0.9945) {
-                        vec2 sc = vec2(
-                            0.28 + 0.44 * filmHash(cellId + vec2(13.0, 4.0), frameTick + 31.0),
-                            0.28 + 0.44 * filmHash(cellId + vec2(7.0, 21.0), frameTick + 43.0)
+                    // Sparse razor-sharp focal-plane acetate micro-dust
+                    vec2 dustGrid = gPos * 124.0;
+                    vec2 cId = floor(dustGrid);
+                    vec2 cUv = fract(dustGrid);
+                    float dRoll = filmHash(cId, frameTick + 17.0);
+                    if (dRoll > 0.9978) {
+                        vec2 ctr = vec2(
+                            0.28 + 0.44 * filmHash(cId + vec2(13.0, 4.0), frameTick + 31.0),
+                            0.28 + 0.44 * filmHash(cId + vec2(7.0, 21.0), frameTick + 43.0)
                         );
-                        vec2 delta = (cellUv - sc) * vec2(1.0, 1.35);
-                        float rad = 0.12 + 0.13 * filmHash(cellId + vec2(19.0, 9.0), frameTick + 11.0);
-                        float speck = 1.0 - smoothstep(rad * 0.50, rad, length(delta));
-                        if (dChance > 0.9980) {
-                            y = clamp(y + speck * 0.46 * wear, 0.0, 1.0);
+                        vec2 d = (cUv - ctr) * vec2(1.0, 1.5);
+                        float rad = 0.07 + 0.08 * filmHash(cId + vec2(19.0, 9.0), frameTick + 11.0);
+                        float speck = 1.0 - smoothstep(rad * 0.65, rad, length(d));
+                        if (dRoll > 0.9993) {
+                            y = clamp(y + speck * 0.42 * wear, 0.0, 1.0);
                         } else {
-                            y = clamp(y - speck * 0.48 * wear, 0.0, 1.0);
+                            y = clamp(y - speck * 0.56 * wear, 0.0, 1.0);
                         }
                     }
-
-                    // Authentic 1950s 35mm Projection Changeover Cue Mark (cigarette burn): top-right corner for 4 frames every ~20s
-                    float reelCycle = activeFps * 20.0;
-                    float reelMod = mod(frameTick, reelCycle);
-                    if (reelMod >= (reelCycle - 8.0) && reelMod < (reelCycle - 4.0)) {
-                        vec2 cueDelta = gateUv - vec2(0.84, 0.80);
-                        cueDelta.x *= 1.375;
-                        float cueD = length(cueDelta);
-                        float cueRing = (1.0 - smoothstep(0.032, 0.044, cueD));
-                        float cueHole = (1.0 - smoothstep(0.016, 0.025, cueD));
-                        y = mix(y, 0.08, cueRing * 0.85 * wear);
-                        y = mix(y, 0.92, cueHole * 0.72 * wear);
-                    }
                 }
 
-                // 8. Subtle Cooke Prime Vignette + Pure Silver-Gelatin (FRESH) vs Aged Cream Acetate (ARCHIVE) Tint
-                float vigStrength = mix(0.20, 0.42, wear);
-                float vig = 1.0 - vigStrength * smoothstep(mix(0.52, 0.38, wear), 1.12, rDist);
+                // 8. Subtle Cooke Prime Falloff + Split-Toned Silver-Gelatin (FRESH) vs Cream Acetate (ARCHIVE)
+                float vigStrength = mix(0.18, 0.36, wear);
+                float vig = 1.0 - vigStrength * smoothstep(mix(0.50, 0.38, wear), 1.14, rDist);
                 y *= clamp(vig, 0.0, 1.0);
 
-                vec3 freshSilver = vec3(0.99, 1.00, 1.01);
-                vec3 archiveAcetate = vec3(1.05, 1.01, 0.91);
-                vec3 stockColor = clamp(y * mix(freshSilver, archiveAcetate, wear), 0.0, 1.0);
+                float baseW = smoothstep(0.08, 0.82, y);
+                vec3 shdTint = mix(vec3(0.98, 0.99, 1.01), vec3(1.00, 0.99, 0.96), wear);
+                vec3 hilTint = mix(vec3(1.00, 1.00, 0.99), vec3(1.05, 1.01, 0.92), wear);
+                vec3 stockColor = clamp(y * mix(shdTint, hilTint, baseW), 0.0, 1.0);
                 return stockColor * gateMask;
             }
 
@@ -636,6 +663,7 @@ class CinemaGlRenderer(
     private var uEraModeLoc: Int = -1
     private var uEraWearLoc: Int = -1
     private var uEraFpsLoc: Int = -1
+    private var uEraFilterLoc: Int = -1
     private var uViewportAspectLoc: Int = -1
 
     private var lutTextureId: Int = 0
@@ -669,6 +697,7 @@ class CinemaGlRenderer(
     @Volatile var eraModeCode: Int = 0 // 0 = SAVIOR, 1 = 1920s Silent 35mm, 2 = 1950s Monochrome 35mm
     @Volatile var eraWearLevel: Float = 0.0f // 0.0 = NITRATE Clean, 1.0 = ARCHIVE Aged
     @Volatile var eraFps: Float = 16.0f
+    @Volatile var eraFilterCode: Int = 0
     @Volatile var mirrorFrontExport: Boolean = false
 
     @Volatile private var previewWidth: Int = 0
@@ -1306,6 +1335,7 @@ class CinemaGlRenderer(
         GLES20.glUniform1i(uEraModeLoc, eraModeCode)
         GLES20.glUniform1f(uEraWearLoc, eraWearLevel.coerceIn(0f, 1f))
         GLES20.glUniform1f(uEraFpsLoc, eraFps.coerceIn(1f, 60f))
+        GLES20.glUniform1i(uEraFilterLoc, eraFilterCode)
         GLES20.glUniform1f(uViewportAspectLoc, viewportAspect.coerceIn(0.4f, 4.0f))
 
         GLES20.glEnableVertexAttribArray(aPositionLoc)
@@ -1472,6 +1502,7 @@ class CinemaGlRenderer(
             uEraModeLoc = GLES20.glGetUniformLocation(programId, "uEraMode")
             uEraWearLoc = GLES20.glGetUniformLocation(programId, "uEraWear")
             uEraFpsLoc = GLES20.glGetUniformLocation(programId, "uEraFps")
+            uEraFilterLoc = GLES20.glGetUniformLocation(programId, "uEraFilter")
             uViewportAspectLoc = GLES20.glGetUniformLocation(programId, "uViewportAspect")
             if (desiredLutData != null) {
                 lutUploadDirty = true

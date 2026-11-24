@@ -180,6 +180,8 @@ class CinemaCameraEngine(
         private set
     @Volatile var eraFps: Float = 16.0f
         private set
+    @Volatile var eraFilterCode: Int = 0
+        private set
     @Volatile var toneProfile: ToneProfile = ToneProfile.STANDARD
         private set
     @Volatile var isRecording: Boolean = false
@@ -354,7 +356,9 @@ class CinemaCameraEngine(
         glRenderer?.eraModeCode = eraModeCode
         glRenderer?.eraWearLevel = eraWearLevel
         glRenderer?.eraFps = eraFps
+        glRenderer?.eraFilterCode = eraFilterCode
         glRenderer?.mirrorFrontExport = mirrorFrontExport
+        cleanupOrphanEraCacheFiles()
         glRenderer?.setCubeLut(activeCubeLut)
         glRenderer?.onTimelapseFrameCaptured = { frames ->
             val outSec = frames.toFloat() / targetFps.coerceIn(1, 60).toFloat()
@@ -402,13 +406,33 @@ class CinemaCameraEngine(
         glRenderer?.splitCompareFraction = fraction
     }
 
-    fun setEraRenderState(modeCode: Int, wearLevel: Float, fps: Float) {
+    fun setEraRenderState(modeCode: Int, wearLevel: Float, fps: Float, filterCode: Int = eraFilterCode) {
+        val wasClassic = (eraModeCode > 0)
+        val isClassic = (modeCode > 0)
         eraModeCode = modeCode
         eraWearLevel = wearLevel.coerceIn(0f, 1f)
         eraFps = fps.coerceIn(1f, 60f)
+        eraFilterCode = filterCode.coerceIn(0, 3)
         glRenderer?.eraModeCode = eraModeCode
         glRenderer?.eraWearLevel = eraWearLevel
         glRenderer?.eraFps = eraFps
+        glRenderer?.eraFilterCode = eraFilterCode
+        // Toggle Camera2 hardware ISP de-sharpening (EDGE_MODE_OFF) & EIS off immediately on SAVIOR <-> CLASSIC transition!
+        if (wasClassic != isClassic) {
+            pushUpdatedRepeatingRequest()
+        }
+    }
+
+    private fun cleanupOrphanEraCacheFiles() {
+        try {
+            val cutoff = System.currentTimeMillis() - 60_000L
+            context.cacheDir.listFiles { f ->
+                f.isFile && (f.name.startsWith("era_raw_") || f.name.startsWith("era_proc_")) && f.lastModified() < cutoff
+            }?.forEach { f ->
+                try { f.delete() } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {
+        }
     }
 
     /**
@@ -1033,21 +1057,31 @@ class CinemaCameraEngine(
             builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
         }
 
-        // 3.7. Hardware Video Stabilization (OIS / EIS)
-        if (isStabilizationEnabled) {
-            if (capabilities.supportsEis) {
-                builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
-            }
-            if (capabilities.supportsOis) {
-                builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
-            }
+        // 3.7. Hardware Video Stabilization (OIS / EIS) — digital EIS is OFF in CLASSIC to avoid modern warp/jello!
+        val useEis = isStabilizationEnabled && (eraModeCode == 0)
+        if (capabilities.supportsEis) {
+            builder.set(
+                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                if (useEis) CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+                else CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+            )
+        }
+        if (capabilities.supportsOis) {
+            builder.set(
+                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                if (isStabilizationEnabled) CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON
+                else CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF
+            )
+        }
+
+        // 3.8. Hardware ISP Edge Sharpening & Noise Reduction:
+        // Strip harsh smartphone digital edge halos & plastic AI smoothing in CLASSIC mode for genuine optical film texture!
+        if (eraModeCode > 0) {
+            builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
+            builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_MINIMAL)
         } else {
-            if (capabilities.supportsEis) {
-                builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-            }
-            if (capabilities.supportsOis) {
-                builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF)
-            }
+            builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
+            builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
         }
 
         // 4. Flat / Cinema Tone Curve

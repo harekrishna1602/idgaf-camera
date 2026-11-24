@@ -267,6 +267,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private val era1950sTurretPrimes = listOf("28mm" to 1.0f, "35mm" to 1.35f, "50mm" to 1.95f)
     private var era1950sTurretIdx: Int = 1 // Starts on Satyajit Ray's iconic 35mm prime!
     private var eraArchiveWear: Boolean = false
+    private var era1920sTintCode: Int = 0 // 0=SILVER, 1=AMBER, 2=COBALT, 3=SEPIA
+    private var era1950sFilterCode: Int = 0 // 0=YEL K2, 1=CLEAR, 2=RED 25A, 3=GRN X1
+    @Volatile private var eraMicMonitorPaused: Boolean = false
     private var suppressEraSeek: Boolean = false
     private var saviorSnapshot: SaviorWorkbenchSnapshot? = null
 
@@ -1026,18 +1029,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 return@setOnClickListener
             }
             if (activeEraCamera == EraCameraId.SILENT_1920S) {
-                eraSilentFps = if (eraSilentFps == 16) 18 else 16
-                txtEraSpeedVal.text = "$eraSilentFps FPS"
-                engine.setTargetFpsSeamless(eraSilentFps)
-                engine.setEraRenderState(
-                    EraCameraId.SILENT_1920S.shaderCode,
-                    if (eraArchiveWear) 1.0f else 0.0f,
-                    eraSilentFps.toFloat()
-                )
-                showSingleToast(
-                    if (eraSilentFps == 16) "16 FPS — Classic Hand-Crank Silent (1.0 ft/s)"
-                    else "18 FPS — Late Silent Projection Speed (1.125 ft/s)"
-                )
+                show1920sFpsPickerDialog()
             } else {
                 show1950sFpsPickerDialog()
             }
@@ -1071,26 +1063,38 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             selectEraPanel(if (activeEraPanel == EraSliderPanel.FOCUS) EraSliderPanel.NONE else EraSliderPanel.FOCUS)
         }
 
-        // Print Stock Condition: FRESH <-> ARCHIVE (STRICTLY locked while rolling — can't swap film mag mid-take!)
+        // Print Stock Condition: Tap = FRESH <-> ARCHIVE; Long-Press = Period Glass Filter / Tint Bath (Locked while rolling!)
         pillEraPrint.setOnClickListener {
             if (engine.isRecording || engine.isFinalizingClip) {
                 showSingleToast("Stop recording to change film print stock")
                 return@setOnClickListener
             }
             eraArchiveWear = !eraArchiveWear
-            txtEraPrintVal.text = if (eraArchiveWear) "ARCHIVE" else "FRESH"
-            pillEraPrint.setBackgroundResource(if (eraArchiveWear) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-            txtEraPrintVal.setTextColor(if (eraArchiveWear) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
+            updateEraPrintPillLabel()
             val activeFpsVal = if (activeEraCamera == EraCameraId.MONO_1950S) era1950sFps.toFloat() else eraSilentFps.toFloat()
-            engine.setEraRenderState(activeEraCamera.shaderCode, if (eraArchiveWear) 1.0f else 0.0f, activeFpsVal)
+            val activeFilter = if (activeEraCamera == EraCameraId.MONO_1950S) era1950sFilterCode else era1920sTintCode
+            engine.setEraRenderState(activeEraCamera.shaderCode, if (eraArchiveWear) 1.0f else 0.0f, activeFpsVal, activeFilter)
             val msg = if (activeEraCamera == EraCameraId.MONO_1950S) {
-                if (eraArchiveWear) "ARCHIVE — 1950s Acetate Vault Print (Warm Cream, Reel Cues, Dust & Optical Hiss)"
-                else "FRESH — 1955 Silver-Gelatin Premiere Print (Clean Panchromatic & Warm Optical Mono)"
+                if (eraArchiveWear) "ARCHIVE — 70-Yr Acetate Vault Print (Hold PRINT for Glass Filters)"
+                else "FRESH — 1955 Silver-Gelatin Premiere Print (Hold PRINT for Glass Filters)"
             } else {
-                if (eraArchiveWear) "ARCHIVE — 100-Yr Nitrate Reel (Sepia Patina, Gate Weave, Scratches & Dust)"
-                else "FRESH — 1920s Premiere Nitrate (Clean Silver-Gelatin, Deep Blacks, Zero Scratches)"
+                if (eraArchiveWear) "ARCHIVE — 100-Yr Nitrate Reel (Hold PRINT for Tint Baths)"
+                else "FRESH — 1920s Premiere Nitrate (Hold PRINT for Tint Baths)"
             }
             showSingleToast(msg, Toast.LENGTH_LONG)
+        }
+
+        pillEraPrint.setOnLongClickListener {
+            if (engine.isRecording || engine.isFinalizingClip) {
+                showSingleToast("Stop recording to change lens filter / bath")
+                return@setOnLongClickListener true
+            }
+            if (activeEraCamera == EraCameraId.MONO_1950S) {
+                show1950sGlassFilterDialog()
+            } else {
+                show1920sTintBathDialog()
+            }
+            true
         }
 
         btnEraSliderAuto.setOnClickListener {
@@ -1156,7 +1160,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun showEraMuseumPickerDialog() {
         val items = arrayOf(
-            (if (activeEraCamera == EraCameraId.SILENT_1920S) "✓ " else "") + "1920s Classic Silent — 35mm Orthochromatic (16/18 FPS • Silent)",
+            (if (activeEraCamera == EraCameraId.SILENT_1920S) "✓ " else "") + "1920s Classic Silent — 35mm Orthochromatic (16/18/20 FPS • Silent)",
             (if (activeEraCamera == EraCameraId.MONO_1950S) "✓ " else "") + "1950s Classic Monochrome — Satyajit Ray 35mm (24 FPS • Optical Mono)",
             "1970s Indie Celluloid — Super 8 & 16mm (Next in v0.7.5)",
             "1980s–90s Analog Tape — VHS Camcorder (Coming in v0.7.6)",
@@ -1188,9 +1192,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtEraFootage.setTextColor(0xFFF5E6C8.toInt())
         viewEraRecDot.visibility = View.GONE
 
-        txtEraPrintVal.text = if (eraArchiveWear) "ARCHIVE" else "FRESH"
-        pillEraPrint.setBackgroundResource(if (eraArchiveWear) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-        txtEraPrintVal.setTextColor(if (eraArchiveWear) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
+        updateEraPrintPillLabel()
 
         if (activeEraCamera == EraCameraId.SILENT_1920S) {
             txtEraSlot1Label.text = "CRANK"
@@ -1207,11 +1209,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.setEraRenderState(
                 EraCameraId.SILENT_1920S.shaderCode,
                 if (eraArchiveWear) 1.0f else 0.0f,
-                eraSilentFps.toFloat()
+                eraSilentFps.toFloat(),
+                era1920sTintCode
             )
             if (announce) {
                 showSingleToast(
-                    "1920s CLASSIC SILENT • $eraSilentFps FPS • ${if (eraArchiveWear) "ARCHIVE" else "FRESH"} Print",
+                    "1920s CLASSIC SILENT • $eraSilentFps FPS • ${if (eraArchiveWear) "ARCHIVE" else "FRESH"} (Hold PRINT for Tint Baths)",
                     Toast.LENGTH_LONG
                 )
             }
@@ -1234,11 +1237,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.setEraRenderState(
                 EraCameraId.MONO_1950S.shaderCode,
                 if (eraArchiveWear) 1.0f else 0.0f,
-                era1950sFps.toFloat()
+                era1950sFps.toFloat(),
+                era1950sFilterCode
             )
             if (announce) {
                 showSingleToast(
-                    "1950s CLASSIC MONO • $era1950sFps FPS • $mmLabel Prime • Optical Mono Sound",
+                    "1950s CLASSIC MONO • $era1950sFps FPS • $mmLabel Prime • Optical Mono (Hold PRINT for Filters)",
                     Toast.LENGTH_LONG
                 )
             }
@@ -1248,12 +1252,63 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         updateEraFocusUi()
     }
 
+    private fun updateEraPrintPillLabel() {
+        val base = if (eraArchiveWear) "ARCHIVE" else "FRESH"
+        val badge = if (activeEraCamera == EraCameraId.MONO_1950S) {
+            when (era1950sFilterCode) {
+                1 -> "CLR"
+                2 -> "R25"
+                3 -> "G11"
+                else -> ""
+            }
+        } else {
+            when (era1920sTintCode) {
+                1 -> "AMB"
+                2 -> "BLU"
+                3 -> "SEP"
+                else -> ""
+            }
+        }
+        txtEraPrintVal.text = if (badge.isEmpty()) base else "$base·$badge"
+        pillEraPrint.setBackgroundResource(if (eraArchiveWear) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
+        txtEraPrintVal.setTextColor(if (eraArchiveWear) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
+    }
+
+    private fun show1920sFpsPickerDialog() {
+        val speeds = listOf(
+            16 to "16 FPS — Early Silent Hand-Crank (1.00 ft/s)",
+            18 to "18 FPS — Classic 1920s Silent Standard (1.13 ft/s)",
+            20 to "20 FPS — Late 1920s Cinema Palace (1.25 ft/s)"
+        )
+        val labels = speeds.map { (fps, desc) ->
+            if (fps == eraSilentFps) "✓ $desc" else desc
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("1920s Hand-Crank Film Speed")
+            .setItems(labels) { _, which ->
+                val chosen = speeds[which].first
+                eraSilentFps = chosen
+                txtEraSpeedVal.text = "$eraSilentFps FPS"
+                engine.setTargetFpsSeamless(eraSilentFps)
+                engine.setEraRenderState(
+                    EraCameraId.SILENT_1920S.shaderCode,
+                    if (eraArchiveWear) 1.0f else 0.0f,
+                    eraSilentFps.toFloat(),
+                    era1920sTintCode
+                )
+                showSingleToast("1920s Crank: $eraSilentFps FPS (${String.format(Locale.US, "%.2f", eraSilentFps / 16f)} ft/s)")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun show1950sFpsPickerDialog() {
         val speeds = listOf(
-            18 to "18 FPS — Undercrank (Slightly Brisk Motion)",
-            24 to "24 FPS — Classic Cinema Sync (Satyajit Ray Standard)",
-            25 to "25 FPS — 1950s Broadcast Telecine",
-            30 to "30 FPS — Smooth Modern Playback"
+            18 to "18 FPS — Arriflex Undercrank (Brisk Action)",
+            24 to "24 FPS — 1950s Sync Sound Standard (Satyajit Ray)",
+            25 to "25 FPS — 50Hz Studio / Broadcast Telecine",
+            30 to "30 FPS — 1955 Todd-AO / TV Kinescope"
         )
         val labels = speeds.map { (fps, desc) ->
             if (fps == era1950sFps) "✓ $desc" else desc
@@ -1270,11 +1325,68 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 engine.setEraRenderState(
                     EraCameraId.MONO_1950S.shaderCode,
                     if (eraArchiveWear) 1.0f else 0.0f,
-                    era1950sFps.toFloat()
+                    era1950sFps.toFloat(),
+                    era1950sFilterCode
                 )
                 showSingleToast("1950s Speed: $era1950sFps FPS (${String.format(Locale.US, "%.2f", era1950sFps / 16f)} ft/s)")
             }
             .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun show1950sGlassFilterDialog() {
+        val filters = listOf(
+            0 to "Yellow K2 (#8) — Classic Satyajit Ray Contrast (Default)",
+            1 to "Clear Glass — Natural Kodak Double-X Panchromatic",
+            2 to "Red 25A — Deep Black Skies & Dramatic Film Noir",
+            3 to "Green X1 (#11) — Sculptural Portraits & Rich Foliage"
+        )
+        val labels = filters.map { (code, desc) ->
+            if (code == era1950sFilterCode) "✓ $desc" else desc
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("1950s Screw-On Glass Contrast Filter")
+            .setItems(labels) { _, which ->
+                era1950sFilterCode = filters[which].first
+                updateEraPrintPillLabel()
+                engine.setEraRenderState(
+                    EraCameraId.MONO_1950S.shaderCode,
+                    if (eraArchiveWear) 1.0f else 0.0f,
+                    era1950sFps.toFloat(),
+                    era1950sFilterCode
+                )
+                showSingleToast("1950s Lens Filter: ${filters[which].second.substringBefore(" —")}")
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun show1920sTintBathDialog() {
+        val baths = listOf(
+            0 to "Silver-Gelatin — Pure B&W Nitrate (Default)",
+            1 to "Amber Dye Bath — Warm Candlelight / Interior",
+            2 to "Cobalt Blue Bath — 1920s Silent Night / Moonlight",
+            3 to "Sepia Dye Bath — Deep Archival Warm Nitrate"
+        )
+        val labels = baths.map { (code, desc) ->
+            if (code == era1920sTintCode) "✓ $desc" else desc
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("1920s Nitrate Lab Tint Bath")
+            .setItems(labels) { _, which ->
+                era1920sTintCode = baths[which].first
+                updateEraPrintPillLabel()
+                engine.setEraRenderState(
+                    EraCameraId.SILENT_1920S.shaderCode,
+                    if (eraArchiveWear) 1.0f else 0.0f,
+                    eraSilentFps.toFloat(),
+                    era1920sTintCode
+                )
+                showSingleToast("1920s Lab Bath: ${baths[which].second.substringBefore(" —")}")
+            }
+            .setNegativeButton("Close", null)
             .show()
     }
 
@@ -1319,6 +1431,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         )
 
         currentWorkbench = CameraWorkbench.ERA
+        eraMicMonitorPaused = true
         if (isSplitCompareActive) {
             setSplitCompareMode(false)
         }
@@ -1352,10 +1465,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun exitEraToSaviorWorkbench() {
         if (currentWorkbench == CameraWorkbench.SAVIOR) return
         currentWorkbench = CameraWorkbench.SAVIOR
+        eraMicMonitorPaused = false
         selectEraPanel(EraSliderPanel.NONE)
 
         // 1. Disable Era shader & audio flags cleanly
-        engine.setEraRenderState(0, 0.0f, 30.0f)
+        engine.setEraRenderState(0, 0.0f, 30.0f, 0)
         engine.eraSilentAudio = false
         engine.eraAudioProfile = EraAudioProfile.NONE
         engine.eraFilenameTag = ""
@@ -1476,6 +1590,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (!showing) closeTopDrawers(except = "MON")
             monitorToolsBar.visibility = if (showing) View.GONE else View.VISIBLE
             styleToolPill(btnMonitorToggle, !showing)
+            syncLowBatteryBannerVisibility()
         }
 
         btnToolGrid.setOnClickListener {
@@ -1665,6 +1780,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             proSettingsBar.visibility == View.VISIBLE
     }
 
+    private fun syncLowBatteryBannerVisibility() {
+        val anyTopDrawerOpen = colorControlDrawer.visibility == View.VISIBLE ||
+            monitorToolsBar.visibility == View.VISIBLE ||
+            proSettingsBar.visibility == View.VISIBLE
+        txtLowBatteryBanner.visibility = if (!isBatteryCharging && lastBatteryPct <= 15 && !lowBatteryBannerDismissed && !anyTopDrawerOpen) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
+    }
+
     private fun closeTopDrawers(except: String? = null) {
         if (except != "MON" && monitorToolsBar.visibility == View.VISIBLE) {
             monitorToolsBar.visibility = View.GONE
@@ -1689,6 +1815,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         if (except != "ZOOM" && zoomPopoutDrawer.visibility == View.VISIBLE) {
             zoomPopoutDrawer.visibility = View.GONE
         }
+        syncLowBatteryBannerVisibility()
     }
 
     private fun closeAllDrawers() {
@@ -1730,6 +1857,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (!showing) closeTopDrawers(except = "PRO")
             proSettingsBar.visibility = if (showing) View.GONE else View.VISIBLE
             styleToolPill(btnProSettingsToggle, !showing)
+            syncLowBatteryBannerVisibility()
         }
 
         btnProCodec.setOnClickListener {
@@ -2299,8 +2427,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.4.1"
-    } catch (_: Exception) { "0.7.4.1" }
+        info.versionName ?: "0.7.4.2"
+    } catch (_: Exception) { "0.7.4.2" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -2381,6 +2509,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 rowColorLutMix.visibility = if (activeLutSourceId.isNotEmpty()) View.VISIBLE else View.GONE
             }
             updateLookTopPillVisual()
+            syncLowBatteryBannerVisibility()
         }
 
         // Hold RAW for instant full-screen RAW peek; SLIDE finger left/right while holding to pull out the live RAW | LOOK Split-Screen Wipe!
@@ -2465,6 +2594,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             setColorDrawerRawComparePeek(false)
             colorControlDrawer.visibility = View.GONE
             updateLookTopPillVisual()
+            syncLowBatteryBannerVisibility()
         }
 
         btnLutPrev.setOnClickListener {
@@ -3173,7 +3303,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val buffer = ShortArray(minBuf / 2)
 
             while (audioMonitorRunning) {
-                if (engine.isRecording || engine.isAudioMuted || audioPreviewPausedForRec) {
+                if (engine.isRecording || engine.isAudioMuted || audioPreviewPausedForRec || eraMicMonitorPaused) {
                     if (ar != null) {
                         try { ar.stop(); ar.release() } catch (_: Exception) {}
                         ar = null
@@ -4201,9 +4331,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             configureTransform(previewSize)
             engine.updateGpuScopes(overlayView.toGpuScopeState())
             currentResolution = engine.targetResolution
-            currentFps = activeFps
             btnResolution.text = currentResolution.label
-            btnFps.text = "$activeFps FPS"
+            if (currentWorkbench == CameraWorkbench.SAVIOR) {
+                currentFps = activeFps
+                btnFps.text = "$activeFps FPS"
+            }
             updateZoomReadout()
             updateEvDisplay()
             styleToolPill(btnProTorch, engine.isTorchEnabled)
