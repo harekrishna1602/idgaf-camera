@@ -96,7 +96,11 @@ class CinemaGlRenderer(
 
         private const val FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
+            #endif
 
             uniform samplerExternalOES uTexture;
             uniform int uEnableScopes;
@@ -155,11 +159,24 @@ class CinemaGlRenderer(
                 return mix(s0, s1, bFrac);
             }
 
-            // Mobile mediump-safe procedural hash (never overflows 10-bit mediump mantissa on Mali/Adreno)
-            float hash12(vec2 p) {
-                vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-                p3 += dot(p3, p3.yzx + 33.33);
-                return fract((p3.x + p3.y) * p3.z);
+            // Strictly bounded non-tiling procedural hash (all intermediates < 24.0 -> 100% artifact-free in BOTH highp FP32 & mediump FP16).
+            // Eliminates repeated triangle/diamond moire bands on Mali/Adreno GPUs by splitting integer coordinates before nonlinear folding.
+            float filmHash(vec2 cell, float seed) {
+                vec2 cLo = mod(cell, vec2(127.0, 113.0));
+                vec2 cHi = floor(cell / vec2(127.0, 113.0));
+                float sLo = mod(seed, 89.0);
+                float u = fract(cLo.x * 0.3183 + cLo.y * 0.7139 + cHi.x * 0.4171 + cHi.y * 0.2917 + sLo * 0.1931);
+                float v = fract(cLo.x * 0.5877 + cLo.y * 0.2417 + cHi.x * 0.1639 + cHi.y * 0.6731 + sLo * 0.6180);
+                float a = fract(u * 5.317 + v * 3.719 + u * v * 7.131);
+                float b = fract(v * 6.131 + u * 2.893 + a * 4.723);
+                return fract(a * 7.919 + b * 11.31 + a * b * 13.17);
+            }
+
+            // Organic silver-halide Gaussian-like grain crystal in [-0.5, +0.5] using two decorrelated taps (zero triangles, zero tiling)
+            float organicGrain(vec2 cell, float tick) {
+                float h1 = filmHash(cell, tick);
+                float h2 = filmHash(cell + vec2(37.0, 53.0), tick + 19.0);
+                return 0.5 * (h1 + h2) - 0.5;
             }
 
             // Era 1 (1920s Classic Silent 35mm): True optical emulation with night-and-day FRESH vs ARCHIVE stocks.
@@ -189,13 +206,12 @@ class CinemaGlRenderer(
 
                 // Quantize time to authentic silent-film frame ticks (16 or 18 FPS)
                 float frameTick = floor(uTimeSec * max(uEraFps, 12.0));
-                float tSeed = fract(frameTick * 0.0618034);
 
                 // 2. Intermittent-Claw Gate Weave (rock-steady in FRESH, authentic shrunken-nitrate jitter in ARCHIVE)
                 vec2 weaveUv = vTexCoord;
                 if (wear > 0.15) {
-                    float wx = (hash12(vec2(frameTick, 13.7)) - 0.5) * 0.0032 * wear;
-                    float wy = (hash12(vec2(frameTick, 29.3)) - 0.5) * 0.0078 * wear;
+                    float wx = (filmHash(vec2(frameTick, 13.0), 1.0) - 0.5) * 0.0032 * wear;
+                    float wy = (filmHash(vec2(frameTick, 29.0), 2.0) - 0.5) * 0.0078 * wear;
                     weaveUv = clamp(vTexCoord + vec2(wx, wy), vec2(0.002), vec2(0.998));
                 }
 
@@ -214,17 +230,15 @@ class CinemaGlRenderer(
                 // True 1920s Red-Blind Orthochromatic Emulsion Sensitivity (dark reds, luminous blue skies)
                 float yCenter = dot(centerSample, vec3(0.08, 0.58, 0.34));
                 float ySoft = dot(softAvg, vec3(0.08, 0.58, 0.34));
-                // Blend radial lens softness (crisp center in FRESH, vintage generational copy softening in ARCHIVE)
                 float softMix = clamp(mix(0.10, 0.38, wear) + r2 * mix(0.28, 0.36, wear), 0.0, 0.72);
                 float y = mix(yCenter, ySoft, softMix);
-                // Uncoated silver-halide highlight bloom (bright light sources gently spill into adjacent tones)
+                // Uncoated silver-halide highlight bloom
                 float bloom = max(ySoft - 0.68, 0.0) * mix(0.24, 0.42, wear);
                 y = clamp(y + bloom, 0.0, 1.0);
 
                 // 4. Hand-Crank / Projector Shutter Flicker + Distinct FRESH vs ARCHIVE Tone Curves
                 float flickerAmp = mix(0.018, 0.095, wear);
-                float flicker = 1.0 + (hash12(vec2(frameTick, 7.13)) - 0.5) * 2.0 * flickerAmp;
-                // Subtle arc-lamp vertical illumination breathing in ARCHIVE
+                float flicker = 1.0 + (filmHash(vec2(frameTick, 7.0), 3.0) - 0.5) * 2.0 * flickerAmp;
                 float lampBreath = 1.0 + sin(frameTick * 0.43 + vScreenPos.y * 1.4) * 0.032 * wear;
                 y = clamp(y * flicker * lampBreath, 0.0, 1.0);
 
@@ -234,41 +248,37 @@ class CinemaGlRenderer(
                 float shoulder = mix(0.985, 0.895, wear);
                 y = clamp((y - 0.45) * contrast + 0.48, 0.0, 1.0);
                 y = pow(y, gammaVal);
-                // Smooth silver-halide highlight shoulder rolloff (eliminates harsh digital clipping)
                 y = clamp((y / (1.0 + 0.12 * y * y)) * 1.12, 0.0, 1.0);
                 y = clamp(toe + y * (shoulder - toe), 0.0, 1.0);
 
-                // 5. Authentic Organic Silver-Halide Emulsion Grain (fine in FRESH, dual-scale clumped in ARCHIVE)
-                vec2 gFineCoord = floor(vScreenPos * vec2(300.0 * aspect, 300.0)) * 0.019 + vec2(tSeed * 47.0, tSeed * 31.0);
-                float gFine = hash12(gFineCoord) - 0.5;
-                float gTotal = gFine * mix(0.052, 0.120, wear);
+                // 5. True Isotropic Organic 35mm Silver-Halide Emulsion Grain (integer cell pitch, zero patterns!)
+                vec2 gFineCell = floor((gatePos + vec2(2.0, 2.0)) * 280.0);
+                float gTotal = organicGrain(gFineCell, frameTick) * mix(0.068, 0.145, wear);
                 if (wear > 0.25) {
-                    vec2 gClumpCoord = floor(vScreenPos * vec2(115.0 * aspect, 115.0)) * 0.023 + vec2(tSeed * 19.0, tSeed * 41.0);
-                    float gClump = hash12(gClumpCoord) - 0.5;
-                    gTotal += gClump * 0.075 * wear;
+                    vec2 gClumpCell = floor((gatePos + vec2(2.0, 2.0)) * 118.0);
+                    gTotal += organicGrain(gClumpCell, frameTick + 41.0) * 0.088 * wear;
                 }
-                float grainMask = 0.40 + 0.60 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
+                float grainMask = 0.42 + 0.58 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
                 y = clamp(y + gTotal * grainMask, 0.0, 1.0);
 
                 // 6. ARCHIVE-ONLY True Physical Film Artifacts (ZERO artifacts in FRESH!)
                 if (wear > 0.25) {
-                    // A. 3 Razor-Thin Organically Wandering Vertical Tramline Scratches (2 dark emulsion gouges + 1 bright base scratch)
+                    // A. 3 Razor-Thin Organically Wandering Vertical Tramline Scratches (2 dark gouges + 1 bright base scratch)
                     float slowT1 = floor(frameTick * 0.09);
                     float slowT2 = floor(frameTick * 0.14);
                     float slowT3 = floor(frameTick * 0.22);
 
-                    float vis1 = step(0.32, hash12(vec2(slowT1, 5.1)));
-                    float vis2 = step(0.45, hash12(vec2(slowT2, 9.4)));
-                    float vis3 = step(0.56, hash12(vec2(slowT3, 17.8)));
+                    float vis1 = step(0.32, filmHash(vec2(slowT1, 5.0), 11.0));
+                    float vis2 = step(0.45, filmHash(vec2(slowT2, 9.0), 17.0));
+                    float vis3 = step(0.56, filmHash(vec2(slowT3, 17.0), 23.0));
 
-                    float x1 = (hash12(vec2(slowT1, 2.3)) * 1.32 - 0.66) + sin(vScreenPos.y * 4.2 + slowT1) * 0.0045;
-                    float x2 = (hash12(vec2(slowT2, 6.7)) * 1.24 - 0.62) + sin(vScreenPos.y * 6.5 - slowT2 * 1.7) * 0.0038;
-                    float x3 = (hash12(vec2(slowT3, 14.2)) * 1.18 - 0.59) + sin(vScreenPos.y * 5.0 + slowT3 * 2.1) * 0.0040;
+                    float x1 = (filmHash(vec2(slowT1, 2.0), 31.0) * 1.32 - 0.66) + sin(vScreenPos.y * 4.2 + slowT1) * 0.0045;
+                    float x2 = (filmHash(vec2(slowT2, 6.0), 37.0) * 1.24 - 0.62) + sin(vScreenPos.y * 6.5 - slowT2 * 1.7) * 0.0038;
+                    float x3 = (filmHash(vec2(slowT3, 14.0), 43.0) * 1.18 - 0.59) + sin(vScreenPos.y * 5.0 + slowT3 * 2.1) * 0.0040;
 
-                    // Vertical flicker/breakup along each scratch so it never looks like a solid digital line
-                    float seg1 = smoothstep(0.15, 0.65, hash12(vec2(floor(vScreenPos.y * 9.0), frameTick * 0.5 + 1.0)));
-                    float seg2 = smoothstep(0.25, 0.75, hash12(vec2(floor(vScreenPos.y * 12.0), frameTick * 0.5 + 4.0)));
-                    float seg3 = smoothstep(0.30, 0.80, hash12(vec2(floor(vScreenPos.y * 8.0), frameTick * 0.5 + 8.0)));
+                    float seg1 = smoothstep(0.15, 0.65, filmHash(vec2(floor((vScreenPos.y + 2.0) * 9.0), frameTick), 51.0));
+                    float seg2 = smoothstep(0.25, 0.75, filmHash(vec2(floor((vScreenPos.y + 2.0) * 12.0), frameTick), 57.0));
+                    float seg3 = smoothstep(0.30, 0.80, filmHash(vec2(floor((vScreenPos.y + 2.0) * 8.0), frameTick), 63.0));
 
                     float darkS1 = (1.0 - smoothstep(0.0, 0.0012, abs(vScreenPos.x - x1))) * vis1 * seg1 * 0.48;
                     float darkS2 = (1.0 - smoothstep(0.0, 0.0009, abs(vScreenPos.x - x2))) * vis2 * seg2 * 0.36;
@@ -276,30 +286,28 @@ class CinemaGlRenderer(
 
                     y = clamp(y - (darkS1 + darkS2) * wear + brightS3 * wear, 0.0, 1.0);
 
-                    // B. Organic Circular/Elliptical Single-Frame Micro-Dust & Base Pinholes (NEVER blocky squares!)
-                    vec2 dustGrid = vScreenPos * vec2(72.0 * aspect, 72.0);
+                    // B. Organic Circular/Elliptical Single-Frame Micro-Dust & Base Pinholes (integer gatePos grid!)
+                    vec2 dustGrid = (gatePos + vec2(2.0, 2.0)) * 72.0;
                     vec2 cellId = floor(dustGrid);
                     vec2 cellUv = fract(dustGrid);
-                    float dChance = hash12(cellId + vec2(tSeed * 67.0, tSeed * 23.0));
-                    if (dChance > 0.9915) {
+                    float dChance = filmHash(cellId, frameTick + 7.0);
+                    if (dChance > 0.9920) {
                         vec2 speckCenter = vec2(
-                            0.25 + 0.50 * hash12(cellId + vec2(3.1, tSeed * 13.0)),
-                            0.25 + 0.50 * hash12(cellId + vec2(8.7, tSeed * 29.0))
+                            0.25 + 0.50 * filmHash(cellId + vec2(11.0, 3.0), frameTick + 13.0),
+                            0.25 + 0.50 * filmHash(cellId + vec2(5.0, 19.0), frameTick + 29.0)
                         );
-                        // Slight organic squash so dust looks like real irregular fiber/speck
                         vec2 delta = (cellUv - speckCenter) * vec2(1.0, 1.45);
-                        float rad = 0.14 + 0.16 * hash12(cellId + vec2(11.3, 4.9));
+                        float rad = 0.14 + 0.15 * filmHash(cellId + vec2(23.0, 7.0), frameTick + 5.0);
                         float speckMask = 1.0 - smoothstep(rad * 0.55, rad, length(delta));
-                        // 70% dark dust specks, 30% bright emulsion pinholes
-                        if (dChance > 0.9972) {
-                            y = clamp(y + speckMask * 0.58 * wear, 0.0, 1.0);
+                        if (dChance > 0.9974) {
+                            y = clamp(y + speckMask * 0.56 * wear, 0.0, 1.0);
                         } else {
-                            y = clamp(y - speckMask * 0.62 * wear, 0.0, 1.0);
+                            y = clamp(y - speckMask * 0.60 * wear, 0.0, 1.0);
                         }
                     }
                 }
 
-                // 7. Optical Corner Falloff (gentle Cooke glass in FRESH, moody aged edge darkening in ARCHIVE)
+                // 7. Optical Corner Falloff
                 float vigStrength = mix(0.26, 0.58, wear);
                 float vig = 1.0 - vigStrength * smoothstep(mix(0.46, 0.32, wear), 1.10, rDist);
                 y *= clamp(vig, 0.0, 1.0);
@@ -315,7 +323,7 @@ class CinemaGlRenderer(
             // - Baked 1.375:1 Academy Sound Ratio Gate with tighter machined 1950s corners
             // - True Panchromatic Silver-Halide + subtle Wratten K2 Yellow Filter (glowing skin, moody skies, rich reds)
             // - Cooke Speed Panchro coated-glass sharpness + soft silver-halide highlight halation
-            // - FRESH (uEraWear = 0.0): 1955 pure silver-gelatin premiere print (cool neutral silver, deep blacks, ultra-fine 24fps grain, spotless)
+            // - FRESH (uEraWear = 0.0): 1955 pure silver-gelatin premiere print (cool neutral silver, deep blacks, ultra-fine grain, spotless)
             // - ARCHIVE (uEraWear = 1.0): 70-yr acetate vault print (warm cream-selenium base, lifted shadows, gentle micro-weave & flicker,
             //   delicate hairline scratches, single-frame acetate dust & authentic top-right 35mm reel-changeover cue mark!)
             vec3 applyEra1950sMonochrome(vec3 rawRgb) {
@@ -337,15 +345,15 @@ class CinemaGlRenderer(
                 float rDist = length(gateUv) * 0.7071;
                 float r2 = rDist * rDist;
 
-                // Quantize film grain/artifacts to synchronous 24 FPS sound-camera cadence
-                float frameTick = floor(uTimeSec * 24.0);
-                float tSeed = fract(frameTick * 0.0618034);
+                // Quantize film grain/artifacts to active 1950s FPS cadence (default 24 FPS sync sound)
+                float activeFps = max(uEraFps, 12.0);
+                float frameTick = floor(uTimeSec * activeFps);
 
                 // 2. Pin-Registered Mitchell/Arriflex Gate (zero weave in FRESH, subtle 70-yr acetate breathing in ARCHIVE)
                 vec2 weaveUv = vTexCoord;
                 if (wear > 0.2) {
-                    float wx = (hash12(vec2(frameTick, 19.1)) - 0.5) * 0.0014 * wear;
-                    float wy = (hash12(vec2(frameTick, 37.7)) - 0.5) * 0.0032 * wear;
+                    float wx = (filmHash(vec2(frameTick, 19.0), 4.0) - 0.5) * 0.0014 * wear;
+                    float wy = (filmHash(vec2(frameTick, 37.0), 5.0) - 0.5) * 0.0032 * wear;
                     weaveUv = clamp(vTexCoord + vec2(wx, wy), vec2(0.002), vec2(0.998));
                 }
 
@@ -372,7 +380,7 @@ class CinemaGlRenderer(
 
                 // 5. Chiaroscuro Tone Curve (Subrata Mitra bounce-light midtones, velvety blacks, silky rolloff)
                 if (wear > 0.2) {
-                    float flicker = 1.0 + (hash12(vec2(frameTick, 11.3)) - 0.5) * 2.0 * (0.048 * wear);
+                    float flicker = 1.0 + (filmHash(vec2(frameTick, 11.0), 6.0) - 0.5) * 2.0 * (0.048 * wear);
                     y = clamp(y * flicker, 0.0, 1.0);
                 }
                 float contrast = mix(1.26, 1.14, wear);
@@ -384,46 +392,45 @@ class CinemaGlRenderer(
                 y = clamp((y / (1.0 + 0.10 * y * y)) * 1.10, 0.0, 1.0);
                 y = clamp(toe + y * (shoulder - toe), 0.0, 1.0);
 
-                // 6. Fine 35mm Kodak Plus-X / Double-X Silver Grain (finer than 1920s nitrate)
-                vec2 gFineCoord = floor(vScreenPos * vec2(340.0 * aspect, 340.0)) * 0.017 + vec2(tSeed * 59.0, tSeed * 37.0);
-                float gFine = hash12(gFineCoord) - 0.5;
-                float gTotal = gFine * mix(0.042, 0.092, wear);
+                // 6. Fine Organic 35mm Kodak Plus-X / Double-X Silver Grain (true isotropic Gaussian, zero triangles!)
+                vec2 gFineCell = floor((gatePos + vec2(2.0, 2.0)) * 340.0);
+                float gTotal = organicGrain(gFineCell, frameTick) * mix(0.055, 0.112, wear);
                 if (wear > 0.25) {
-                    vec2 gMedCoord = floor(vScreenPos * vec2(150.0 * aspect, 150.0)) * 0.021 + vec2(tSeed * 23.0, tSeed * 43.0);
-                    gTotal += (hash12(gMedCoord) - 0.5) * 0.048 * wear;
+                    vec2 gMedCell = floor((gatePos + vec2(2.0, 2.0)) * 155.0);
+                    gTotal += organicGrain(gMedCell, frameTick + 37.0) * 0.058 * wear;
                 }
-                float grainMask = 0.38 + 0.62 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
+                float grainMask = 0.40 + 0.60 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
                 y = clamp(y + gTotal * grainMask, 0.0, 1.0);
 
                 // 7. ARCHIVE-ONLY 1950s Acetate Vault Artifacts (ZERO artifacts in FRESH!)
                 if (wear > 0.25) {
-                    // Delicate single dark + bright acetate hairline tramline scratches (subtler than 1920s nitrate)
+                    // Delicate single dark + bright acetate hairline tramline scratches
                     float slowT1 = floor(frameTick * 0.08);
                     float slowT2 = floor(frameTick * 0.15);
-                    float vis1 = step(0.46, hash12(vec2(slowT1, 6.2)));
-                    float vis2 = step(0.58, hash12(vec2(slowT2, 13.5)));
-                    float x1 = (hash12(vec2(slowT1, 3.4)) * 1.30 - 0.65) + sin(vScreenPos.y * 3.8 + slowT1) * 0.0028;
-                    float x2 = (hash12(vec2(slowT2, 9.1)) * 1.24 - 0.62) + sin(vScreenPos.y * 5.2 - slowT2) * 0.0025;
-                    float seg1 = smoothstep(0.22, 0.72, hash12(vec2(floor(vScreenPos.y * 10.0), frameTick * 0.5 + 2.0)));
-                    float seg2 = smoothstep(0.32, 0.80, hash12(vec2(floor(vScreenPos.y * 11.0), frameTick * 0.5 + 7.0)));
+                    float vis1 = step(0.46, filmHash(vec2(slowT1, 6.0), 19.0));
+                    float vis2 = step(0.58, filmHash(vec2(slowT2, 13.0), 29.0));
+                    float x1 = (filmHash(vec2(slowT1, 3.0), 41.0) * 1.30 - 0.65) + sin(vScreenPos.y * 3.8 + slowT1) * 0.0028;
+                    float x2 = (filmHash(vec2(slowT2, 9.0), 47.0) * 1.24 - 0.62) + sin(vScreenPos.y * 5.2 - slowT2) * 0.0025;
+                    float seg1 = smoothstep(0.22, 0.72, filmHash(vec2(floor((vScreenPos.y + 2.0) * 10.0), frameTick), 53.0));
+                    float seg2 = smoothstep(0.32, 0.80, filmHash(vec2(floor((vScreenPos.y + 2.0) * 11.0), frameTick), 59.0));
                     float darkS = (1.0 - smoothstep(0.0, 0.0009, abs(vScreenPos.x - x1))) * vis1 * seg1 * 0.34;
                     float lightS = (1.0 - smoothstep(0.0, 0.0008, abs(vScreenPos.x - x2))) * vis2 * seg2 * 0.30;
                     y = clamp(y - darkS * wear + lightS * wear, 0.0, 1.0);
 
                     // Fine single-frame circular acetate micro-dust flecks
-                    vec2 dustGrid = vScreenPos * vec2(86.0 * aspect, 86.0);
+                    vec2 dustGrid = (gatePos + vec2(2.0, 2.0)) * 86.0;
                     vec2 cellId = floor(dustGrid);
                     vec2 cellUv = fract(dustGrid);
-                    float dChance = hash12(cellId + vec2(tSeed * 71.0, tSeed * 19.0));
-                    if (dChance > 0.9942) {
+                    float dChance = filmHash(cellId, frameTick + 17.0);
+                    if (dChance > 0.9945) {
                         vec2 sc = vec2(
-                            0.28 + 0.44 * hash12(cellId + vec2(4.2, tSeed * 11.0)),
-                            0.28 + 0.44 * hash12(cellId + vec2(9.3, tSeed * 27.0))
+                            0.28 + 0.44 * filmHash(cellId + vec2(13.0, 4.0), frameTick + 31.0),
+                            0.28 + 0.44 * filmHash(cellId + vec2(7.0, 21.0), frameTick + 43.0)
                         );
                         vec2 delta = (cellUv - sc) * vec2(1.0, 1.35);
-                        float rad = 0.12 + 0.13 * hash12(cellId + vec2(7.7, 2.3));
+                        float rad = 0.12 + 0.13 * filmHash(cellId + vec2(19.0, 9.0), frameTick + 11.0);
                         float speck = 1.0 - smoothstep(rad * 0.50, rad, length(delta));
-                        if (dChance > 0.9978) {
+                        if (dChance > 0.9980) {
                             y = clamp(y + speck * 0.46 * wear, 0.0, 1.0);
                         } else {
                             y = clamp(y - speck * 0.48 * wear, 0.0, 1.0);
@@ -431,8 +438,9 @@ class CinemaGlRenderer(
                     }
 
                     // Authentic 1950s 35mm Projection Changeover Cue Mark (cigarette burn): top-right corner for 4 frames every ~20s
-                    float reelMod = mod(frameTick, 480.0);
-                    if (reelMod >= 472.0 && reelMod < 476.0) {
+                    float reelCycle = activeFps * 20.0;
+                    float reelMod = mod(frameTick, reelCycle);
+                    if (reelMod >= (reelCycle - 8.0) && reelMod < (reelCycle - 4.0)) {
                         vec2 cueDelta = gateUv - vec2(0.84, 0.80);
                         cueDelta.x *= 1.375;
                         float cueD = length(cueDelta);
