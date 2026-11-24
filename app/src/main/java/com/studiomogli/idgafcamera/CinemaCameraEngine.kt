@@ -64,7 +64,8 @@ data class CameraCapabilities(
     val supportsOis: Boolean = false,
     val supportedResolutions: List<CinemaResolution> = listOf(CinemaResolution.FHD_1080P),
     val evRange: Range<Int> = Range(-12, 12),
-    val evStep: Float = 0.333f
+    val evStep: Float = 0.333f,
+    val maxHardwareFps: Int = 30
 )
 
 data class LiveTelemetry(
@@ -613,7 +614,7 @@ class CinemaCameraEngine(
         if (!capabilities.supportsManualExposure) return
         if (!isManualExposure) {
             manualShutterNs = if (isShutter180Locked) {
-                compute180ShutterNs(resolvedFpsRange.upper)
+                compute180ShutterNs(targetFps)
             } else {
                 liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, maxOf(capabilities.exposureRangeNs.lower, minOf(capabilities.exposureRangeNs.upper, 100_000_000L)))
             }
@@ -644,14 +645,14 @@ class CinemaCameraEngine(
         }
         val clampedAngle = angleDegrees.coerceIn(11.25f, 360f)
         isShutter180Locked = kotlin.math.abs(clampedAngle - 180f) < 1f
-        val fps = resolvedFpsRange.upper.coerceAtLeast(1)
+        val fps = targetFps.coerceAtLeast(1)
         val rawNs = ((clampedAngle / 360.0) * (1_000_000_000.0 / fps)).toLong()
         manualShutterNs = rawNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
         pushUpdatedRepeatingRequest()
     }
 
     fun getCurrentShutterAngle(): Float {
-        val fps = resolvedFpsRange.upper.coerceAtLeast(1)
+        val fps = targetFps.coerceAtLeast(1)
         val ns = if (isManualExposure) manualShutterNs else liveShutterNs
         return ((ns.toDouble() * fps / 1_000_000_000.0) * 360.0).toFloat().coerceIn(1f, 360f)
     }
@@ -702,7 +703,7 @@ class CinemaCameraEngine(
                 manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
                 isManualExposure = true
             }
-            manualShutterNs = compute180ShutterNs(resolvedFpsRange.upper)
+            manualShutterNs = compute180ShutterNs(targetFps)
             pushUpdatedRepeatingRequest()
         }
         return isShutter180Locked
@@ -776,6 +777,29 @@ class CinemaCameraEngine(
     }
 
     fun getLiveKelvin(): Int = liveKelvin
+
+    fun setShutter180Locked(locked: Boolean) {
+        if (!capabilities.supportsManualExposure) {
+            isShutter180Locked = false
+            return
+        }
+        isShutter180Locked = locked
+        if (locked) {
+            if (!isManualExposure) {
+                manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
+                isManualExposure = true
+            }
+            manualShutterNs = compute180ShutterNs(targetFps)
+            pushUpdatedRepeatingRequest()
+        }
+    }
+
+    fun clearAeAfLock() {
+        if (isAeAfLocked) {
+            isAeAfLocked = false
+            pushUpdatedRepeatingRequest()
+        }
+    }
 
     fun toggleAeAfLock(): Boolean {
         clearAutoPilotSilently()
@@ -1068,6 +1092,12 @@ class CinemaCameraEngine(
             val effMaxIso = boostedMaxLong.coerceIn(analogUpper.toLong(), safeCap).toInt()
             val resolvedEffectiveIso = Range(analogLower, effMaxIso.coerceAtLeast(analogLower))
 
+            val fpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
+            val maxHwFps = (fpsRanges.maxOfOrNull { it.upper } ?: 30).coerceIn(15, 60)
+            if (targetFps > maxHwFps) {
+                targetFps = maxHwFps
+            }
+
             capabilities = CameraCapabilities(
                 isoRange = resolvedAnalogIso,
                 effectiveIsoRange = resolvedEffectiveIso,
@@ -1084,7 +1114,8 @@ class CinemaCameraEngine(
                 supportsOis = supportsOis,
                 supportedResolutions = supportedRes,
                 evRange = evRange,
-                evStep = evStep
+                evStep = evStep,
+                maxHardwareFps = maxHwFps
             )
             evCompensationIndex = evCompensationIndex.coerceIn(evRange.lower, evRange.upper)
             if (!hasFlash) isTorchEnabled = false
@@ -1099,7 +1130,6 @@ class CinemaCameraEngine(
             resolvedVideoSize = chooseClosest16x9Size(candidateSizes, targetResolution.width, targetResolution.height)
             resolvedPreviewSize = resolvedVideoSize
 
-            val fpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
             resolvedFpsRange = chooseBestFpsRange(fpsRanges, targetFps)
 
             cameraManager.openCamera(lens.cameraId, object : CameraDevice.StateCallback() {
@@ -1276,7 +1306,9 @@ class CinemaCameraEngine(
                 recorderSurface = recorder.surface,
                 width = resolvedVideoSize.width,
                 height = resolvedVideoSize.height,
-                rotation = displayRotation
+                rotation = displayRotation,
+                desiredFps = targetFps,
+                hwFpsUpper = resolvedFpsRange.upper
             )
             if (!attached) {
                 throw IllegalStateException("Failed to attach OpenGL encoder surface")
@@ -1469,8 +1501,16 @@ class CinemaCameraEngine(
 
     private fun chooseBestFpsRange(ranges: Array<Range<Int>>, desiredFps: Int): Range<Int> {
         if (ranges.isEmpty()) return Range(30, 30)
+        // Exact fixed hardware match (e.g., 24/24, 30/30, 60/60)
         ranges.firstOrNull { it.lower == desiredFps && it.upper == desiredFps }?.let { return it }
+        // Exact upper match (e.g., 15..24 for 24fps)
         ranges.firstOrNull { it.upper == desiredFps }?.let { return it }
+        // For custom low FPS (< 20, e.g. 1 FPS, 5 FPS, 12 FPS), keep a smooth 30fps viewfinder stream
+        // while CinemaGlRenderer's GPU Frame-Pacer gates Pass 2 to exact desiredFps!
+        if (desiredFps < 20) {
+            ranges.firstOrNull { it.lower == 30 && it.upper == 30 }?.let { return it }
+            ranges.firstOrNull { it.upper == 30 }?.let { return it }
+        }
         return ranges.minByOrNull { abs(it.upper - desiredFps) } ?: Range(30, 30)
     }
 }

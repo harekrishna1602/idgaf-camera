@@ -295,13 +295,16 @@ class CinemaGlRenderer(
     @Volatile private var encoderWidth: Int = 1920
     @Volatile private var encoderHeight: Int = 1080
     @Volatile private var encoderRotation: Int = Surface.ROTATION_90
+    @Volatile private var targetEncoderFps: Int = 30
+    @Volatile private var hardwareFpsUpper: Int = 30
     @Volatile private var isEncoderRecording: Boolean = false
     @Volatile private var isReleased: Boolean = true
 
-    // CLOCK_MONOTONIC (System.nanoTime) anchor for MediaRecorder A/V sync (prevents BOOTTIME deep-sleep offset!)
+    // CLOCK_MONOTONIC (System.nanoTime) anchor & GPU Frame-Pacer for exact low-FPS / custom-FPS cadence
     private var encoderBaseCamTsNs: Long = -1L
     private var encoderBaseMonoNs: Long = -1L
     private var lastEncoderPtsNs: Long = -1L
+    private var nextEncoderFrameDueNs: Long = -1L
 
     fun start(): Boolean {
         if (glThread != null && !isReleased) return true
@@ -414,7 +417,14 @@ class CinemaGlRenderer(
         }
     }
 
-    fun attachEncoderSurfaceSync(recorderSurface: Surface, width: Int, height: Int, rotation: Int): Boolean {
+    fun attachEncoderSurfaceSync(
+        recorderSurface: Surface,
+        width: Int,
+        height: Int,
+        rotation: Int,
+        desiredFps: Int,
+        hwFpsUpper: Int
+    ): Boolean {
         val handler = glHandler ?: return false
         if (isReleased) return false
         var ok = false
@@ -436,10 +446,13 @@ class CinemaGlRenderer(
                 encoderWidth = width.coerceAtLeast(16)
                 encoderHeight = height.coerceAtLeast(16)
                 encoderRotation = rotation
+                targetEncoderFps = desiredFps.coerceIn(1, 60)
+                hardwareFpsUpper = hwFpsUpper.coerceIn(1, 120)
                 isEncoderRecording = false
                 encoderBaseCamTsNs = -1L
                 encoderBaseMonoNs = -1L
                 lastEncoderPtsNs = -1L
+                nextEncoderFrameDueNs = -1L
                 encoderEglSurface = surface
                 ok = true
             } catch (e: Exception) {
@@ -465,6 +478,7 @@ class CinemaGlRenderer(
                 encoderBaseCamTsNs = -1L
                 encoderBaseMonoNs = -1L
                 lastEncoderPtsNs = -1L
+                nextEncoderFrameDueNs = -1L
             }
             isEncoderRecording = active
         }
@@ -479,6 +493,7 @@ class CinemaGlRenderer(
             encoderBaseCamTsNs = -1L
             encoderBaseMonoNs = -1L
             lastEncoderPtsNs = -1L
+            nextEncoderFrameDueNs = -1L
             destroyEncoderSurfaceOnGlThread()
             latch.countDown()
         }
@@ -597,7 +612,8 @@ class CinemaGlRenderer(
 
         // PASS 2: Clean Hardware Encoder Surface (ONLY while MediaRecorder is actively started; ZERO scopes baked in!)
         if (isEncoderRecording && encoderEglSurface != EGL14.EGL_NO_SURFACE && encoderWidth > 0 && encoderHeight > 0) {
-            if (EGL14.eglMakeCurrent(eglDisplay, encoderEglSurface, encoderEglSurface, eglContext)) {
+            val shouldEncodeFrame = shouldEncodeFrameNow()
+            if (shouldEncodeFrame && EGL14.eglMakeCurrent(eglDisplay, encoderEglSurface, encoderEglSurface, eglContext)) {
                 GLES20.glViewport(0, 0, encoderWidth, encoderHeight)
                 GLES20.glClearColor(0f, 0f, 0f, 1f)
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
@@ -649,6 +665,33 @@ class CinemaGlRenderer(
         if (glRotDeg != 0f) {
             Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
         }
+    }
+
+    /**
+     * True GPU Frame-Pacer Gate: when targetEncoderFps is below the hardware sensor's delivery rate
+     * (e.g. 1 FPS, 5 FPS, 12 FPS, or 24 FPS on a 30 FPS sensor), skips intermediate frames on Pass 2
+     * while leaving Pass 1 (live viewfinder) smooth. Never throttles when target >= hardware FPS.
+     */
+    private fun shouldEncodeFrameNow(): Boolean {
+        val desired = targetEncoderFps.coerceIn(1, 60)
+        if (desired >= hardwareFpsUpper) return true
+
+        val nowNs = System.nanoTime()
+        val intervalNs = 1_000_000_000L / desired.toLong()
+        val lookaheadNs = minOf(intervalNs / 4L, 8_000_000L)
+
+        if (nextEncoderFrameDueNs < 0L) {
+            nextEncoderFrameDueNs = nowNs + intervalNs
+            return true
+        }
+        if (nowNs + lookaheadNs < nextEncoderFrameDueNs) {
+            return false
+        }
+        nextEncoderFrameDueNs += intervalNs
+        if (nextEncoderFrameDueNs < nowNs) {
+            nextEncoderFrameDueNs = nowNs + intervalNs
+        }
+        return true
     }
 
     /**

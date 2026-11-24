@@ -6,6 +6,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.SurfaceTexture
@@ -47,6 +48,7 @@ import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -81,17 +83,24 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var proSettingsBar: HorizontalScrollView
     private lateinit var btnProCodec: TextView
     private lateinit var btnProBitrate: TextView
-    private lateinit var btnProMic: TextView
-    private lateinit var btnProTone: TextView
     private lateinit var btnProStab: TextView
     private lateinit var btnProTorch: TextView
     private lateinit var btnProTimer: TextView
     private lateinit var btnProMirrorFront: TextView
     private lateinit var btnProPresets: TextView
 
-    // Phase 7.2A Live GPU Color Studio Drawer
+    // Phase 7.2A Live GPU Color Studio Drawer (+ v0.7.1.1 Peek-Through Grading Mode)
     private lateinit var btnColorPanelToggle: TextView
     private lateinit var colorControlDrawer: LinearLayout
+    private lateinit var colorDrawerHeaderRow: LinearLayout
+    private lateinit var colorLooksPresetRow: LinearLayout
+    private lateinit var scrollColorSliders: ScrollView
+    private lateinit var rowColorExp: LinearLayout
+    private lateinit var rowColorCon: LinearLayout
+    private lateinit var rowColorSat: LinearLayout
+    private lateinit var rowColorShd: LinearLayout
+    private lateinit var rowColorHil: LinearLayout
+    private lateinit var rowColorVig: LinearLayout
     private lateinit var btnColorCompareAB: TextView
     private lateinit var btnColorReset: TextView
     private lateinit var btnLookNone: TextView
@@ -123,18 +132,19 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnUpdateApp: TextView
     private lateinit var presetStore: PresetStore
     private var updateDownloadUrl: String? = null
-    private var toneIdx = 0
     private var gridModeIdx = 0
     private val bitrateOptions = listOf(4, 8, 12, 24, 35, 50, 75, 100, 120)
     private var bitrateIdx = 4
     private var activeToast: Toast? = null
-    private var micPrefIdx = 0
 
-    // Phase 6.8 Pro Audio Controller Drawer
+    // Phase 6.8 / 7.1.1 Unified Pro Audio Controller Drawer (Mute + Mic Input + Stage + VU Trim)
     private lateinit var btnAudioPanelToggle: LinearLayout
     private lateinit var txtAudioDb: TextView
     private lateinit var audioControlDrawer: LinearLayout
     private lateinit var btnAudioMute: TextView
+    private lateinit var btnAudioMicAuto: TextView
+    private lateinit var btnAudioMicInt: TextView
+    private lateinit var btnAudioMicExt: TextView
     private lateinit var btnPreampCam: TextView
     private lateinit var btnPreampRaw: TextView
     private lateinit var btnPreampBoost: TextView
@@ -480,6 +490,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtAudioDb = findViewById(R.id.txtAudioDb)
         audioControlDrawer = findViewById(R.id.audioControlDrawer)
         btnAudioMute = findViewById(R.id.btnAudioMute)
+        btnAudioMicAuto = findViewById(R.id.btnAudioMicAuto)
+        btnAudioMicInt = findViewById(R.id.btnAudioMicInt)
+        btnAudioMicExt = findViewById(R.id.btnAudioMicExt)
         btnPreampCam = findViewById(R.id.btnPreampCam)
         btnPreampRaw = findViewById(R.id.btnPreampRaw)
         btnPreampBoost = findViewById(R.id.btnPreampBoost)
@@ -489,8 +502,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         proSettingsBar = findViewById(R.id.proSettingsBar)
         btnProCodec = findViewById(R.id.btnProCodec)
         btnProBitrate = findViewById(R.id.btnProBitrate)
-        btnProMic = findViewById(R.id.btnProMic)
-        btnProTone = findViewById(R.id.btnProTone)
         btnProStab = findViewById(R.id.btnProStab)
         btnProTorch = findViewById(R.id.btnProTorch)
         btnProTimer = findViewById(R.id.btnProTimer)
@@ -498,6 +509,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProPresets = findViewById(R.id.btnProPresets)
         btnColorPanelToggle = findViewById(R.id.btnColorPanelToggle)
         colorControlDrawer = findViewById(R.id.colorControlDrawer)
+        colorDrawerHeaderRow = findViewById(R.id.colorDrawerHeaderRow)
+        colorLooksPresetRow = findViewById(R.id.colorLooksPresetRow)
+        scrollColorSliders = findViewById(R.id.scrollColorSliders)
+        rowColorExp = findViewById(R.id.rowColorExp)
+        rowColorCon = findViewById(R.id.rowColorCon)
+        rowColorSat = findViewById(R.id.rowColorSat)
+        rowColorShd = findViewById(R.id.rowColorShd)
+        rowColorHil = findViewById(R.id.rowColorHil)
+        rowColorVig = findViewById(R.id.rowColorVig)
         btnColorCompareAB = findViewById(R.id.btnColorCompareAB)
         btnColorReset = findViewById(R.id.btnColorReset)
         btnLookNone = findViewById(R.id.btnLookNone)
@@ -698,20 +718,24 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (engine.isRecording) {
                 engine.stopRecording()
             } else {
-                val rot = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                    display?.rotation ?: Surface.ROTATION_90
+                val rot = getCurrentDisplayRotation()
+                if (engine.isAudioMuted) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Audio is MUTED")
+                        .setMessage("Your microphone is currently muted. Record without sound, or unmute and start rolling?")
+                        .setPositiveButton("UNMUTE & REC") { _, _ ->
+                            engine.isAudioMuted = false
+                            audioMonitorRestartNeeded = true
+                            updateAudioDrawerUi()
+                            launchRecordingOrTimer(rot)
+                        }
+                        .setNeutralButton("REC SILENT") { _, _ ->
+                            launchRecordingOrTimer(rot)
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
                 } else {
-                    @Suppress("DEPRECATION")
-                    windowManager.defaultDisplay.rotation
-                }
-                val delaySec = timerOptions[timerIdx]
-                if (delaySec > 0) {
-                    pendingRecRotation = rot
-                    countdownRemaining = delaySec
-                    uiHandler.removeCallbacks(countdownRunnable)
-                    uiHandler.post(countdownRunnable)
-                } else {
-                    beginRecordingCleanly(rot)
+                    launchRecordingOrTimer(rot)
                 }
             }
         }
@@ -737,6 +761,18 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 return@setOnClickListener
             }
             startActivity(Intent(this, ClipGalleryActivity::class.java))
+        }
+    }
+
+    private fun launchRecordingOrTimer(rot: Int) {
+        val delaySec = timerOptions[timerIdx]
+        if (delaySec > 0) {
+            pendingRecRotation = rot
+            countdownRemaining = delaySec
+            uiHandler.removeCallbacks(countdownRunnable)
+            uiHandler.post(countdownRunnable)
+        } else {
+            beginRecordingCleanly(rot)
         }
     }
 
@@ -946,9 +982,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         if (except != "AUDIO" && audioControlDrawer.visibility == View.VISIBLE) {
             audioControlDrawer.visibility = View.GONE
-            btnAudioPanelToggle.setBackgroundResource(R.drawable.bg_hud_pill)
+            updateAudioTopPillVisual()
         }
         if (except != "LOOK" && colorControlDrawer.visibility == View.VISIBLE) {
+            setColorDrawerPeekMode(null)
             colorControlDrawer.visibility = View.GONE
             updateLookTopPillVisual()
         }
@@ -1008,30 +1045,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val mbps = bitrateOptions[bitrateIdx]
             engine.targetBitrateMbps = mbps
             btnProBitrate.text = "$mbps Mbps"
-        }
-
-        btnProMic.setOnClickListener {
-            if (engine.isRecording) return@setOnClickListener
-            val prefs = MicPreference.values()
-            micPrefIdx = (micPrefIdx + 1) % prefs.size
-            val selected = prefs[micPrefIdx]
-            engine.micPreference = selected
-            audioMonitorRestartNeeded = true
-            val extFound = engine.findExternalMicDevice() != null
-            btnProMic.text = if (selected == MicPreference.EXTERNAL && !extFound) {
-                "MIC: NO EXT"
-            } else {
-                selected.label
-            }
-        }
-
-        btnProTone.setOnClickListener {
-            val profiles = ToneProfile.values()
-            toneIdx = (toneIdx + 1) % profiles.size
-            val p = profiles[toneIdx]
-            engine.setToneProfile(p)
-            btnProTone.text = p.label
-            styleToolPill(btnProTone, p != ToneProfile.STANDARD)
         }
 
         btnProStab.setOnClickListener {
@@ -1161,10 +1174,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         engine.targetCodec = try { CinemaCodec.valueOf(p.codecName) } catch (_: Exception) { CinemaCodec.H264 }
         engine.targetBitrateMbps = p.bitrateMbps
         bitrateIdx = bitrateOptions.indexOf(p.bitrateMbps).takeIf { it >= 0 } ?: 1
+        // Clear AE/AF lock first so preset EV / Exposure settings apply cleanly without being blocked
+        engine.clearAeAfLock()
+        updateLockUi(false)
+
         engine.micPreference = try { MicPreference.valueOf(p.micPrefName) } catch (_: Exception) { MicPreference.AUTO }
-        micPrefIdx = MicPreference.values().indexOf(engine.micPreference).coerceAtLeast(0)
         val tone = try { ToneProfile.valueOf(p.toneProfileName) } catch (_: Exception) { ToneProfile.STANDARD }
-        toneIdx = ToneProfile.values().indexOf(tone).coerceAtLeast(0)
         engine.setToneProfile(tone)
 
         engine.audioPreampMode = try { AudioPreampMode.valueOf(p.audioPreampModeName) } catch (_: Exception) { AudioPreampMode.CAMCORDER }
@@ -1178,6 +1193,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         if (p.isManualExposure) {
             engine.setManualIso(p.manualIso)
             engine.setManualShutterNs(p.manualShutterNs)
+            if (p.isShutter180Locked) engine.setShutter180Locked(true)
         } else {
             engine.setAutoExposure()
             engine.setEvCompensation(p.evCompensationIndex)
@@ -1234,9 +1250,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProCodec.text = engine.targetCodec.label
         styleToolPill(btnProCodec, engine.targetCodec == CinemaCodec.HEVC)
         btnProBitrate.text = "${engine.targetBitrateMbps} Mbps"
-        btnProMic.text = engine.micPreference.label
-        btnProTone.text = tone.label
-        styleToolPill(btnProTone, tone != ToneProfile.STANDARD)
+        updateAudioDrawerUi()
 
         engine.updateSettings(currentResolution, p.fps)
         Toast.makeText(this, "Loaded template: ${p.name}", Toast.LENGTH_SHORT).show()
@@ -1350,8 +1364,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.1"
-    } catch (_: Exception) { "0.7.1" }
+        info.versionName ?: "0.7.1.1"
+    } catch (_: Exception) { "0.7.1.1" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1372,7 +1386,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val showing = audioControlDrawer.visibility == View.VISIBLE
             if (!showing) closeTopDrawers(except = "AUDIO")
             audioControlDrawer.visibility = if (showing) View.GONE else View.VISIBLE
-            btnAudioPanelToggle.setBackgroundResource(if (!showing) R.drawable.bg_dock_pill_active else R.drawable.bg_hud_pill)
+            updateAudioTopPillVisual()
         }
 
         btnAudioMute.setOnClickListener {
@@ -1384,6 +1398,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             updateAudioDrawerUi()
             showSingleToast(if (engine.isAudioMuted) "Audio MUTED (Video-Only Recording)" else "Audio LIVE")
         }
+
+        btnAudioMicAuto.setOnClickListener { selectMicPreference(MicPreference.AUTO) }
+        btnAudioMicInt.setOnClickListener { selectMicPreference(MicPreference.INTERNAL) }
+        btnAudioMicExt.setOnClickListener { selectMicPreference(MicPreference.EXTERNAL) }
 
         btnPreampCam.setOnClickListener { selectAudioPreamp(AudioPreampMode.CAMCORDER) }
         btnPreampRaw.setOnClickListener { selectAudioPreamp(AudioPreampMode.RAW_UNPROCESSED) }
@@ -1415,6 +1433,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnColorPanelToggle.setOnClickListener {
             val showing = colorControlDrawer.visibility == View.VISIBLE
             if (!showing) closeTopDrawers(except = "LOOK")
+            if (showing) setColorDrawerPeekMode(null)
             colorControlDrawer.visibility = if (showing) View.GONE else View.VISIBLE
             updateLookTopPillVisual()
         }
@@ -1499,7 +1518,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             )
         }
 
-        val bindSeek = { sb: SeekBar, onChange: (Int) -> Unit ->
+        val bindSeek = { row: LinearLayout, sb: SeekBar, onChange: (Int) -> Unit ->
             sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (!fromUser || suppressColorSeek) return
@@ -1507,17 +1526,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     onChange(progress)
                     pushGpuColorStateAndRefreshUi()
                 }
-                override fun onStartTrackingTouch(s: SeekBar?) {}
-                override fun onStopTrackingTouch(s: SeekBar?) {}
+                override fun onStartTrackingTouch(s: SeekBar?) {
+                    setColorDrawerPeekMode(row)
+                }
+                override fun onStopTrackingTouch(s: SeekBar?) {
+                    setColorDrawerPeekMode(null)
+                }
             })
         }
 
-        bindSeek(seekColorExp) { p -> gpuColorState = gpuColorState.copy(exposureLift = (p - 15) * 0.1f) }
-        bindSeek(seekColorCon) { p -> gpuColorState = gpuColorState.copy(contrast = 0.50f + p * 0.01f) }
-        bindSeek(seekColorSat) { p -> gpuColorState = gpuColorState.copy(saturation = p * 0.01f) }
-        bindSeek(seekColorShd) { p -> gpuColorState = gpuColorState.copy(shadows = (p - 50) * 0.01f) }
-        bindSeek(seekColorHil) { p -> gpuColorState = gpuColorState.copy(highlights = (p - 50) * 0.01f) }
-        bindSeek(seekColorVig) { p -> gpuColorState = gpuColorState.copy(vignette = p * 0.01f) }
+        bindSeek(rowColorExp, seekColorExp) { p -> gpuColorState = gpuColorState.copy(exposureLift = (p - 15) * 0.1f) }
+        bindSeek(rowColorCon, seekColorCon) { p -> gpuColorState = gpuColorState.copy(contrast = 0.50f + p * 0.01f) }
+        bindSeek(rowColorSat, seekColorSat) { p -> gpuColorState = gpuColorState.copy(saturation = p * 0.01f) }
+        bindSeek(rowColorShd, seekColorShd) { p -> gpuColorState = gpuColorState.copy(shadows = (p - 50) * 0.01f) }
+        bindSeek(rowColorHil, seekColorHil) { p -> gpuColorState = gpuColorState.copy(highlights = (p - 50) * 0.01f) }
+        bindSeek(rowColorVig, seekColorVig) { p -> gpuColorState = gpuColorState.copy(vignette = p * 0.01f) }
 
         // Tap any readout to reset just that single parameter to neutral!
         txtColorExpVal.setOnClickListener {
@@ -1555,9 +1578,44 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         updateMirrorFrontPillUi()
     }
 
+    /**
+     * Peek-Through Grading Mode: while the user holds/drags a slider in LOOK, hide the drawer box,
+     * header, presets, and all other sliders using View.INVISIBLE (keeping the dragged SeekBar at
+     * exact screen coordinates so touch tracking never jumps) while giving the active row a slim pill.
+     */
+    private fun setColorDrawerPeekMode(activeRow: LinearLayout?) {
+        val allRows = listOf(rowColorExp, rowColorCon, rowColorSat, rowColorShd, rowColorHil, rowColorVig)
+        if (activeRow != null) {
+            colorControlDrawer.setBackgroundColor(Color.TRANSPARENT)
+            colorDrawerHeaderRow.visibility = View.INVISIBLE
+            colorLooksPresetRow.visibility = View.INVISIBLE
+            scrollColorSliders.isVerticalScrollBarEnabled = false
+            allRows.forEach { row ->
+                if (row == activeRow) {
+                    row.visibility = View.VISIBLE
+                    row.setBackgroundResource(R.drawable.bg_hud_pill)
+                } else {
+                    row.visibility = View.INVISIBLE
+                    row.setBackgroundColor(Color.TRANSPARENT)
+                }
+            }
+        } else {
+            colorControlDrawer.setBackgroundResource(R.drawable.bg_hud_pill)
+            colorDrawerHeaderRow.visibility = View.VISIBLE
+            colorLooksPresetRow.visibility = View.VISIBLE
+            scrollColorSliders.isVerticalScrollBarEnabled = true
+            allRows.forEach { row ->
+                row.visibility = View.VISIBLE
+                row.setBackgroundColor(Color.TRANSPARENT)
+            }
+        }
+    }
+
     private fun applyBuiltInLook(tag: String, state: GpuColorState) {
         activeLookTag = tag
         gpuColorState = state.copy(isBypassed = false)
+        // Unified tone curve: LOG automatically enables hardware FLAT sensor curve; others stay STANDARD
+        engine.setToneProfile(if (tag == "LOG") ToneProfile.FLAT else ToneProfile.STANDARD)
         pushGpuColorStateAndRefreshUi()
     }
 
@@ -1640,15 +1698,50 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         )
     }
 
+    private fun selectMicPreference(pref: MicPreference) {
+        if (engine.isRecording) {
+            showSingleToast("Stop recording to switch microphone input")
+            return
+        }
+        engine.micPreference = pref
+        audioMonitorRestartNeeded = true
+        updateAudioDrawerUi()
+        val extFound = engine.findExternalMicDevice() != null
+        showSingleToast(
+            when (pref) {
+                MicPreference.AUTO -> if (extFound) "Mic Input: AUTO (External Active)" else "Mic Input: AUTO (Internal)"
+                MicPreference.INTERNAL -> "Mic Input: INTERNAL Mic"
+                MicPreference.EXTERNAL -> if (extFound) "Mic Input: EXTERNAL Wired/USB Mic" else "Mic Input: EXTERNAL (None plugged in yet)"
+            }
+        )
+    }
+
+    private fun updateAudioTopPillVisual() {
+        val drawerOpen = audioControlDrawer.visibility == View.VISIBLE
+        when {
+            engine.isAudioMuted -> btnAudioPanelToggle.setBackgroundResource(R.drawable.bg_hud_pill_muted)
+            drawerOpen -> btnAudioPanelToggle.setBackgroundResource(R.drawable.bg_dock_pill_active)
+            else -> btnAudioPanelToggle.setBackgroundResource(R.drawable.bg_hud_pill)
+        }
+    }
+
     private fun updateAudioDrawerUi() {
         val muted = engine.isAudioMuted
         btnAudioMute.text = if (muted) "MUTED" else "LIVE"
         btnAudioMute.setBackgroundResource(if (muted) R.drawable.bg_shutter_stop else R.drawable.bg_hud_pill)
         btnAudioMute.setTextColor(if (muted) 0xFFFFFFFF.toInt() else 0xFF34C759.toInt())
 
+        styleToolPill(btnAudioMicAuto, engine.micPreference == MicPreference.AUTO)
+        styleToolPill(btnAudioMicInt, engine.micPreference == MicPreference.INTERNAL)
+        styleToolPill(btnAudioMicExt, engine.micPreference == MicPreference.EXTERNAL)
+        val extConnected = engine.findExternalMicDevice() != null
+        btnAudioMicExt.text = if (engine.micPreference == MicPreference.EXTERNAL && !extConnected) "EXT?" else "EXT"
+
         styleToolPill(btnPreampCam, engine.audioPreampMode == AudioPreampMode.CAMCORDER)
         styleToolPill(btnPreampRaw, engine.audioPreampMode == AudioPreampMode.RAW_UNPROCESSED)
         styleToolPill(btnPreampBoost, engine.audioPreampMode == AudioPreampMode.VOICE_BOOST)
+
+        updateAudioTopPillVisual()
 
         if (muted) {
             txtAudioDb.text = "MUTE"
@@ -2167,7 +2260,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun applySelectedFps(fps: Int) {
-        currentFps = fps.coerceIn(1, 60)
+        val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 60)
+        val clamped = fps.coerceIn(1, maxHw)
+        if (fps > maxHw) {
+            showSingleToast("This lens supports up to $maxHw FPS max — clamped to $maxHw FPS", Toast.LENGTH_LONG)
+        } else if (clamped < 20) {
+            showSingleToast("Low-FPS GPU Pacer active: recording $clamped frame(s)/sec", Toast.LENGTH_SHORT)
+        }
+        currentFps = clamped
         btnFps.text = "$currentFps FPS"
         engine.updateSettings(currentResolution, currentFps)
     }
@@ -2722,6 +2822,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             configureTransform(previewSize)
             engine.updateGpuScopes(overlayView.toGpuScopeState())
             currentResolution = engine.targetResolution
+            currentFps = activeFps
             btnResolution.text = currentResolution.label
             btnFps.text = "$activeFps FPS"
             updateZoomReadout()
@@ -2795,15 +2896,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             updateAudioDrawerUi()
         }
 
-        // 3. Rescue Tone, GPU Exposure Lift & Stabilization pills + Lock & EV readouts
-        if (kotlin.math.abs(gpuColorState.exposureLift) > 0.01f) {
-            gpuColorState = gpuColorState.copy(exposureLift = 0f, isBypassed = false)
-            activeLookTag = if (gpuColorState.isNeutral()) "NONE" else "CUSTOM"
-            pushGpuColorStateAndRefreshUi()
+        // 3. Rescue GPU Color Studio (reset LOOK cleanly back to NONE), Tone & Stabilization + Lock & EV
+        if (!gpuColorState.isNeutral() || activeLookTag != "NONE") {
+            applyBuiltInLook("NONE", GpuColorState())
         }
-        toneIdx = 0
-        btnProTone.text = ToneProfile.STANDARD.label
-        styleToolPill(btnProTone, false)
         styleToolPill(btnProStab, true)
         updateLockUi(false)
 

@@ -13,8 +13,8 @@ android {
         applicationId = "com.studiomogli.idgafcamera"
         minSdk = 26
         targetSdk = 34
-        versionCode = 25
-        versionName = "0.7.1"
+        versionCode = 26
+        versionName = "0.7.1.1"
     }
 
     signingConfigs {
