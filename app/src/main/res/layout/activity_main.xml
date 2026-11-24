@@ -446,6 +446,20 @@
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/btnProTimelapse"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="TL: OFF"
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+
+            <TextView
                 android:id="@+id/btnProMirrorFront"
                 android:layout_width="wrap_content"
                 android:layout_height="26dp"
@@ -913,7 +927,7 @@
                         android:textStyle="bold" />
                 </LinearLayout>
 
-                <!-- 6. Optical Vignette (0% to 85%) -->
+                <!-- 6. Bipolar Vignette (-85% Black to +85% White, center = 0%) -->
                 <LinearLayout
                     android:id="@+id/rowColorVig"
                     android:layout_width="match_parent"
@@ -937,8 +951,8 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:max="85"
-                        android:progress="0"
+                        android:max="170"
+                        android:progress="85"
                         android:progressTint="#FF5F1F"
                         android:thumbTint="#FFFFFF" />
 

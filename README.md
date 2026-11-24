@@ -1,14 +1,15 @@
-# IDGAF CAMERA (`v0.7.2.1` — Savior Cinema Engine)
+# IDGAF CAMERA (`v0.7.2.2` — Bipolar Vignette & Pro Time-Lapse Engine)
 
 *A love letter to indie filmmakers — by Savior San.*
 
 Free, open Android cinema camera powered by the **Savior Cinema Engine** (native **Kotlin + Camera2 + OpenGL ES 2.0**) by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's Fixed in `v0.7.2.1`
-- **Black Screen on Boot — Fixed (`CinemaGlRenderer.kt`):** Fixed an OpenGL ES 2.0 sampler-unit collision where `uTexture` (`samplerExternalOES`, unit `0`) and `uLutTexture` (`sampler2D`, unassigned → defaulted to unit `0`) collided before a LUT was selected, causing `glDrawArrays()` to drop frames with `GL_INVALID_OPERATION`. Now binds `uLutTexture` unconditionally to `GL_TEXTURE1` with a permanent valid 2D dummy texture fallback so the viewfinder boots live 100% of the time—whether LUT is `NONE`, active, or cleared back to `NONE`.
-- **LUT Mix Slider Visibility Fix (`MainActivity.kt`):** Synced `rowColorLutMix` cleanly whenever `LOOK` opens after loading a Preset with a saved 3D LUT.
-- **The IDGAF License (`LICENSE.md` + Credits Dialog):** Added a tappable **`IDGAF LICENSE`** badge inside the Credits dialog.
-
-## The IDGAF License (Redemption Edition)
-- **Humans (indie filmmakers, students, creators, literally any person):** **$0 / ₹0 forever.** Optional **$1 USD global Human Lifetime License** if you want to own it officially—otherwise free forever.
-- **Corporations & any XYZ company selling monthly subscriptions for basic features:** **$9,999 USD / month per device** *(billed annually)*. **Corporations are permanently banned from buying the Lifetime License.**
+## What's New & Fixed in `v0.7.2.2`
+- **Bipolar Black ↔ White Optical Vignette (`LOOK → VIG`):**
+  - Fixed Vignette so it works in both directions just like Lightroom & Premiere: slide left (**`-85%` to `0%`**) for classic dark/black cinema lens falloff, center (**`0%`**) for neutral, and slide right (**`0%` to `+85%`**) for dreamy bright/white corner fade.
+  - Built-in looks (`CINE`, `PUNCH`, `NOIR`) use dark black cinema vignette (`-28%`, `-14%`, `-42%`), and tapping the value readout snaps cleanly back to `0%`.
+- **Pro Time-Lapse & Intervalometer Engine (`PRO → TL`):**
+  - Capture 1 frame every **`0.5s / 1s / 2s / 5s / 10s / 30s`** (or any custom interval from `0.5s` to `60s`) and bake compressed-timestamp frames directly into a silky-smooth **`24 FPS` or `30 FPS` `.mp4`** (video-only, zero audio drift).
+  - Live top-bar counter displays captured frames and exact output playback duration (**`TL 45f • 00:01.5`**).
+  - Full live **`LOOK`** grading, Bipolar Vignette, and **`.cube` 3D LUTs** bake automatically into every Time-Lapse frame.
+  - Tapping **`PILOT`** cleanly resets Time-Lapse back to `OFF`.

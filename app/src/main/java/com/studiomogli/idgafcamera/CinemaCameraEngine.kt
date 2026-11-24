@@ -128,6 +128,7 @@ interface CinemaEngineListener {
     fun onTelemetryUpdated(telemetry: LiveTelemetry)
     fun onRecordingStarted()
     fun onRecordingStopped(savedUri: Uri?, filePathLabel: String)
+    fun onTimelapseProgress(capturedFrames: Long, outputDurationSec: Float)
     fun onAutoPilotStateChanged(state: AutoPilotState, summary: String? = null)
     fun onError(message: String)
 }
@@ -164,6 +165,8 @@ class CinemaCameraEngine(
     @Volatile var audioPreampMode: AudioPreampMode = AudioPreampMode.CAMCORDER
     @Volatile var isAudioMuted: Boolean = false
     @Volatile var audioMonitorTrimDb: Int = 0
+    @Volatile var timelapseIntervalMs: Long = 0L
+    fun isTimelapseEnabled(): Boolean = timelapseIntervalMs > 0L
     @Volatile var toneProfile: ToneProfile = ToneProfile.STANDARD
         private set
     @Volatile var isRecording: Boolean = false
@@ -336,6 +339,10 @@ class CinemaCameraEngine(
         glRenderer?.colorState = gpuColorState
         glRenderer?.mirrorFrontExport = mirrorFrontExport
         glRenderer?.setCubeLut(activeCubeLut)
+        glRenderer?.onTimelapseFrameCaptured = { frames ->
+            val outSec = frames.toFloat() / targetFps.coerceIn(1, 60).toFloat()
+            listener.onTimelapseProgress(frames, outSec)
+        }
         if (lenses.isEmpty()) {
             discoverLenses()
         }
@@ -1335,7 +1342,8 @@ class CinemaCameraEngine(
                 height = resolvedVideoSize.height,
                 rotation = displayRotation,
                 desiredFps = targetFps,
-                hwFpsUpper = resolvedFpsRange.upper
+                hwFpsUpper = resolvedFpsRange.upper,
+                timelapseIntervalMs = timelapseIntervalMs
             )
             if (!attached) {
                 throw IllegalStateException("Failed to attach OpenGL encoder surface")
@@ -1386,6 +1394,9 @@ class CinemaCameraEngine(
                 context.contentResolver.delete(savedUri, null, null)
             } catch (_: Exception) {
             }
+            if (isTimelapseEnabled()) {
+                listener.onError("Time-Lapse too short — wait for at least 2 frames to capture.")
+            }
             listener.onRecordingStopped(null, "")
             return
         }
@@ -1404,9 +1415,19 @@ class CinemaCameraEngine(
         listener.onRecordingStopped(savedUri, label)
     }
 
+    private fun formatTimelapseFileTag(): String {
+        val ms = timelapseIntervalMs
+        return if (ms % 1000L == 0L) "${ms / 1000L}s" else String.format(Locale.US, "%.1fs", ms / 1000f).replace('.', 'p')
+    }
+
     private fun createAndPrepareMediaRecorder(lens: CinemaLens, displayRotation: Int): MediaRecorder {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val fileName = "IDGAF_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+        val isTl = isTimelapseEnabled()
+        val fileName = if (isTl) {
+            "IDGAF_TL${formatTimelapseFileTag()}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+        } else {
+            "IDGAF_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+        }
         activeFileLabel = "Movies/IDGAF_Camera/$fileName"
 
         val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -1416,7 +1437,8 @@ class CinemaCameraEngine(
             MediaRecorder()
         }
 
-        if (!isAudioMuted) {
+        val recordAudio = !isAudioMuted && !isTl
+        if (recordAudio) {
             recorder.setAudioSource(audioPreampMode.audioSource)
         }
         recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
@@ -1452,7 +1474,7 @@ class CinemaCameraEngine(
         recorder.setVideoFrameRate(targetFps.coerceIn(1, 60))
         recorder.setVideoSize(resolvedVideoSize.width, resolvedVideoSize.height)
         recorder.setVideoEncoder(targetCodec.encoder)
-        if (!isAudioMuted) {
+        if (recordAudio) {
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             recorder.setAudioEncodingBitRate(256_000)
             recorder.setAudioSamplingRate(48_000)
@@ -1461,7 +1483,7 @@ class CinemaCameraEngine(
         recorder.setOrientationHint(0)
 
         // Route external USB/Wired mic if preferred or detected in AUTO mode (API 28+)
-        if (!isAudioMuted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
+        if (recordAudio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
             val extMic = findExternalMicDevice()
             if (extMic != null) {
                 try {

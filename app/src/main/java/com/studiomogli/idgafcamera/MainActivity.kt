@@ -87,6 +87,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnProStab: TextView
     private lateinit var btnProTorch: TextView
     private lateinit var btnProTimer: TextView
+    private lateinit var btnProTimelapse: TextView
     private lateinit var btnProMirrorFront: TextView
     private lateinit var btnProPresets: TextView
 
@@ -524,6 +525,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProStab = findViewById(R.id.btnProStab)
         btnProTorch = findViewById(R.id.btnProTorch)
         btnProTimer = findViewById(R.id.btnProTimer)
+        btnProTimelapse = findViewById(R.id.btnProTimelapse)
         btnProMirrorFront = findViewById(R.id.btnProMirrorFront)
         btnProPresets = findViewById(R.id.btnProPresets)
         btnColorPanelToggle = findViewById(R.id.btnColorPanelToggle)
@@ -734,7 +736,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 engine.stopRecording()
             } else {
                 val rot = getCurrentDisplayRotation()
-                if (engine.isAudioMuted) {
+                if (engine.isAudioMuted && !engine.isTimelapseEnabled()) {
                     AlertDialog.Builder(this)
                         .setTitle("Audio is MUTED")
                         .setMessage("Your microphone is currently muted. Record without sound, or unmute and start rolling?")
@@ -1089,6 +1091,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             styleToolPill(btnProTimer, sec > 0)
         }
 
+        btnProTimelapse.setOnClickListener {
+            if (engine.isRecording) {
+                showSingleToast("Stop recording to change Time-Lapse interval")
+                return@setOnClickListener
+            }
+            showTimelapsePickerDialog()
+        }
+
         btnProMirrorFront.setOnClickListener {
             val next = !engine.mirrorFrontExport
             engine.setMirrorFrontExport(next)
@@ -1098,6 +1108,101 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         btnProPresets.setOnClickListener {
             showPresetsDialog()
+        }
+    }
+
+    private fun formatTimelapseLabel(ms: Long): String {
+        return if (ms <= 0L) "OFF"
+        else if (ms % 1000L == 0L) "${ms / 1000L}s"
+        else String.format(Locale.US, "%.1fs", ms / 1000f)
+    }
+
+    private fun showTimelapsePickerDialog() {
+        val currentMs = engine.timelapseIntervalMs
+        val presets = listOf(
+            0L to "OFF (Normal Real-Time Video)",
+            500L to "0.5s  (Fast Clouds / Traffic)",
+            1000L to "1s    (Action / Walking)",
+            2000L to "2s    (Clouds / Street)",
+            5000L to "5s    (Sunset / Golden Hour)",
+            10000L to "10s   (Slow Clouds / Building)",
+            30000L to "30s   (Day-to-Night / Stars)"
+        )
+        val labels = presets.map { (ms, desc) ->
+            if (ms == currentMs) "✓ $desc" else desc
+        }.toMutableList()
+        labels.add("Custom Interval (0.5s – 60s)...")
+
+        AlertDialog.Builder(this)
+            .setTitle("Pro Time-Lapse Interval (Output: ${currentFps.coerceAtLeast(24)} FPS)")
+            .setItems(labels.toTypedArray()) { _, which ->
+                if (which < presets.size) {
+                    applyTimelapseInterval(presets[which].first)
+                } else {
+                    showCustomTimelapseInputDialog()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showCustomTimelapseInputDialog() {
+        val input = EditText(this).apply {
+            hint = "Seconds per frame (0.5 to 60.0, e.g. 1.5, 3, 15)"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            if (engine.timelapseIntervalMs > 0L) {
+                setText(String.format(Locale.US, "%.1f", engine.timelapseIntervalMs / 1000f))
+            }
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF888888.toInt())
+            setPadding(36, 28, 36, 28)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Custom Time-Lapse Interval (Seconds)")
+            .setView(input)
+            .setPositiveButton("Apply") { _, _ ->
+                val secs = input.text.toString().trim().toFloatOrNull()
+                if (secs == null || secs < 0.5f || secs > 60.0f) {
+                    showSingleToast("Enter an interval between 0.5 and 60 seconds")
+                    return@setPositiveButton
+                }
+                applyTimelapseInterval((secs * 1000f).roundToInt().toLong())
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun applyTimelapseInterval(intervalMs: Long) {
+        engine.timelapseIntervalMs = intervalMs.coerceAtLeast(0L)
+        if (intervalMs > 0L && currentFps < 20) {
+            // Ensure Time-Lapse always plays back at smooth cinema FPS (30 FPS) rather than 1 FPS!
+            val smoothFps = minOf(30, engine.capabilities.maxHardwareFps.coerceIn(24, 60))
+            currentFps = smoothFps
+            btnFps.text = "$smoothFps FPS"
+            engine.updateSettings(currentResolution, smoothFps)
+        }
+        updateTimelapseUi()
+        if (intervalMs > 0L) {
+            val tag = formatTimelapseLabel(intervalMs)
+            showSingleToast("Time-Lapse ARMED: 1 frame / $tag → smooth $currentFps FPS MP4 (Video-Only)", Toast.LENGTH_LONG)
+        } else {
+            showSingleToast("Time-Lapse OFF (Normal Video)")
+        }
+    }
+
+    private fun updateTimelapseUi() {
+        val active = engine.isTimelapseEnabled()
+        val tag = formatTimelapseLabel(engine.timelapseIntervalMs)
+        btnProTimelapse.text = if (active) "TL: $tag" else "TL: OFF"
+        styleToolPill(btnProTimelapse, active)
+        if (!engine.isRecording) {
+            if (active) {
+                txtTimecode.text = "TL $tag"
+                txtTimecode.setTextColor(0xFFFF5F1F.toInt())
+            } else {
+                txtTimecode.text = "00:00:00"
+                txtTimecode.setTextColor(0xFFFFFFFF.toInt())
+            }
         }
     }
 
@@ -1259,7 +1364,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             saturation = p.gpuSaturation.coerceIn(0.0f, 1.80f),
             shadows = p.gpuShadows.coerceIn(-0.50f, 0.50f),
             highlights = p.gpuHighlights.coerceIn(-0.50f, 0.50f),
-            vignette = p.gpuVignette.coerceIn(0.0f, 0.85f),
+            vignette = p.gpuVignette.coerceIn(-0.85f, 0.85f),
             lutIntensity = p.lutIntensity.coerceIn(0.0f, 1.0f),
             isBypassed = false
         )
@@ -1427,8 +1532,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.2.1"
-    } catch (_: Exception) { "0.7.2.1" }
+        info.versionName ?: "0.7.2.2"
+    } catch (_: Exception) { "0.7.2.2" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1570,7 +1675,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     saturation = 0.92f,
                     shadows = -0.14f,
                     highlights = -0.16f,
-                    vignette = 0.28f
+                    vignette = -0.28f
                 )
             )
         }
@@ -1583,7 +1688,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     saturation = 1.28f,
                     shadows = 0.06f,
                     highlights = 0.10f,
-                    vignette = 0.14f
+                    vignette = -0.14f
                 )
             )
         }
@@ -1596,7 +1701,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     saturation = 0.0f,
                     shadows = -0.22f,
                     highlights = 0.12f,
-                    vignette = 0.42f
+                    vignette = -0.42f
                 )
             )
         }
@@ -1623,7 +1728,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         bindSeek(rowColorSat, seekColorSat) { p -> gpuColorState = gpuColorState.copy(saturation = p * 0.01f) }
         bindSeek(rowColorShd, seekColorShd) { p -> gpuColorState = gpuColorState.copy(shadows = (p - 50) * 0.01f) }
         bindSeek(rowColorHil, seekColorHil) { p -> gpuColorState = gpuColorState.copy(highlights = (p - 50) * 0.01f) }
-        bindSeek(rowColorVig, seekColorVig) { p -> gpuColorState = gpuColorState.copy(vignette = p * 0.01f) }
+        bindSeek(rowColorVig, seekColorVig) { p -> gpuColorState = gpuColorState.copy(vignette = (p - 85) * 0.01f) }
         bindSeek(rowColorLutMix, seekColorLutMix) { p -> gpuColorState = gpuColorState.copy(lutIntensity = p * 0.01f) }
 
         // Tap any readout to reset just that single parameter to neutral!
@@ -1978,7 +2083,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         seekColorSat.progress = (gpuColorState.saturation * 100f).roundToInt().coerceIn(0, 180)
         seekColorShd.progress = ((gpuColorState.shadows * 100f) + 50f).roundToInt().coerceIn(0, 100)
         seekColorHil.progress = ((gpuColorState.highlights * 100f) + 50f).roundToInt().coerceIn(0, 100)
-        seekColorVig.progress = (gpuColorState.vignette * 100f).roundToInt().coerceIn(0, 85)
+        seekColorVig.progress = ((gpuColorState.vignette * 100f) + 85f).roundToInt().coerceIn(0, 170)
         seekColorLutMix.progress = (gpuColorState.lutIntensity * 100f).roundToInt().coerceIn(0, 100)
         suppressColorSeek = false
 
@@ -2003,8 +2108,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtColorHilVal.setTextColor(if (hilInt != 0) orange else white)
 
         val vigInt = (gpuColorState.vignette * 100f).roundToInt()
-        txtColorVigVal.text = "${vigInt}%"
-        txtColorVigVal.setTextColor(if (vigInt > 0) orange else white)
+        txtColorVigVal.text = if (vigInt > 0) "+${vigInt}%" else "${vigInt}%"
+        txtColorVigVal.setTextColor(if (vigInt != 0) orange else white)
 
         val hasLut = activeLutSourceId.isNotEmpty()
         val lutPct = (gpuColorState.lutIntensity * 100f).roundToInt().coerceIn(0, 100)
@@ -3246,6 +3351,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         timerIdx = 0
         btnProTimer.text = "TMR: OFF"
         styleToolPill(btnProTimer, false)
+        if (engine.isTimelapseEnabled()) {
+            engine.timelapseIntervalMs = 0L
+            updateTimelapseUi()
+        }
 
         // 2. Rescue Audio (unmute + balanced CAM preamp + 0 dB trim) when idle so sound is guaranteed live
         if (!engine.isRecording) {
@@ -3320,7 +3429,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             txtTimecode.setTextColor(0xFFFF3B30.toInt())
             btnAutoPilot.alpha = 0.45f
             uiHandler.removeCallbacks(timecodeRunnable)
-            uiHandler.post(timecodeRunnable)
+            if (engine.isTimelapseEnabled()) {
+                txtTimecode.text = "TL 0f • 00:00.0"
+            } else {
+                uiHandler.post(timecodeRunnable)
+            }
+        }
+    }
+
+    override fun onTimelapseProgress(capturedFrames: Long, outputDurationSec: Float) {
+        runOnUiThread {
+            if (engine.isRecording && engine.isTimelapseEnabled()) {
+                val mins = (outputDurationSec / 60f).toInt()
+                val secs = outputDurationSec - (mins * 60f)
+                txtTimecode.text = String.format(Locale.US, "TL %df • %02d:%04.1f", capturedFrames, mins, secs)
+            }
         }
     }
 
@@ -3331,9 +3454,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             viewRecDot.visibility = View.GONE
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_rec)
             btnShutterInner.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140L).start()
-            txtTimecode.setTextColor(0xFFFFFFFF.toInt())
             btnAutoPilot.alpha = 1.0f
-            txtTimecode.text = "00:00:00"
+            updateTimelapseUi()
             if (savedUri != null) {
                 lastSavedUri = savedUri
                 btnLastClip.setTextColor(0xFFFF5F1F.toInt())

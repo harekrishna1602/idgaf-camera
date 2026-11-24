@@ -35,7 +35,7 @@ data class GpuColorState(
     val saturation: Float = 1.0f,   // 0.00 .. 1.80
     val shadows: Float = 0.0f,      // -0.50 .. +0.50
     val highlights: Float = 0.0f,   // -0.50 .. +0.50
-    val vignette: Float = 0.0f,     // 0.00 .. 0.85
+    val vignette: Float = 0.0f,     // -0.85 (Black) .. 0.00 .. +0.85 (White)
     val lutIntensity: Float = 1.0f, // 0.00 .. 1.00
     val isBypassed: Boolean = false
 ) {
@@ -46,7 +46,7 @@ data class GpuColorState(
             kotlin.math.abs(saturation - 1.0f) < 0.01f &&
             kotlin.math.abs(shadows) < 0.01f &&
             kotlin.math.abs(highlights) < 0.01f &&
-            vignette < 0.01f
+            kotlin.math.abs(vignette) < 0.01f
 }
 
 /**
@@ -191,11 +191,17 @@ class CinemaGlRenderer(
                     baseColor = clamp(mix(baseColor, lutColor, uLutIntensity), 0.0, 1.0);
                 }
 
-                // 6. Cinema Optical Vignette (elliptical to frame via vQuadCoord; identical on preview & MP4)
-                if (uVignette > 0.001) {
+                // 6. Bipolar Cinema Vignette: negative (-0.85..0) = Black optical falloff, positive (0..+0.85) = White dreamy glow
+                if (abs(uVignette) > 0.001) {
                     float d = length(vQuadCoord) * 0.7071;
-                    float vig = 1.0 - uVignette * smoothstep(0.32, 1.08, d);
-                    baseColor *= clamp(vig, 0.0, 1.0);
+                    float falloff = smoothstep(0.32, 1.08, d);
+                    if (uVignette < 0.0) {
+                        float vig = 1.0 - (-uVignette) * falloff;
+                        baseColor *= clamp(vig, 0.0, 1.0);
+                    } else {
+                        float whiteAmt = clamp(uVignette * falloff, 0.0, 1.0);
+                        baseColor = mix(baseColor, vec3(1.0), whiteAmt);
+                    }
                 }
 
                 vec3 outColor = baseColor;
@@ -341,11 +347,17 @@ class CinemaGlRenderer(
     @Volatile private var isEncoderRecording: Boolean = false
     @Volatile private var isReleased: Boolean = true
 
-    // CLOCK_MONOTONIC (System.nanoTime) anchor & GPU Frame-Pacer for exact low-FPS / custom-FPS cadence
+    // CLOCK_MONOTONIC (System.nanoTime) anchor & GPU Frame-Pacer for exact low-FPS / custom-FPS / Time-Lapse cadence
     private var encoderBaseCamTsNs: Long = -1L
     private var encoderBaseMonoNs: Long = -1L
     private var lastEncoderPtsNs: Long = -1L
     private var nextEncoderFrameDueNs: Long = -1L
+
+    // Phase 7.2C Pro Time-Lapse Intervalometer state (0L = standard real-time video mode)
+    @Volatile private var timelapseIntervalNs: Long = 0L
+    private var timelapseBaseMonoNs: Long = -1L
+    private var timelapseCapturedFrames: Long = 0L
+    @Volatile var onTimelapseFrameCaptured: ((capturedFrames: Long) -> Unit)? = null
 
     fun start(): Boolean {
         if (glThread != null && !isReleased) return true
@@ -469,7 +481,8 @@ class CinemaGlRenderer(
         height: Int,
         rotation: Int,
         desiredFps: Int,
-        hwFpsUpper: Int
+        hwFpsUpper: Int,
+        timelapseIntervalMs: Long = 0L
     ): Boolean {
         val handler = glHandler ?: return false
         if (isReleased) return false
@@ -499,6 +512,9 @@ class CinemaGlRenderer(
                 encoderBaseMonoNs = -1L
                 lastEncoderPtsNs = -1L
                 nextEncoderFrameDueNs = -1L
+                timelapseIntervalNs = if (timelapseIntervalMs > 0L) timelapseIntervalMs * 1_000_000L else 0L
+                timelapseBaseMonoNs = -1L
+                timelapseCapturedFrames = 0L
                 encoderEglSurface = surface
                 ok = true
             } catch (e: Exception) {
@@ -525,6 +541,8 @@ class CinemaGlRenderer(
                 encoderBaseMonoNs = -1L
                 lastEncoderPtsNs = -1L
                 nextEncoderFrameDueNs = -1L
+                timelapseBaseMonoNs = -1L
+                timelapseCapturedFrames = 0L
             }
             isEncoderRecording = active
         }
@@ -686,9 +704,16 @@ class CinemaGlRenderer(
                     stepYy = stepYy,
                     timeSec = timeSec
                 )
-                val ptsNs = computeMonotonicEncoderPtsNs(frameTimestampNs)
+                val ptsNs = if (timelapseIntervalNs > 0L) {
+                    computeTimelapseCompressedPtsNs()
+                } else {
+                    computeMonotonicEncoderPtsNs(frameTimestampNs)
+                }
                 EGLExt.eglPresentationTimeANDROID(eglDisplay, encoderEglSurface, ptsNs)
                 EGL14.eglSwapBuffers(eglDisplay, encoderEglSurface)
+                if (timelapseIntervalNs > 0L) {
+                    onTimelapseFrameCaptured?.invoke(timelapseCapturedFrames)
+                }
             }
         }
     }
@@ -733,6 +758,25 @@ class CinemaGlRenderer(
      * while leaving Pass 1 (live viewfinder) smooth. Never throttles when target >= hardware FPS.
      */
     private fun shouldEncodeFrameNow(): Boolean {
+        // Phase 7.2C Time-Lapse Intervalometer Gate (captures Frame 0 immediately, then 1 frame every intervalNs)
+        val tlNs = timelapseIntervalNs
+        if (tlNs > 0L) {
+            val nowNs = System.nanoTime()
+            if (nextEncoderFrameDueNs < 0L) {
+                nextEncoderFrameDueNs = nowNs + tlNs
+                return true
+            }
+            if (nowNs + 12_000_000L < nextEncoderFrameDueNs) {
+                return false
+            }
+            nextEncoderFrameDueNs += tlNs
+            if (nextEncoderFrameDueNs < nowNs) {
+                nextEncoderFrameDueNs = nowNs + tlNs
+            }
+            return true
+        }
+
+        // Standard Real-Time Video Frame-Pacer Gate
         val desired = targetEncoderFps.coerceIn(1, 60)
         if (desired >= hardwareFpsUpper) return true
 
@@ -752,6 +796,21 @@ class CinemaGlRenderer(
             nextEncoderFrameDueNs = nowNs + intervalNs
         }
         return true
+    }
+
+    /**
+     * Generates strictly monotonic compressed timestamps for Time-Lapse MP4 output so frames
+     * captured seconds apart play back smoothly at targetEncoderFps (e.g. 24 or 30 FPS).
+     */
+    private fun computeTimelapseCompressedPtsNs(): Long {
+        if (timelapseBaseMonoNs < 0L) {
+            timelapseBaseMonoNs = System.nanoTime()
+        }
+        val frameStepNs = 1_000_000_000L / targetEncoderFps.coerceIn(1, 60).toLong()
+        val ptsNs = timelapseBaseMonoNs + (timelapseCapturedFrames * frameStepNs)
+        timelapseCapturedFrames++
+        lastEncoderPtsNs = ptsNs
+        return ptsNs
     }
 
     /**
