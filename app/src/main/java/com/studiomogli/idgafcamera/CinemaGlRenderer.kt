@@ -85,10 +85,12 @@ class CinemaGlRenderer(
             uniform mat4 uStMatrix;
             varying vec2 vTexCoord;
             varying vec2 vQuadCoord;
+            varying vec2 vScreenPos;
             void main() {
                 gl_Position = uMvpMatrix * aPosition;
                 vTexCoord = (uStMatrix * aTexCoord).xy;
                 vQuadCoord = aPosition.xy;
+                vScreenPos = gl_Position.xy;
             }
         """
 
@@ -120,8 +122,15 @@ class CinemaGlRenderer(
             uniform float uLutIntensity;
             uniform float uSplitPixelX;
 
+            // Phase 7.3 Chronological ERA Workbench uniforms (0 = SAVIOR modern pipeline, 1 = 1920s Silent 35mm)
+            uniform int uEraMode;
+            uniform float uEraWear;
+            uniform float uEraFps;
+            uniform float uViewportAspect;
+
             varying vec2 vTexCoord;
             varying vec2 vQuadCoord;
+            varying vec2 vScreenPos;
 
             float calcLuma(vec3 c) {
                 return dot(c, vec3(0.299, 0.587, 0.114));
@@ -146,6 +155,77 @@ class CinemaGlRenderer(
                 return mix(s0, s1, bFrac);
             }
 
+            // Mobile mediump-safe procedural hash (never overflows 10-bit mediump mantissa on Mali/Adreno)
+            float hash12(vec2 p) {
+                vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+                p3 += dot(p3, p3.yzx + 33.33);
+                return fract((p3.x + p3.y) * p3.z);
+            }
+
+            // Era 1 (1920s Silent 35mm): Red-blind Orthochromatic B&W, Nitrate S-Curve, Hand-Crank Flicker,
+            // Organic 35mm Grain, Archival Vertical Scratches, Optical Vignette & Baked 1.33:1 Rounded Gate
+            vec3 applyEra1920sSilent(vec3 rawRgb) {
+                // 1. Baked 1.333:1 Silent Aperture Gate with soft anti-aliased rounded brass-gate corners
+                float aspect = max(uViewportAspect, 0.5);
+                vec2 gatePos = vec2(vScreenPos.x * aspect, vScreenPos.y);
+                float gateHalfH = 0.965;
+                float gateHalfW = 1.3333 * gateHalfH;
+                float cornerR = 0.085;
+                vec2 q = abs(gatePos) - vec2(gateHalfW - cornerR, gateHalfH - cornerR);
+                float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - cornerR;
+                float gateMask = 1.0 - smoothstep(-0.008, 0.008, sdf);
+                if (gateMask <= 0.001) {
+                    return vec3(0.0);
+                }
+
+                // Quantize time to true silent-film frame ticks (16 or 18 FPS)
+                float frameTick = floor(uTimeSec * max(uEraFps, 12.0));
+                float tSeed = fract(frameTick * 0.0618034);
+
+                // 2. Authentic 1920s Orthochromatic Sensitivity (blind to deep red -> dark lips, bright glowing skies)
+                float y = dot(rawRgb, vec3(0.10, 0.56, 0.34));
+
+                // 3. High-Contrast Nitrate S-Curve + Hand-Crank Shutter Exposure Flicker
+                float flickerAmp = mix(0.032, 0.072, uEraWear);
+                float flicker = 1.0 + (hash12(vec2(frameTick, 7.13)) - 0.5) * 2.0 * flickerAmp;
+                y = clamp(y * flicker, 0.0, 1.0);
+                y = clamp((y - 0.46) * 1.38 + 0.48, 0.0, 1.0);
+                y = pow(y, 1.06);
+                y = clamp(0.024 + y * 0.946, 0.0, 1.0);
+
+                // 4. Organic Animated 35mm Silver Grain (strongest in midtones like real emulsion)
+                vec2 grainCoord = floor(vScreenPos * vec2(260.0 * aspect, 260.0)) * 0.017 + vec2(tSeed * 53.0, tSeed * 29.0);
+                float grain = (hash12(grainCoord) - 0.5) * mix(0.095, 0.175, uEraWear);
+                float midWeight = 0.45 + 0.55 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
+                y = clamp(y + grain * midWeight, 0.0, 1.0);
+
+                // 5. Archival Vault Vertical Hairline Scratches & Dust Flecks (active in ARCHIVE wear mode)
+                if (uEraWear > 0.2) {
+                    float sx1 = fract(hash12(vec2(floor(frameTick * 0.25), 3.7)) * 1.37) * 2.0 - 1.0;
+                    float sx2 = fract(hash12(vec2(floor(frameTick * 0.50), 11.9)) * 1.73) * 2.0 - 1.0;
+                    float d1 = abs(vScreenPos.x - sx1 * 0.65);
+                    float d2 = abs(vScreenPos.x - sx2 * 0.55);
+                    float scratchMask = (1.0 - smoothstep(0.0, 0.0028, d1)) * 0.26
+                                      + (1.0 - smoothstep(0.0, 0.0020, d2)) * 0.18;
+                    // Occasional tiny emulsion dust speck
+                    vec2 dustCell = floor(vScreenPos * vec2(42.0 * aspect, 42.0));
+                    float dustRnd = hash12(dustCell + vec2(frameTick * 0.31, frameTick * 0.17));
+                    float dustDark = step(0.9965, dustRnd) * 0.45;
+                    y = clamp(y + scratchMask * uEraWear - dustDark * uEraWear, 0.0, 1.0);
+                }
+
+                // 6. Vintage 1920s Petzval / Cooke Lens Corner Vignette centered inside the 1.33:1 gate
+                vec2 gateUv = vec2(gatePos.x / gateHalfW, gatePos.y / gateHalfH);
+                float rDist = length(gateUv) * 0.7071;
+                float vigStrength = mix(0.42, 0.62, uEraWear);
+                float vig = 1.0 - vigStrength * smoothstep(0.38, 1.10, rDist);
+                y *= clamp(vig, 0.0, 1.0);
+
+                // 7. Subtle Warm Archival Silver-Nitrate Base Tint + Gate Mask
+                vec3 nitrate = clamp(vec3(y * 1.04, y * 1.00, y * 0.90), 0.0, 1.0);
+                return nitrate * gateMask;
+            }
+
             vec3 applyFalseColor(float y) {
                 if (y <= 0.05) return vec3(0.545, 0.361, 0.965);        // 0-5% IRE: Purple (Crushed Black)
                 if (y <= 0.15) return vec3(0.145, 0.388, 0.922);        // 5-15% IRE: Blue (Deep Shadows)
@@ -158,6 +238,11 @@ class CinemaGlRenderer(
 
             void main() {
                 vec3 rawColor = texture2D(uTexture, vTexCoord).rgb;
+                if (uEraMode == 1) {
+                    gl_FragColor = vec4(applyEra1920sSilent(rawColor), 1.0);
+                    return;
+                }
+
                 float rawY = calcLuma(rawColor);
                 vec3 baseColor = rawColor;
 
@@ -308,6 +393,10 @@ class CinemaGlRenderer(
     private var uLutSizeLoc: Int = -1
     private var uLutIntensityLoc: Int = -1
     private var uSplitPixelXLoc: Int = -1
+    private var uEraModeLoc: Int = -1
+    private var uEraWearLoc: Int = -1
+    private var uEraFpsLoc: Int = -1
+    private var uViewportAspectLoc: Int = -1
 
     private var lutTextureId: Int = 0
     private var dummyLutTextureId: Int = 0
@@ -337,6 +426,9 @@ class CinemaGlRenderer(
     @Volatile var scopeState: GpuScopeState = GpuScopeState()
     @Volatile var colorState: GpuColorState = GpuColorState()
     @Volatile var splitCompareFraction: Float = -1.0f // < 0.0 = OFF, 0.0..1.0 = Live RAW | LOOK vertical wipe
+    @Volatile var eraModeCode: Int = 0 // 0 = SAVIOR, 1 = 1920s Silent 35mm
+    @Volatile var eraWearLevel: Float = 0.0f // 0.0 = NITRATE Clean, 1.0 = ARCHIVE Aged
+    @Volatile var eraFps: Float = 16.0f
     @Volatile var mirrorFrontExport: Boolean = false
 
     @Volatile private var previewWidth: Int = 0
@@ -687,6 +779,7 @@ class CinemaGlRenderer(
             buildPreviewMvp(mvpMatrix, previewWidth, previewHeight, displayRotation)
             drawQuad(
                 enableScopes = true,
+                viewportAspect = previewWidth.toFloat() / previewHeight.coerceAtLeast(1).toFloat(),
                 stepXx = stepXx,
                 stepXy = stepXy,
                 stepYx = stepYx,
@@ -706,6 +799,7 @@ class CinemaGlRenderer(
                 buildEncoderMvp(mvpMatrix, encoderWidth, encoderHeight, encoderRotation)
                 drawQuad(
                     enableScopes = false,
+                    viewportAspect = encoderWidth.toFloat() / encoderHeight.coerceAtLeast(1).toFloat(),
                     stepXx = stepXx,
                     stepXy = stepXy,
                     stepYx = stepYx,
@@ -899,6 +993,7 @@ class CinemaGlRenderer(
 
     private fun drawQuad(
         enableScopes: Boolean,
+        viewportAspect: Float,
         stepXx: Float,
         stepXy: Float,
         stepYx: Float,
@@ -968,6 +1063,10 @@ class CinemaGlRenderer(
             -1.0f
         }
         GLES20.glUniform1f(uSplitPixelXLoc, splitPx)
+        GLES20.glUniform1i(uEraModeLoc, eraModeCode)
+        GLES20.glUniform1f(uEraWearLoc, eraWearLevel.coerceIn(0f, 1f))
+        GLES20.glUniform1f(uEraFpsLoc, eraFps.coerceIn(1f, 60f))
+        GLES20.glUniform1f(uViewportAspectLoc, viewportAspect.coerceIn(0.4f, 4.0f))
 
         GLES20.glEnableVertexAttribArray(aPositionLoc)
         GLES20.glVertexAttribPointer(aPositionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
@@ -1130,6 +1229,10 @@ class CinemaGlRenderer(
             uLutSizeLoc = GLES20.glGetUniformLocation(programId, "uLutSize")
             uLutIntensityLoc = GLES20.glGetUniformLocation(programId, "uLutIntensity")
             uSplitPixelXLoc = GLES20.glGetUniformLocation(programId, "uSplitPixelX")
+            uEraModeLoc = GLES20.glGetUniformLocation(programId, "uEraMode")
+            uEraWearLoc = GLES20.glGetUniformLocation(programId, "uEraWear")
+            uEraFpsLoc = GLES20.glGetUniformLocation(programId, "uEraFps")
+            uViewportAspectLoc = GLES20.glGetUniformLocation(programId, "uViewportAspect")
             if (desiredLutData != null) {
                 lutUploadDirty = true
             }

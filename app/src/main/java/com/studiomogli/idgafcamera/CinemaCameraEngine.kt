@@ -167,6 +167,14 @@ class CinemaCameraEngine(
     @Volatile var audioMonitorTrimDb: Int = 0
     @Volatile var timelapseIntervalMs: Long = 0L
     fun isTimelapseEnabled(): Boolean = timelapseIntervalMs > 0L
+    @Volatile var eraSilentAudio: Boolean = false
+    @Volatile var eraFilenameTag: String = ""
+    @Volatile var eraModeCode: Int = 0
+        private set
+    @Volatile var eraWearLevel: Float = 0.0f
+        private set
+    @Volatile var eraFps: Float = 16.0f
+        private set
     @Volatile var toneProfile: ToneProfile = ToneProfile.STANDARD
         private set
     @Volatile var isRecording: Boolean = false
@@ -338,6 +346,9 @@ class CinemaCameraEngine(
         }
         glRenderer?.colorState = gpuColorState
         glRenderer?.splitCompareFraction = splitCompareFraction
+        glRenderer?.eraModeCode = eraModeCode
+        glRenderer?.eraWearLevel = eraWearLevel
+        glRenderer?.eraFps = eraFps
         glRenderer?.mirrorFrontExport = mirrorFrontExport
         glRenderer?.setCubeLut(activeCubeLut)
         glRenderer?.onTimelapseFrameCaptured = { frames ->
@@ -384,6 +395,32 @@ class CinemaCameraEngine(
     fun setSplitCompareFraction(fraction: Float) {
         splitCompareFraction = fraction
         glRenderer?.splitCompareFraction = fraction
+    }
+
+    fun setEraRenderState(modeCode: Int, wearLevel: Float, fps: Float) {
+        eraModeCode = modeCode
+        eraWearLevel = wearLevel.coerceIn(0f, 1f)
+        eraFps = fps.coerceIn(1f, 60f)
+        glRenderer?.eraModeCode = eraModeCode
+        glRenderer?.eraWearLevel = eraWearLevel
+        glRenderer?.eraFps = eraFps
+    }
+
+    /**
+     * Zero-reboot FPS change when the GPU Frame-Pacer can gate directly from the active hardware stream
+     * (e.g. 16 FPS / 18 FPS on a 30 FPS sensor). Falls back to clean reopen only if desired FPS exceeds sensor upper bound.
+     */
+    fun setTargetFpsSeamless(fps: Int) {
+        if (isRecording) return
+        val clamped = fps.coerceIn(1, capabilities.maxHardwareFps.coerceIn(15, 60))
+        targetFps = clamped
+        if (isShutter180Locked && isManualExposure) {
+            manualShutterNs = compute180ShutterNs(clamped)
+        }
+        if (clamped > resolvedFpsRange.upper) {
+            closeCamera()
+            openActiveCamera()
+        }
     }
 
     fun setCubeLut(lut: CubeLutData?) {
@@ -1482,10 +1519,11 @@ class CinemaCameraEngine(
     private fun createAndPrepareMediaRecorder(lens: CinemaLens, displayRotation: Int): MediaRecorder {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val isTl = isTimelapseEnabled()
-        val fileName = if (isTl) {
-            "IDGAF_TL${formatTimelapseFileTag()}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
-        } else {
-            "IDGAF_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+        val eraTag = eraFilenameTag.trim()
+        val fileName = when {
+            eraTag.isNotEmpty() -> "IDGAF_${eraTag}_${targetFps}fps_$timestamp.mp4"
+            isTl -> "IDGAF_TL${formatTimelapseFileTag()}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+            else -> "IDGAF_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
         }
         activeFileLabel = "Movies/IDGAF_Camera/$fileName"
 
@@ -1496,7 +1534,7 @@ class CinemaCameraEngine(
             MediaRecorder()
         }
 
-        val recordAudio = !isAudioMuted && !isTl
+        val recordAudio = !isAudioMuted && !isTl && !eraSilentAudio
         if (recordAudio) {
             recorder.setAudioSource(audioPreampMode.audioSource)
         }
