@@ -3,7 +3,9 @@ package com.studiomogli.idgafcamera
 import android.Manifest
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -172,6 +174,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var pendingRecRotation = Surface.ROTATION_90
     private lateinit var btnBrandCredits: TextView
     private lateinit var txtSysTelemetry: TextView
+    private lateinit var txtLowBatteryBanner: TextView
+    private lateinit var txtEraBattery: TextView
+    private var isBatteryCharging: Boolean = false
+    private var lastBatteryPct: Int = 100
+    private var lowBatteryWarned15: Boolean = false
+    private var lowBatteryWarned7: Boolean = false
+    private var lowBatteryBannerDismissed: Boolean = false
+    private var batteryReceiverRegistered: Boolean = false
     private lateinit var presetStore: PresetStore
     private var updateDownloadUrl: String? = null
     private var updateLatestTag: String? = null
@@ -505,9 +515,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
+    private val batteryBroadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            if (intent == null) return
+            updateSystemTelemetry(intent)
+        }
+    }
+
     private val sysTelemetryRunnable = object : Runnable {
         override fun run() {
-            updateSystemTelemetry()
+            updateSystemTelemetry(null)
             uiHandler.postDelayed(this, 10000L)
         }
     }
@@ -645,6 +662,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtTimerCountdown = findViewById(R.id.txtTimerCountdown)
         btnBrandCredits = findViewById(R.id.btnBrandCredits)
         txtSysTelemetry = findViewById(R.id.txtSysTelemetry)
+        txtLowBatteryBanner = findViewById(R.id.txtLowBatteryBanner)
+        txtEraBattery = findViewById(R.id.txtEraBattery)
+        txtLowBatteryBanner.setOnClickListener {
+            lowBatteryBannerDismissed = true
+            txtLowBatteryBanner.visibility = View.GONE
+        }
         presetStore = PresetStore(this)
         btnMonitorToggle = findViewById(R.id.btnMonitorToggle)
         monitorToolsBar = findViewById(R.id.monitorToolsBar)
@@ -1002,16 +1025,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             selectEraPanel(if (activeEraPanel == EraSliderPanel.FOCUS) EraSliderPanel.NONE else EraSliderPanel.FOCUS)
         }
 
-        // Nitrate Film Print Condition (NITRATE Clean <-> ARCHIVE Aged Vault)
+        // Print Stock Condition: FRESH (Day-1 1920s Premiere Nitrate) <-> ARCHIVE (100-Year Vault Print)
         pillEraPrint.setOnClickListener {
             eraArchiveWear = !eraArchiveWear
-            txtEraPrintVal.text = if (eraArchiveWear) "ARCHIVE" else "NITRATE"
+            txtEraPrintVal.text = if (eraArchiveWear) "ARCHIVE" else "FRESH"
             pillEraPrint.setBackgroundResource(if (eraArchiveWear) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
             txtEraPrintVal.setTextColor(if (eraArchiveWear) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
             engine.setEraRenderState(1, if (eraArchiveWear) 1.0f else 0.0f, eraSilentFps.toFloat())
             showSingleToast(
-                if (eraArchiveWear) "PRINT: ARCHIVE (Heavy Grain, Flicker & Vault Scratches)"
-                else "PRINT: NITRATE (Freshly Developed 1920s Orthochromatic)"
+                if (eraArchiveWear) "ARCHIVE — 100-Yr Vault Reel (Sepia Patina, Gate Weave, Scratches & Dust)"
+                else "FRESH — 1920s Premiere Nitrate (Clean Silver-Gelatin, Deep Blacks, Zero Scratches)",
+                Toast.LENGTH_LONG
             )
         }
 
@@ -1059,8 +1083,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun showWorkbenchSwitcherDialog() {
         val items = arrayOf(
-            (if (currentWorkbench == CameraWorkbench.SAVIOR) "✓ " else "") + "SAVIOR — Full Modern Digital Cinema Rig",
-            (if (currentWorkbench == CameraWorkbench.ERA) "✓ " else "") + "ERA — Authentic Vintage Camera Museum (1920s)",
+            (if (currentWorkbench == CameraWorkbench.SAVIOR) "✓ " else "") + "SAVIOR — Modern Digital Cinema Rig",
+            (if (currentWorkbench == CameraWorkbench.ERA) "✓ " else "") + "ERA — Classic Camera Vault (1920s)",
             "PURIST — Gate 65 Discipline (Coming in Phase 8)"
         )
         AlertDialog.Builder(this)
@@ -1078,20 +1102,20 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun showEraMuseumPickerDialog() {
         val items = arrayOf(
-            "✓ Era 1: 1920s Silent 35mm (Orthochromatic • 16/18 FPS)",
-            "Era 2: 1950s Satyajit Ray 35mm Monochrome (Coming in v0.7.4)",
-            "Era 3: 1970s Super 8 / 16mm Indie Film (Coming in v0.7.4)",
-            "Era 4: 1980s–90s VHS Camcorder (Coming in v0.7.5)",
-            "Era 5: 2000s MiniDV Handycam (Coming in v0.7.5)",
-            "Era 6: 2008 Early DSLR Cinema (Coming in v0.7.5)"
+            "✓ 1920s Classic Silent — 35mm Hand-Crank Orthochromatic",
+            "1950s Classic Monochrome — Satyajit Ray 35mm (Next in v0.7.4)",
+            "1970s Indie Celluloid — Super 8 & 16mm (Coming in v0.7.4)",
+            "1980s–90s Analog Tape — VHS Camcorder (Coming in v0.7.5)",
+            "2000s Classic CCD — MiniDV Handycam (Coming in v0.7.5)",
+            "2008 First-Gen HD — Early DSLR Cinema (Coming in v0.7.5)"
         )
         AlertDialog.Builder(this)
-            .setTitle("Chronological Era Museum")
+            .setTitle("Classic Camera Vault")
             .setItems(items) { _, which ->
                 if (which == 0) {
-                    showSingleToast("1920s Silent 35mm active")
+                    showSingleToast("1920s Classic Silent 35mm active")
                 } else {
-                    showSingleToast("We're building each Era camera one by one — next up in v0.7.4!", Toast.LENGTH_LONG)
+                    showSingleToast("Building each classic camera one by one — 1950s Classic Monochrome arrives next in v0.7.4!", Toast.LENGTH_LONG)
                 }
             }
             .setNegativeButton("Close", null)
@@ -1164,13 +1188,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtEraFootage.text = "000 FT • 00:00"
         txtEraFootage.setTextColor(0xFFF5E6C8.toInt())
         viewEraRecDot.visibility = View.GONE
-        txtEraPrintVal.text = if (eraArchiveWear) "ARCHIVE" else "NITRATE"
+        txtEraPrintVal.text = if (eraArchiveWear) "ARCHIVE" else "FRESH"
         pillEraPrint.setBackgroundResource(if (eraArchiveWear) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
         txtEraPrintVal.setTextColor(if (eraArchiveWear) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
         updateEraIrisUi()
         updateEraFocusUi()
 
-        showSingleToast("ERA 1: 1920s Silent 35mm • $eraSilentFps FPS Orthochromatic", Toast.LENGTH_LONG)
+        updateSystemTelemetry(null)
+        showSingleToast("1920s CLASSIC SILENT • $eraSilentFps FPS (${if (eraArchiveWear) "ARCHIVE" else "FRESH"} Print)", Toast.LENGTH_LONG)
     }
 
     private fun exitEraToSaviorWorkbench() {
@@ -1885,20 +1910,107 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         Toast.makeText(this, "Loaded template: ${p.name}", Toast.LENGTH_SHORT).show()
     }
 
-    private fun updateSystemTelemetry() {
+    private fun updateSystemTelemetry(batteryIntent: Intent? = null) {
         try {
+            val bIntent = batteryIntent ?: registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-            val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).coerceIn(0, 100)
+            val level = bIntent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = bIntent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val pct = if (level >= 0 && scale > 0) {
+                ((level * 100f) / scale.toFloat()).roundToInt().coerceIn(0, 100)
+            } else {
+                bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).coerceIn(0, 100)
+            }
+
+            val status = bIntent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val plugged = bIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+            val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == BatteryManager.BATTERY_STATUS_FULL ||
+                plugged != 0 ||
+                bm.isCharging
+
+            val wasCharging = isBatteryCharging
+            isBatteryCharging = charging
+            lastBatteryPct = pct
+
             val stat = StatFs(Environment.getDataDirectory().path)
             val freeGb = (stat.availableBlocksLong * stat.blockSizeLong) / (1024.0 * 1024.0 * 1024.0)
-            txtSysTelemetry.text = String.format(Locale.US, "%d%% • %.1fGB", pct, freeGb)
+
+            // 1. Update SAVIOR top-bar battery + charging icon (⚡) + free storage
+            txtSysTelemetry.text = when {
+                charging -> String.format(Locale.US, "⚡%d%% • %.1fGB", pct, freeGb)
+                pct <= 15 -> String.format(Locale.US, "LOW %d%% • %.1fGB", pct, freeGb)
+                else -> String.format(Locale.US, "%d%% • %.1fGB", pct, freeGb)
+            }
             txtSysTelemetry.setTextColor(
                 when {
-                    pct <= 15 || freeGb < 1.0 -> 0xFFFF3B30.toInt()
+                    freeGb < 1.0 -> 0xFFFF3B30.toInt()
+                    charging -> 0xFF34C759.toInt()
+                    pct <= 15 -> 0xFFFF3B30.toInt()
                     pct <= 30 || freeGb < 3.0 -> 0xFFFFCC00.toInt()
                     else -> 0xFFB0B7C3.toInt()
                 }
             )
+
+            // 2. Update ERA top-bar subtle battery pill (shown ONLY while charging ⚡ or low <= 15% so vintage HUD stays clean)
+            when {
+                charging -> {
+                    txtEraBattery.visibility = View.VISIBLE
+                    txtEraBattery.text = "⚡$pct%"
+                    txtEraBattery.setTextColor(0xFF34C759.toInt())
+                    txtEraBattery.setBackgroundResource(R.drawable.bg_era_pill)
+                }
+                pct <= 15 -> {
+                    txtEraBattery.visibility = View.VISIBLE
+                    txtEraBattery.text = "LOW $pct%"
+                    txtEraBattery.setTextColor(0xFFFF3B30.toInt())
+                    txtEraBattery.setBackgroundResource(R.drawable.bg_hud_pill_muted)
+                }
+                else -> {
+                    txtEraBattery.visibility = View.GONE
+                }
+            }
+
+            // 3. Low-Battery Plug-In Warning Banner & One-Time Toast Alerts
+            if (charging) {
+                if (!wasCharging && (lowBatteryWarned15 || lowBatteryWarned7)) {
+                    showSingleToast("Charger connected (⚡$pct%)")
+                }
+                lowBatteryWarned15 = false
+                lowBatteryWarned7 = false
+                lowBatteryBannerDismissed = false
+                txtLowBatteryBanner.visibility = View.GONE
+            } else if (pct > 20) {
+                lowBatteryWarned15 = false
+                lowBatteryWarned7 = false
+                lowBatteryBannerDismissed = false
+                txtLowBatteryBanner.visibility = View.GONE
+            } else if (pct <= 15) {
+                val isCritical = pct <= 7
+                txtLowBatteryBanner.text = if (isCritical) {
+                    "⚠ CRITICAL BATTERY $pct% — PLUG IN NOW"
+                } else {
+                    "⚠ LOW BATTERY $pct% — PLUG IN CHARGER"
+                }
+                if (isCritical && !lowBatteryWarned7) {
+                    lowBatteryWarned7 = true
+                    lowBatteryBannerDismissed = false
+                    showSingleToast("Critical Battery ($pct%) — Plug in charger now!", Toast.LENGTH_LONG)
+                } else if (!lowBatteryWarned15) {
+                    lowBatteryWarned15 = true
+                    showSingleToast("Low Battery ($pct%) — Plug in charger so recording stays safe", Toast.LENGTH_LONG)
+                }
+                val anyTopDrawerOpen = colorControlDrawer.visibility == View.VISIBLE ||
+                    monitorToolsBar.visibility == View.VISIBLE ||
+                    proSettingsBar.visibility == View.VISIBLE
+                txtLowBatteryBanner.visibility = if (!lowBatteryBannerDismissed && !anyTopDrawerOpen) {
+                    View.VISIBLE
+                } else {
+                    View.GONE
+                }
+            } else {
+                txtLowBatteryBanner.visibility = View.GONE
+            }
         } catch (_: Exception) {
         }
     }
@@ -2034,8 +2146,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.3"
-    } catch (_: Exception) { "0.7.3" }
+        info.versionName ?: "0.7.3.1"
+    } catch (_: Exception) { "0.7.3.1" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -4190,6 +4302,22 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         syncAnalysisLoop()
         syncHorizonSensor()
         startAudioVuMonitor()
+        if (!batteryReceiverRegistered) {
+            try {
+                val filter = IntentFilter().apply {
+                    addAction(Intent.ACTION_BATTERY_CHANGED)
+                    addAction(Intent.ACTION_POWER_CONNECTED)
+                    addAction(Intent.ACTION_POWER_DISCONNECTED)
+                }
+                registerReceiver(batteryBroadcastReceiver, filter)
+                batteryReceiverRegistered = true
+            } catch (_: Exception) {
+            }
+        }
+        if (batteryReceiverRegistered) {
+            try { unregisterReceiver(batteryBroadcastReceiver) } catch (_: Exception) {}
+            batteryReceiverRegistered = false
+        }
         uiHandler.removeCallbacks(sysTelemetryRunnable)
         uiHandler.post(sysTelemetryRunnable)
         textureView.surfaceTextureListener = surfaceTextureListener

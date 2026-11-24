@@ -1237,6 +1237,25 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Phase 7.3.1 Low Battery Plug-In Warning Pill (Visible when unplugged <= 15%; tap to dismiss, auto-hides on plug-in) -->
+    <TextView
+        android:id="@+id/txtLowBatteryBanner"
+        android:layout_width="wrap_content"
+        android:layout_height="28dp"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="56dp"
+        android:background="@drawable/bg_hud_pill_muted"
+        android:elevation="7dp"
+        android:fontFamily="monospace"
+        android:gravity="center"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:text="⚠ LOW BATTERY 15% — PLUG IN CHARGER"
+        android:textColor="#FF6B63"
+        android:textSize="10sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
     <!-- Phase 7.2.5 Floating Quick-Exit Pill for Full-Screen Split Wipe -->
     <TextView
         android:id="@+id/btnExitSplitWipe"
@@ -2012,7 +2031,7 @@
             android:gravity="center"
             android:paddingStart="10dp"
             android:paddingEnd="10dp"
-            android:text="1920s SILENT 35mm ▾"
+            android:text="1920s CLASSIC ▾"
             android:textColor="#E8B968"
             android:textSize="11sp"
             android:textStyle="bold" />
@@ -2055,6 +2074,22 @@
             android:layout_width="0dp"
             android:layout_height="1dp"
             android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/txtEraBattery"
+            android:layout_width="wrap_content"
+            android:layout_height="28dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/bg_era_pill"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="⚡100%"
+            android:textColor="#34C759"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/txtEraAudioBadge"
@@ -2287,7 +2322,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:fontFamily="monospace"
-                    android:text="NITRATE"
+                    android:text="FRESH"
                     android:textColor="#F5E6C8"
                     android:textSize="11sp"
                     android:textStyle="bold" />
