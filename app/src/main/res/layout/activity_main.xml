@@ -502,7 +502,7 @@
         android:padding="10dp"
         android:visibility="gone">
 
-        <!-- Header: Title + Hold A/B Raw Compare + Reset -->
+        <!-- Header: Title + Compact RAW + Reset + Close (X) Side-by-Side -->
         <LinearLayout
             android:id="@+id/colorDrawerHeaderRow"
             android:layout_width="match_parent"
@@ -516,7 +516,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:fontFamily="monospace"
-                android:text="GPU COLOR STUDIO • LIVE"
+                android:text="GPU COLOR STUDIO"
                 android:textColor="#FF5F1F"
                 android:textSize="10sp"
                 android:textStyle="bold" />
@@ -525,12 +525,12 @@
                 android:id="@+id/btnColorCompareAB"
                 android:layout_width="wrap_content"
                 android:layout_height="24dp"
-                android:layout_marginEnd="6dp"
+                android:layout_marginEnd="5dp"
                 android:background="@drawable/bg_hud_pill"
                 android:gravity="center"
                 android:paddingStart="9dp"
                 android:paddingEnd="9dp"
-                android:text="HOLD RAW"
+                android:text="RAW"
                 android:textColor="#FFFFFF"
                 android:textSize="9sp"
                 android:textStyle="bold" />
@@ -539,6 +539,7 @@
                 android:id="@+id/btnColorReset"
                 android:layout_width="wrap_content"
                 android:layout_height="24dp"
+                android:layout_marginEnd="5dp"
                 android:background="@drawable/bg_hud_pill"
                 android:gravity="center"
                 android:paddingStart="9dp"
@@ -546,6 +547,17 @@
                 android:text="RESET"
                 android:textColor="#FF5F1F"
                 android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnColorClose"
+                android:layout_width="26dp"
+                android:layout_height="24dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="✕"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
@@ -592,7 +604,7 @@
                 android:layout_weight="1"
                 android:background="@drawable/bg_hud_pill"
                 android:gravity="center"
-                android:text="CINE"
+                android:text="FILM"
                 android:textColor="#FFFFFF"
                 android:textSize="9sp"
                 android:textStyle="bold" />
@@ -605,7 +617,7 @@
                 android:layout_weight="1"
                 android:background="@drawable/bg_hud_pill"
                 android:gravity="center"
-                android:text="PUNCH"
+                android:text="VIVID"
                 android:textColor="#FFFFFF"
                 android:textSize="9sp"
                 android:textStyle="bold" />
@@ -617,7 +629,7 @@
                 android:layout_weight="1"
                 android:background="@drawable/bg_hud_pill"
                 android:gravity="center"
-                android:text="NOIR"
+                android:text="MONO"
                 android:textColor="#FFFFFF"
                 android:textSize="9sp"
                 android:textStyle="bold" />

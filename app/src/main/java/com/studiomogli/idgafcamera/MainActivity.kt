@@ -114,6 +114,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var rowColorVig: LinearLayout
     private lateinit var btnColorCompareAB: TextView
     private lateinit var btnColorReset: TextView
+    private lateinit var btnColorClose: TextView
     private lateinit var btnLookNone: TextView
     private lateinit var btnLookLog: TextView
     private lateinit var btnLookCine: TextView
@@ -552,6 +553,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         rowColorVig = findViewById(R.id.rowColorVig)
         btnColorCompareAB = findViewById(R.id.btnColorCompareAB)
         btnColorReset = findViewById(R.id.btnColorReset)
+        btnColorClose = findViewById(R.id.btnColorClose)
         btnLookNone = findViewById(R.id.btnLookNone)
         btnLookLog = findViewById(R.id.btnLookLog)
         btnLookCine = findViewById(R.id.btnLookCine)
@@ -1462,7 +1464,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     "• Price: $0 / ₹0 FOREVER.\n" +
                     "• Zero paywalls. Zero watermarks. Zero subscriptions.\n" +
                     "• Optional Human Lifetime License: $1 USD globally — only if you feel like owning it officially. Otherwise, it stays 100% free forever.\n\n" +
-                    "2. FOR SUBSCRIPTION-HAPPY CORPORATIONS (Any XYZ Company Charging Humans Monthly Rent Just to Breathe):\n" +
+                    "2. SPECIAL EXEMPTION — ALPHABET / GOOGLE:\n" +
+                    "• Permanently FREE FOREVER for Alphabet Inc., Google LLC, and all of their wholly owned subsidiaries worldwide.\n\n" +
+                    "3. FOR SUBSCRIPTION-HAPPY CORPORATIONS (Any Other XYZ Company Charging Humans Monthly Rent Just to Breathe):\n" +
                     "• Mandatory Corporate Redemption Subscription: $9,999 USD / month per device (billed annually, payable in advance, auto-renewing with zero grace period).\n" +
                     "• LIFETIME LICENSE STRICTLY BANNED: Corporations & organizations are permanently prohibited from purchasing the $1 Lifetime License. No buyouts. Enjoy your monthly bill.\n\n" +
                     "— Studio Mogli / Savior San"
@@ -1536,8 +1540,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.2.3"
-    } catch (_: Exception) { "0.7.2.3" }
+        info.versionName ?: "0.7.2.4"
+    } catch (_: Exception) { "0.7.2.4" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -1619,7 +1623,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             updateLookTopPillVisual()
         }
 
-        // Press-and-hold Peek-Through A/B Compare: hides drawer clutter while held so you see the full frame raw!
+        // Press-and-hold Peek-Through RAW Compare: hides drawer clutter while held so you see 100% raw sensor output!
         btnColorCompareAB.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -1627,14 +1631,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     engine.updateGpuColorState(gpuColorState)
                     setColorDrawerRawComparePeek(true)
                     styleToolPill(btnColorCompareAB, true)
-                    btnColorCompareAB.text = "RAW"
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     gpuColorState = gpuColorState.copy(isBypassed = false)
                     engine.updateGpuColorState(gpuColorState)
                     setColorDrawerRawComparePeek(false)
                     styleToolPill(btnColorCompareAB, false)
-                    btnColorCompareAB.text = "HOLD RAW"
                 }
             }
             true
@@ -1644,6 +1646,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             clearActiveCubeLut()
             applyBuiltInLook("NONE", GpuColorState())
             showSingleToast("GPU Color & 3D LUT Reset")
+        }
+
+        btnColorClose.setOnClickListener {
+            setColorDrawerPeekMode(null)
+            setColorDrawerRawComparePeek(false)
+            colorControlDrawer.visibility = View.GONE
+            updateLookTopPillVisual()
         }
 
         btnLutPrev.setOnClickListener {
@@ -1662,58 +1671,63 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             showImportCubeSourceMenu()
         }
 
+        // World-Class Calibrated Grading Foundations (single-pass GPU only — zero hardware double-flattening!)
         btnLookNone.setOnClickListener {
             applyBuiltInLook("NONE", GpuColorState())
         }
         btnLookLog.setOnClickListener {
+            // Single-pass Savior Log: clean shadow & highlight latitude for DaVinci Resolve / 3D LUTs without milky double-LOG
             applyBuiltInLook(
                 "LOG",
                 GpuColorState(
                     exposureLift = 0.0f,
-                    contrast = 0.78f,
-                    saturation = 0.72f,
-                    shadows = 0.34f,
-                    highlights = -0.32f,
+                    contrast = 0.84f,
+                    saturation = 0.78f,
+                    shadows = 0.26f,
+                    highlights = -0.24f,
                     vignette = 0.0f
                 )
             )
         }
         btnLookCine.setOnClickListener {
+            // FILM: calibrated celluloid tonal foundation (rolled-off highlights, grounded shadows, subtle lens vignette)
             applyBuiltInLook(
-                "CINE",
+                "FILM",
                 GpuColorState(
                     exposureLift = 0.0f,
-                    contrast = 1.18f,
-                    saturation = 0.92f,
-                    shadows = -0.14f,
-                    highlights = -0.16f,
-                    vignette = -0.28f
+                    contrast = 1.12f,
+                    saturation = 0.94f,
+                    shadows = -0.08f,
+                    highlights = -0.18f,
+                    vignette = -0.22f
                 )
             )
         }
         btnLookPunch.setOnClickListener {
+            // VIVID: clean commercial broadcast pop (lifted shadow detail, controlled highlights, rich natural color)
             applyBuiltInLook(
-                "PUNCH",
+                "VIVID",
                 GpuColorState(
-                    exposureLift = 0.10f,
-                    contrast = 1.14f,
-                    saturation = 1.28f,
-                    shadows = 0.06f,
-                    highlights = 0.10f,
-                    vignette = -0.14f
+                    exposureLift = 0.05f,
+                    contrast = 1.10f,
+                    saturation = 1.16f,
+                    shadows = 0.10f,
+                    highlights = -0.06f,
+                    vignette = -0.10f
                 )
             )
         }
         btnLookNoir.setOnClickListener {
+            // MONO: rich silver-halide monochrome foundation with clean facial midtones
             applyBuiltInLook(
-                "NOIR",
+                "MONO",
                 GpuColorState(
                     exposureLift = 0.0f,
-                    contrast = 1.34f,
+                    contrast = 1.26f,
                     saturation = 0.0f,
-                    shadows = -0.22f,
-                    highlights = 0.12f,
-                    vignette = -0.42f
+                    shadows = -0.14f,
+                    highlights = 0.06f,
+                    vignette = -0.28f
                 )
             )
         }
@@ -1827,6 +1841,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             colorControlDrawer.setBackgroundColor(Color.TRANSPARENT)
             txtColorDrawerTitle.visibility = View.INVISIBLE
             btnColorReset.visibility = View.INVISIBLE
+            btnColorClose.visibility = View.INVISIBLE
             colorLooksPresetRow.visibility = View.INVISIBLE
             colorLutBarRow.visibility = View.INVISIBLE
             scrollColorSliders.visibility = View.INVISIBLE
@@ -1834,6 +1849,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             colorControlDrawer.setBackgroundResource(R.drawable.bg_hud_pill)
             txtColorDrawerTitle.visibility = View.VISIBLE
             btnColorReset.visibility = View.VISIBLE
+            btnColorClose.visibility = View.VISIBLE
             colorLooksPresetRow.visibility = View.VISIBLE
             colorLutBarRow.visibility = View.VISIBLE
             scrollColorSliders.visibility = View.VISIBLE
@@ -1843,8 +1859,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun applyBuiltInLook(tag: String, state: GpuColorState) {
         activeLookTag = tag
         gpuColorState = state.copy(lutIntensity = gpuColorState.lutIntensity, isBypassed = false)
-        // Unified tone curve: LOG automatically enables hardware FLAT sensor curve; others stay STANDARD
-        engine.setToneProfile(if (tag == "LOG") ToneProfile.FLAT else ToneProfile.STANDARD)
+        // Always keep hardware sensor pipeline clean STANDARD so LOG never double-applies and RAW compares 100% faithfully!
+        engine.setToneProfile(ToneProfile.STANDARD)
         pushGpuColorStateAndRefreshUi()
     }
 
@@ -2151,9 +2167,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         styleToolPill(btnLookNone, activeLookTag == "NONE" && gpuColorState.isNeutral(hasLut))
         styleToolPill(btnLookLog, activeLookTag == "LOG")
-        styleToolPill(btnLookCine, activeLookTag == "CINE")
-        styleToolPill(btnLookPunch, activeLookTag == "PUNCH")
-        styleToolPill(btnLookNoir, activeLookTag == "NOIR")
+        styleToolPill(btnLookCine, activeLookTag == "FILM")
+        styleToolPill(btnLookPunch, activeLookTag == "VIVID")
+        styleToolPill(btnLookNoir, activeLookTag == "MONO")
         updateLookTopPillVisual()
     }
 
@@ -3411,9 +3427,20 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             currentFps = normalFps
             btnFps.text = "$normalFps FPS"
         }
+        // 5. Storage readiness check (< 0.5 GB warning)
+        val freeGb = try {
+            val stat = StatFs(Environment.getDataDirectory().path)
+            (stat.availableBlocksLong * stat.blockSizeLong) / (1024.0 * 1024.0 * 1024.0)
+        } catch (_: Exception) { 10.0 }
+
         engine.engageAutoPilot(resetToFps = normalFps)
         updateEvDisplay()
-        showSingleToast(if (fpsChanged) "Auto Pilot: resetting to $normalFps FPS & metering..." else "Auto Pilot metering scene...")
+        val msg = when {
+            freeGb < 0.5 -> "Auto Pilot metering • Warning: low storage (${String.format(Locale.US, "%.2f", freeGb)} GB free)!"
+            fpsChanged -> "Auto Pilot: resetting to $normalFps FPS & metering..."
+            else -> "Auto Pilot optimizing exposure & 180° shutter..."
+        }
+        showSingleToast(msg, if (freeGb < 0.5) Toast.LENGTH_LONG else Toast.LENGTH_SHORT)
     }
 
     private fun updateAutoPilotUi(state: AutoPilotState) {
@@ -3436,7 +3463,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
-    override fun onAutoPilotStateChanged(state: AutoPilotState, summary: String?) {
+    override fun onAutoPilotStateChanged(state: AutoPilotState, summary: String?, isLowLight: Boolean) {
         runOnUiThread {
             updateAutoPilotUi(state)
             updateLockUi(engine.isAeAfLocked)
@@ -3445,8 +3472,29 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (state == AutoPilotState.LOCKED && !summary.isNullOrBlank()) {
                 val audioTag = if (engine.isAudioMuted) "MUTED" else "Audio LIVE"
                 showSingleToast("$summary • $audioTag", Toast.LENGTH_LONG)
+                if (isLowLight && engine.capabilities.hasFlash && !engine.isTorchEnabled && !engine.isRecording && !isFinishing && !isDestroyed) {
+                    showPilotLowLightTorchPrompt(engine.manualIso)
+                }
             }
         }
+    }
+
+    private fun showPilotLowLightTorchPrompt(lockedIso: Int) {
+        AlertDialog.Builder(this)
+            .setTitle("Low Light Detected (ISO $lockedIso)")
+            .setMessage("The scene is dark. Turning on the Flashlight (Torch) will cut grain and give sharper autofocus — then Auto Pilot will automatically re-balance exposure.")
+            .setPositiveButton("TORCH ON & RE-METER") { _, _ ->
+                if (!engine.isRecording) {
+                    val on = engine.setTorchEnabled(true)
+                    styleToolPill(btnProTorch, on)
+                    if (on) {
+                        engine.engageAutoPilot()
+                        showSingleToast("Torch ON — Auto Pilot re-metering scene...")
+                    }
+                }
+            }
+            .setNegativeButton("KEEP DARK", null)
+            .show()
     }
 
     override fun onRecordingStarted() {

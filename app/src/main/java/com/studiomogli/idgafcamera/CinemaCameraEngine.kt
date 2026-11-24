@@ -129,7 +129,7 @@ interface CinemaEngineListener {
     fun onRecordingStarted()
     fun onRecordingStopped(savedUri: Uri?, filePathLabel: String)
     fun onTimelapseProgress(capturedFrames: Long, outputDurationSec: Float)
-    fun onAutoPilotStateChanged(state: AutoPilotState, summary: String? = null)
+    fun onAutoPilotStateChanged(state: AutoPilotState, summary: String? = null, isLowLight: Boolean = false)
     fun onError(message: String)
 }
 
@@ -613,13 +613,60 @@ class CinemaCameraEngine(
     private fun finalizeAutoPilotSceneLock(pushRequest: Boolean = true) {
         if (autoPilotState != AutoPilotState.METERING) return
 
-        // Freeze exact converged Exposure & White Balance so the shot stays rock-steady without pumping
+        var isLowLight = false
+        var modeTag = "LOCKED"
+
+        // Smart Auto Pilot v2 Exposure Optimizer: preserves exact metered brightness while re-balancing
+        // ISO & Shutter toward clean 180-deg cinema motion blur, base-ISO daylight, or low-noise low-light!
         if (capabilities.supportsManualExposure && liveIso > 0 && liveShutterNs > 0L) {
-            manualIso = liveIso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
-            manualShutterNs = liveShutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+            val minIso = capabilities.effectiveIsoRange.lower.coerceAtLeast(1)
+            val maxIso = capabilities.effectiveIsoRange.upper.coerceAtLeast(minIso)
+            val minExp = capabilities.exposureRangeNs.lower.coerceAtLeast(10_000L)
+            val maxExp = capabilities.exposureRangeNs.upper.coerceAtLeast(minExp)
+
+            val fps = targetFps.coerceIn(1, 60)
+            val ideal180Ns = (1_000_000_000L / (fps * 2L)).coerceIn(minExp, maxExp)
+            val maxVideoShutterNs = (1_000_000_000L / fps.toLong()).coerceIn(minExp, maxExp)
+            val evProduct = liveIso.toDouble() * liveShutterNs.toDouble()
+            val isoAt180 = Math.round(evProduct / ideal180Ns.toDouble()).toInt()
+
+            when {
+                isoAt180 < minIso -> {
+                    // Bright daylight: lock lowest noise base ISO & let shutter absorb excess light
+                    manualIso = minIso
+                    manualShutterNs = (evProduct / minIso.toDouble()).toLong().coerceIn(minExp, maxExp)
+                    isShutter180Locked = false
+                    modeTag = "DAYLIGHT"
+                }
+                isoAt180 <= 800 && isoAt180 <= maxIso -> {
+                    // Cinema sweet spot: true 180-degree shutter rule with clean low ISO!
+                    manualIso = isoAt180
+                    manualShutterNs = ideal180Ns
+                    isShutter180Locked = true
+                    modeTag = "180° CINE"
+                }
+                else -> {
+                    // Dim / Low-Light: open shutter cleanly up to 1/fps first to slash grain before raising ISO
+                    val isoAt360 = Math.round(evProduct / maxVideoShutterNs.toDouble()).toInt()
+                    if (isoAt360 in minIso..800 && isoAt360 <= maxIso) {
+                        manualIso = minOf(800, maxIso)
+                        manualShutterNs = (evProduct / manualIso.toDouble()).toLong().coerceIn(ideal180Ns, maxVideoShutterNs)
+                        isShutter180Locked = false
+                        modeTag = "LOW-LIGHT"
+                    } else {
+                        manualShutterNs = maxVideoShutterNs
+                        manualIso = isoAt360.coerceIn(minIso, maxIso)
+                        isShutter180Locked = false
+                        modeTag = "DARK"
+                    }
+                }
+            }
             isManualExposure = true
-            isShutter180Locked = false
+            isLowLight = (manualIso >= 1600)
+        } else {
+            isLowLight = (liveIso >= 1600)
         }
+
         manualKelvin = liveKelvin.coerceIn(2500, 8500)
         manualTint = 0
         isManualWb = true
@@ -633,8 +680,8 @@ class CinemaCameraEngine(
         }
 
         val denom = (1_000_000_000.0 / manualShutterNs.coerceAtLeast(1L).toDouble()).toInt().coerceAtLeast(1)
-        val summary = "PILOT LOCKED • ISO $manualIso • 1/${denom}s • ${manualKelvin}K • AF-C"
-        listener.onAutoPilotStateChanged(AutoPilotState.LOCKED, summary)
+        val summary = "PILOT ($modeTag) • ISO $manualIso • 1/${denom}s • ${manualKelvin}K • AF-C"
+        listener.onAutoPilotStateChanged(AutoPilotState.LOCKED, summary, isLowLight)
     }
 
     // ==================== PRO MANUAL CONTROLS API ====================
@@ -699,11 +746,15 @@ class CinemaCameraEngine(
     }
 
     fun toggleTorch(): Boolean {
+        return setTorchEnabled(!isTorchEnabled)
+    }
+
+    fun setTorchEnabled(enabled: Boolean): Boolean {
         if (!capabilities.hasFlash) {
             isTorchEnabled = false
             return false
         }
-        isTorchEnabled = !isTorchEnabled
+        isTorchEnabled = enabled
         pushUpdatedRepeatingRequest()
         return isTorchEnabled
     }
