@@ -799,6 +799,7 @@ class CinemaGlRenderer(
 
     @Volatile var scopeState: GpuScopeState = GpuScopeState()
     @Volatile var colorState: GpuColorState = GpuColorState()
+    @Volatile var evOverdriveStops: Float = 0.0f // Smooth GPU continuation when EV exceeds hardware +1.0 EV video ceiling
     @Volatile var splitCompareFraction: Float = -1.0f // < 0.0 = OFF, 0.0..1.0 = Live RAW | LOOK vertical wipe
     @Volatile var eraModeCode: Int = 0 // 0 = SAVIOR, 1 = 1920s Silent 35mm, 2 = 1950s Monochrome 35mm
     @Volatile var eraWearLevel: Float = 0.0f // 0.0 = NITRATE Clean, 1.0 = ARCHIVE Aged
@@ -1504,8 +1505,9 @@ class CinemaGlRenderer(
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex1Id)
         GLES20.glUniform1i(uLutTextureLoc, 1)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        val evOverdriveMul = Math.pow(2.0, evOverdriveStops.coerceIn(-2.0f, 2.0f).toDouble()).toFloat()
         if (cs.isBypassed) {
-            GLES20.glUniform1f(uExposureMulLoc, 1.0f)
+            GLES20.glUniform1f(uExposureMulLoc, evOverdriveMul)
             GLES20.glUniform1f(uContrastLoc, 1.0f)
             GLES20.glUniform1f(uSaturationLoc, 1.0f)
             GLES20.glUniform1f(uShadowsLoc, 0.0f)
@@ -1515,7 +1517,7 @@ class CinemaGlRenderer(
             GLES20.glUniform1f(uLutSizeLoc, 33.0f)
             GLES20.glUniform1f(uLutIntensityLoc, 0.0f)
         } else {
-            val expMul = Math.pow(2.0, cs.exposureLift.toDouble()).toFloat()
+            val expMul = Math.pow(2.0, cs.exposureLift.toDouble()).toFloat() * evOverdriveMul
             GLES20.glUniform1f(uExposureMulLoc, expMul)
             GLES20.glUniform1f(uContrastLoc, cs.contrast)
             GLES20.glUniform1f(uSaturationLoc, cs.saturation)

@@ -377,6 +377,7 @@ class CinemaCameraEngine(
             glRenderer?.start()
         }
         glRenderer?.colorState = gpuColorState
+        syncEvOverdriveToGpu()
         glRenderer?.splitCompareFraction = splitCompareFraction
         glRenderer?.eraModeCode = eraModeCode
         glRenderer?.eraWearLevel = eraWearLevel
@@ -384,6 +385,7 @@ class CinemaCameraEngine(
         glRenderer?.eraFilterCode = eraFilterCode
         glRenderer?.eraGrainMultiplier = eraGrainMultiplier
         glRenderer?.eraGateAspect = eraGateAspect
+        syncEvOverdriveToGpu()
         glRenderer?.mirrorFrontExport = mirrorFrontExport
         cleanupOrphanEraCacheFiles()
         glRenderer?.setCubeLut(activeCubeLut)
@@ -472,6 +474,7 @@ class CinemaCameraEngine(
         isShutter180Locked = false
         manualIso = iso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
         manualShutterNs = shutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+        syncEvOverdriveToGpu()
         pushUpdatedRepeatingRequest()
     }
 
@@ -728,6 +731,7 @@ class CinemaCameraEngine(
         manualTint = 0
         isManualFocus = false
         isAeAfLocked = false
+        syncEvOverdriveToGpu()
         pushUpdatedRepeatingRequest()
         listener.onAutoPilotStateChanged(AutoPilotState.OFF, null)
     }
@@ -801,6 +805,7 @@ class CinemaCameraEngine(
         isAeAfLocked = false
 
         autoPilotState = AutoPilotState.LOCKED
+        syncEvOverdriveToGpu()
         if (pushRequest) {
             pushUpdatedRepeatingRequest()
         }
@@ -824,6 +829,7 @@ class CinemaCameraEngine(
             isManualExposure = true
         }
         manualIso = iso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
+        syncEvOverdriveToGpu()
         pushUpdatedRepeatingRequest()
     }
 
@@ -836,6 +842,7 @@ class CinemaCameraEngine(
         }
         isShutter180Locked = false
         manualShutterNs = shutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+        syncEvOverdriveToGpu()
         pushUpdatedRepeatingRequest()
     }
 
@@ -851,6 +858,7 @@ class CinemaCameraEngine(
         val fps = targetFps.coerceAtLeast(1)
         val rawNs = ((clampedAngle / 360.0) * (1_000_000_000.0 / fps)).toLong()
         manualShutterNs = rawNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+        syncEvOverdriveToGpu()
         pushUpdatedRepeatingRequest()
     }
 
@@ -911,20 +919,33 @@ class CinemaCameraEngine(
                 isManualExposure = true
             }
             manualShutterNs = compute180ShutterNs(targetFps)
-            pushUpdatedRepeatingRequest()
+            syncEvOverdriveToGpu()
+        pushUpdatedRepeatingRequest()
         }
         return isShutter180Locked
     }
 
+    private fun syncEvOverdriveToGpu() {
+        // Only apply smooth GPU EV continuation in SAVIOR Auto Exposure when EV goes beyond typical +1.0 / -2.0 video hardware AE ceilings
+        val overdrive = if (eraModeCode == 0 && !isManualExposure) {
+            val stops = getCurrentEvStops()
+            when {
+                stops > 1.0f -> ((stops - 1.0f) * 0.70f).coerceAtMost(1.8f)
+                stops < -2.0f -> ((stops + 2.0f) * 0.70f).coerceAtLeast(-1.8f)
+                else -> 0.0f
+            }
+        } else {
+            0.0f
+        }
+        glRenderer?.evOverdriveStops = overdrive
+    }
+
     fun setEvCompensation(index: Int): Boolean {
-        if (isAeAfLocked) return false
+        if (isAeAfLocked || isManualExposure) return false
         clearAutoPilotSilently()
         val clamped = index.coerceIn(capabilities.evRange.lower, capabilities.evRange.upper)
         evCompensationIndex = clamped
-        if (isManualExposure) {
-            isManualExposure = false
-            isShutter180Locked = false
-        }
+        syncEvOverdriveToGpu()
         pushUpdatedRepeatingRequest()
         return true
     }
@@ -935,6 +956,7 @@ class CinemaCameraEngine(
         clearAutoPilotSilently()
         isManualExposure = false
         isShutter180Locked = false
+        syncEvOverdriveToGpu()
         pushUpdatedRepeatingRequest()
     }
 
@@ -997,7 +1019,8 @@ class CinemaCameraEngine(
                 isManualExposure = true
             }
             manualShutterNs = compute180ShutterNs(targetFps)
-            pushUpdatedRepeatingRequest()
+            syncEvOverdriveToGpu()
+        pushUpdatedRepeatingRequest()
         }
     }
 

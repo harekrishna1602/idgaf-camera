@@ -156,13 +156,13 @@
             android:layout_width="wrap_content"
             android:layout_height="32dp"
             android:layout_marginEnd="6dp"
-            android:background="@drawable/bg_era_pill"
+            android:background="@drawable/bg_hud_pill"
             android:fontFamily="monospace"
             android:gravity="center"
             android:paddingStart="11dp"
             android:paddingEnd="11dp"
             android:text="ERA ▾"
-            android:textColor="#E8B968"
+            android:textColor="#FF5F1F"
             android:textSize="11sp"
             android:textStyle="bold" />
 
@@ -966,22 +966,20 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- SUBTLE FLOATING RESTORE EYE BUTTON (Same Left-Rail Spot when Clean-Frame Hide-UI Mode is ON!) -->
-    <TextView
+    <!-- SUBTLE FLOATING RESTORE HUD BUTTON (Same Left-Rail Spot when Clean-Frame Mode is ON!) -->
+    <ImageView
         android:id="@+id/btnRestoreCleanUi"
         android:layout_width="52dp"
         android:layout_height="34dp"
         android:layout_gravity="start|center_vertical"
         android:layout_marginStart="16dp"
-        android:alpha="0.38"
+        android:alpha="0.42"
         android:background="@drawable/bg_hud_pill"
+        android:contentDescription="Restore HUD"
         android:elevation="11dp"
-        android:fontFamily="monospace"
-        android:gravity="center"
-        android:text="👁"
-        android:textColor="#FFFFFF"
-        android:textSize="13sp"
-        android:textStyle="bold"
+        android:padding="8dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_clean_hud"
         android:visibility="gone" />
 
     <!-- FLOATING GPU COLOR CONTROL STUDIO DRAWER (Toggled by LOOK pill — Phase 7.2A) -->
@@ -1772,16 +1770,16 @@
             android:gravity="center_horizontal"
             android:orientation="vertical" />
 
-        <TextView
+        <ImageView
             android:id="@+id/btnCleanUiToggle"
             android:layout_width="52dp"
             android:layout_height="34dp"
             android:layout_marginTop="4dp"
             android:background="@drawable/bg_hud_pill"
-            android:gravity="center"
-            android:text="👁"
-            android:textColor="#FFFFFF"
-            android:textSize="13sp" />
+            android:contentDescription="Clean Frame Mode"
+            android:padding="8dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_clean_hud" />
     </LinearLayout>
 
     <!-- FLOATING ZOOM ENGINE v2 POPOUT DRAWER (Presets, Curves, A/B Smooth Pull + Slider) -->

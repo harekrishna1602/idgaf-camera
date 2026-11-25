@@ -20,7 +20,10 @@ import android.provider.OpenableColumns
 import android.text.InputType
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.content.res.ColorStateList
 import android.widget.EditText
+import android.widget.ImageView
+import androidx.core.widget.ImageViewCompat
 import androidx.appcompat.app.AlertDialog
 import android.content.Context
 import android.content.res.Configuration
@@ -301,8 +304,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var viewRecDot: View
     private lateinit var btnFormatToggle: TextView
     private lateinit var leftRailWrapper: LinearLayout
-    private lateinit var btnCleanUiToggle: TextView
-    private lateinit var btnRestoreCleanUi: TextView
+    private lateinit var btnCleanUiToggle: ImageView
+    private lateinit var btnRestoreCleanUi: ImageView
     private lateinit var rightRailContainer: LinearLayout
     private lateinit var formatDrawer: LinearLayout
     private lateinit var txtFormatSummary: TextView
@@ -1322,10 +1325,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun updateCleanUiToggleStyle() {
         if (currentWorkbench == CameraWorkbench.ERA) {
             btnCleanUiToggle.setBackgroundResource(R.drawable.bg_era_pill)
-            btnCleanUiToggle.setTextColor(0xFFE8B968.toInt())
+            ImageViewCompat.setImageTintList(btnCleanUiToggle, ColorStateList.valueOf(0xFFE8B968.toInt()))
         } else {
             btnCleanUiToggle.setBackgroundResource(R.drawable.bg_hud_pill)
-            btnCleanUiToggle.setTextColor(0xFFFFFFFF.toInt())
+            ImageViewCompat.setImageTintList(btnCleanUiToggle, ColorStateList.valueOf(0xFFFFFFFF.toInt()))
         }
     }
 
@@ -1373,13 +1376,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun updateRestoreCleanEyeBadge() {
         if (!isCleanFrameMode) return
         if (engine.isRecording) {
-            btnRestoreCleanUi.text = "● 👁"
-            btnRestoreCleanUi.setTextColor(0xFFFF3B30.toInt())
-            btnRestoreCleanUi.alpha = 0.72f
+            ImageViewCompat.setImageTintList(btnRestoreCleanUi, ColorStateList.valueOf(0xFFFF3B30.toInt()))
+            btnRestoreCleanUi.setBackgroundResource(R.drawable.bg_hud_pill_muted)
+            btnRestoreCleanUi.alpha = 0.80f
         } else {
-            btnRestoreCleanUi.text = "👁"
-            btnRestoreCleanUi.setTextColor(0xFFFFFFFF.toInt())
-            btnRestoreCleanUi.alpha = 0.36f
+            ImageViewCompat.setImageTintList(btnRestoreCleanUi, ColorStateList.valueOf(0xFFFFFFFF.toInt()))
+            btnRestoreCleanUi.setBackgroundResource(R.drawable.bg_hud_pill)
+            btnRestoreCleanUi.alpha = 0.42f
         }
     }
 
@@ -1395,8 +1398,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         renderWorkbenchEraDrawerChips(mode)
         workbenchEraDrawer.visibility = View.VISIBLE
         if (currentWorkbench == CameraWorkbench.SAVIOR) {
-            btnWorkbenchToEra.setBackgroundResource(R.drawable.bg_era_pill_active)
-            btnWorkbenchToEra.setTextColor(0xFF141210.toInt())
+            btnWorkbenchToEra.setBackgroundResource(R.drawable.bg_lens_active)
+            btnWorkbenchToEra.setTextColor(0xFF0B0D10.toInt())
         }
         syncLowBatteryBannerVisibility()
     }
@@ -1405,8 +1408,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         if (workbenchEraDrawer.visibility == View.VISIBLE) {
             workbenchEraDrawer.visibility = View.GONE
         }
-        btnWorkbenchToEra.setBackgroundResource(R.drawable.bg_era_pill)
-        btnWorkbenchToEra.setTextColor(0xFFE8B968.toInt())
+        btnWorkbenchToEra.setBackgroundResource(R.drawable.bg_hud_pill)
+        btnWorkbenchToEra.setTextColor(0xFFFF5F1F.toInt())
         syncLowBatteryBannerVisibility()
     }
 
@@ -3375,8 +3378,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         if (!isFinishing && !isDestroyed) {
                             updateDownloadUrl = downloadUrl
                             updateLatestTag = latestTag
-                            // Turn top-left IDGAF CAM button light green (like Pilot active) when update is ready!
-                            btnBrandCredits.text = "UPDATE ↑"
+                            // Keep IDGAF CAM text, append ↑ arrow, and turn pill light green when update is ready!
+                            btnBrandCredits.text = "IDGAF CAM ↑"
                             btnBrandCredits.setBackgroundResource(R.drawable.bg_pilot_active)
                             btnBrandCredits.setTextColor(0xFF0B0D10.toInt())
                             // Live-refresh the open Credits dialog button immediately (no close/reopen needed!)
@@ -3412,8 +3415,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.6.1"
-    } catch (_: Exception) { "0.7.6.1" }
+        info.versionName ?: "0.7.6.2"
+    } catch (_: Exception) { "0.7.6.2" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -4762,6 +4765,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun setupProDockAndDrawer() {
         pillEv.setOnClickListener {
+            if (engine.isManualExposure) {
+                showSingleToast("Manual ISO/Shutter active — switch ISO/SHUTTER to AUTO to use EV")
+                return@setOnClickListener
+            }
             selectPanel(if (activePanel == ProControlPanel.EV) ProControlPanel.NONE else ProControlPanel.EV)
         }
 
@@ -4805,7 +4812,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     engine.setEvCompensation(0)
                     updateEvDisplay()
                 }
-                ProControlPanel.ISO, ProControlPanel.SHUTTER -> engine.setAutoExposure()
+                ProControlPanel.ISO, ProControlPanel.SHUTTER -> {
+                    engine.setAutoExposure()
+                    updateEvDisplay()
+                }
                 ProControlPanel.FOCUS -> {
                     rackAnimator?.cancel()
                     engine.setAutoFocus()
@@ -4947,7 +4957,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                             txtSliderReadout.text = formatEv(engine.getCurrentEvStops())
                             updateAutoButtonVisual(isManual = engine.evCompensationIndex != 0)
                         } else {
-                            showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                            showSingleToast(if (engine.isManualExposure) "Manual ISO/Shutter active — switch to AUTO to use EV" else "AE/AF Lock is ON — turn off LOCK first")
                             refreshSliderState()
                         }
                     }
@@ -5254,9 +5264,19 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun updateEvDisplay() {
-        val stops = engine.getCurrentEvStops()
-        txtEvVal.text = formatEv(stops)
-        txtEvVal.setTextColor(if (engine.evCompensationIndex != 0 && !engine.isManualExposure) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
+        if (engine.isManualExposure) {
+            txtEvVal.text = "MAN"
+            txtEvVal.setTextColor(0xFF8E96A4.toInt())
+            pillEv.alpha = 0.55f
+            if (activePanel == ProControlPanel.EV) {
+                selectPanel(ProControlPanel.NONE)
+            }
+        } else {
+            pillEv.alpha = 1.0f
+            val stops = engine.getCurrentEvStops()
+            txtEvVal.text = formatEv(stops)
+            txtEvVal.setTextColor(if (engine.evCompensationIndex != 0) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
+        }
     }
 
     private fun formatShutter(ns: Long): String {
@@ -5447,6 +5467,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
             txtIsoVal.text = telemetry.iso.toString()
             txtIsoVal.setTextColor(if (telemetry.isManualExposure) orange else white)
+            updateEvDisplay()
 
             txtShutterVal.text = if (shutterInAngleMode) {
                 String.format(Locale.US, "%.0f°", engine.getCurrentShutterAngle())
