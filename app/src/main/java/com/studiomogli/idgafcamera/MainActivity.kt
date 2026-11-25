@@ -54,7 +54,13 @@ import android.view.View
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import com.studiomogli.idgafcamera.era.EraCameraPlugin
+import com.studiomogli.idgafcamera.era.EraHostBridge
+import com.studiomogli.idgafcamera.era.EraPluginRegistry
+import com.studiomogli.idgafcamera.era.EraRenderConfig
+import com.studiomogli.idgafcamera.era.EraWorkbenchCategory
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -73,12 +79,7 @@ import kotlin.math.roundToInt
 enum class ProControlPanel { NONE, EV, ISO, SHUTTER, FOCUS, WB }
 enum class ZoomCurve(val label: String) { LINEAR("LIN"), EXPONENTIAL("EXP"), CRASH("CRASH") }
 enum class CameraWorkbench { SAVIOR, ERA }
-enum class EraSliderPanel { NONE, CRANK, BATH, IRIS, FOCUS, PRINT }
 enum class EraDrawerMode { BOTH, WORKBENCH_ONLY, ERA_VAULT_ONLY }
-enum class EraCameraId(val shaderCode: Int, val pillLabel: String, val fileTag: String) {
-    SILENT_1920S(1, "1920s SILENT ▾", "1920s"),
-    MONO_1950S(2, "1950s MONO 35mm ▾", "1950s")
-}
 
 data class SaviorWorkbenchSnapshot(
     val resolution: CinemaResolution,
@@ -191,7 +192,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnBrandCredits: TextView
     private lateinit var txtSysTelemetry: TextView
     private lateinit var txtLowBatteryBanner: TextView
-    private lateinit var txtEraBattery: TextView
     private var isBatteryCharging: Boolean = false
     private var lastBatteryPct: Int = 100
     private var lowBatteryWarned15: Boolean = false
@@ -248,56 +248,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var smoothedRoll = 0f
     private var frameGuideIdx = 0
 
-    // Phase 7.3 Workbench Switcher (SAVIOR / ERA) & Era 1 (1920s Silent 35mm) HUD
+    // SAVIOR Core + Drop-In Era Plug-In Mount (ZERO hardcoded Era code in SAVIOR core!)
     private lateinit var saviorTopBar: LinearLayout
     private lateinit var saviorBottomDock: LinearLayout
     private lateinit var btnWorkbenchToEra: TextView
     private lateinit var zoomRockerContainer: LinearLayout
-    private lateinit var eraTopBar: LinearLayout
-    private lateinit var eraBottomDock: LinearLayout
-    private lateinit var btnEraWorkbenchSwitch: TextView
-    private lateinit var btnEraCameraPicker: TextView
-    private lateinit var viewEraRecDot: View
-    private lateinit var txtEraFootage: TextView
-    private lateinit var txtEraAudioBadge: TextView
-    private lateinit var btnEraTorch: TextView
-    private lateinit var btnEraFlipLens: TextView
-    private lateinit var eraSliderDrawer: LinearLayout
-    private lateinit var txtEraSliderTitle: TextView
-    private lateinit var txtEraSliderReadout: TextView
-    private lateinit var btnEraAntiFlicker: TextView
-    private lateinit var btnEraLockExp: TextView
-    private lateinit var btnEraSliderAuto: TextView
-    private lateinit var eraAsaStockRow: LinearLayout
-    private lateinit var txtEraDrawerSub: TextView
-    private lateinit var eraSeekBar: SeekBar
-    private lateinit var pillEraSpeed: LinearLayout
-    private lateinit var txtEraSlot1Label: TextView
-    private lateinit var txtEraSpeedVal: TextView
-    private lateinit var pillEraTurret: LinearLayout
-    private lateinit var txtEraSlot2Label: TextView
-    private lateinit var txtEraTurretVal: TextView
-    private lateinit var pillEraIris: LinearLayout
-    private lateinit var txtEraIrisLabel: TextView
-    private lateinit var txtEraIrisVal: TextView
-    private lateinit var pillEraFocus: LinearLayout
-    private lateinit var txtEraFocusVal: TextView
-    private lateinit var pillEraPrint: LinearLayout
-    private lateinit var txtEraPrintVal: TextView
+    private lateinit var eraPluginContainer: FrameLayout
     private var currentWorkbench: CameraWorkbench = CameraWorkbench.SAVIOR
-    private var activeEraCamera: EraCameraId = EraCameraId.SILENT_1920S
-    private var activeEraPanel: EraSliderPanel = EraSliderPanel.NONE
-    private var eraSilentFps: Int = 18 // Authentic 1920s classic silent standard (16 / 18 / 20 FPS)
-    private var era1920sPrintLevel: Int = 1 // 0=PREMIERE (0.0), 1=VAULT (0.5), 2=FOUND (1.0)
-    private var era1920sBathCode: Int = 0   // 0=SILVER, 1=AMBER, 2=NIGHT (Nosferatu), 3=SEPIA, 4=ROSE
-    private var era1950sGateWide: Boolean = false // false=1.375:1 Academy, true=1.85:1 Widescreen Flat
-    private var era1950sFilterCode: Int = 0 // 0=CLEAR, 1=Y8 (Yellow), 2=O21 (Orange), 3=R25 (Red), 4=G11 (Green)
-    private var era1950sPrintLevel: Int = 1 // 0=STUDIO (0.0), 1=CRITERION (0.5), 2=ARCHIVE (1.0)
-    private var eraManualExposureActive: Boolean = false
-    private var eraSelectedAsa: Int = 100
-    private val eraManualShutterDenoms = listOf(16, 18, 24, 25, 30, 33, 48, 50, 60, 100, 120, 200, 250, 500, 1000, 2000)
+    private var installedEraPlugins: List<EraCameraPlugin> = emptyList()
+    private var activeEraPlugin: EraCameraPlugin? = null
     @Volatile private var eraMicMonitorPaused: Boolean = false
-    private var suppressEraSeek: Boolean = false
     private var saviorSnapshot: SaviorWorkbenchSnapshot? = null
 
     private lateinit var txtTimecode: TextView
@@ -613,12 +573,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 val elapsedMs = System.currentTimeMillis() - recStartMs
                 val totalSec = elapsedMs / 1000L
                 if (currentWorkbench == CameraWorkbench.ERA) {
-                    // Authentic 35mm 4-Perf Film Footage (16 frames/ft): 24 FPS = 1.5 ft/s (90 ft/min), 16 FPS = 1.0 ft/s
-                    val activeEraFpsVal = if (activeEraCamera == EraCameraId.MONO_1950S) 24 else eraSilentFps
-                    val feet = ((elapsedMs / 1000.0) * (activeEraFpsVal / 16.0)).toInt().coerceAtLeast(0)
-                    val mins = totalSec / 60L
-                    val secs = totalSec % 60L
-                    txtEraFootage.text = String.format(Locale.US, "%03d FT • %02d:%02d", feet, mins, secs)
+                    activeEraPlugin?.onRecordingTick(eraHostBridge, elapsedMs)
                 } else {
                     val hrs = totalSec / 3600L
                     val mins = (totalSec % 3600L) / 60L
@@ -745,7 +700,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnBrandCredits = findViewById(R.id.btnBrandCredits)
         txtSysTelemetry = findViewById(R.id.txtSysTelemetry)
         txtLowBatteryBanner = findViewById(R.id.txtLowBatteryBanner)
-        txtEraBattery = findViewById(R.id.txtEraBattery)
         txtLowBatteryBanner.setOnClickListener {
             lowBatteryBannerDismissed = true
             txtLowBatteryBanner.visibility = View.GONE
@@ -773,37 +727,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         saviorBottomDock = findViewById(R.id.saviorBottomDock)
         btnWorkbenchToEra = findViewById(R.id.btnWorkbenchToEra)
         zoomRockerContainer = findViewById(R.id.zoomRockerContainer)
-        eraTopBar = findViewById(R.id.eraTopBar)
-        eraBottomDock = findViewById(R.id.eraBottomDock)
-        btnEraWorkbenchSwitch = findViewById(R.id.btnEraWorkbenchSwitch)
-        btnEraCameraPicker = findViewById(R.id.btnEraCameraPicker)
-        viewEraRecDot = findViewById(R.id.viewEraRecDot)
-        txtEraFootage = findViewById(R.id.txtEraFootage)
-        txtEraAudioBadge = findViewById(R.id.txtEraAudioBadge)
-        btnEraTorch = findViewById(R.id.btnEraTorch)
-        btnEraFlipLens = findViewById(R.id.btnEraFlipLens)
-        eraSliderDrawer = findViewById(R.id.eraSliderDrawer)
-        txtEraSliderTitle = findViewById(R.id.txtEraSliderTitle)
-        txtEraSliderReadout = findViewById(R.id.txtEraSliderReadout)
-        btnEraAntiFlicker = findViewById(R.id.btnEraAntiFlicker)
-        btnEraLockExp = findViewById(R.id.btnEraLockExp)
-        btnEraSliderAuto = findViewById(R.id.btnEraSliderAuto)
-        eraAsaStockRow = findViewById(R.id.eraAsaStockRow)
-        txtEraDrawerSub = findViewById(R.id.txtEraDrawerSub)
-        eraSeekBar = findViewById(R.id.eraSeekBar)
-        pillEraSpeed = findViewById(R.id.pillEraSpeed)
-        txtEraSlot1Label = findViewById(R.id.txtEraSlot1Label)
-        txtEraSpeedVal = findViewById(R.id.txtEraSpeedVal)
-        pillEraTurret = findViewById(R.id.pillEraTurret)
-        txtEraSlot2Label = findViewById(R.id.txtEraSlot2Label)
-        txtEraTurretVal = findViewById(R.id.txtEraTurretVal)
-        pillEraIris = findViewById(R.id.pillEraIris)
-        txtEraIrisLabel = findViewById(R.id.txtEraIrisLabel)
-        txtEraIrisVal = findViewById(R.id.txtEraIrisVal)
-        pillEraFocus = findViewById(R.id.pillEraFocus)
-        txtEraFocusVal = findViewById(R.id.txtEraFocusVal)
-        pillEraPrint = findViewById(R.id.pillEraPrint)
-        txtEraPrintVal = findViewById(R.id.txtEraPrintVal)
+        eraPluginContainer = findViewById(R.id.eraPluginContainer)
+        installedEraPlugins = EraPluginRegistry.discoverAll()
 
         txtTimecode = findViewById(R.id.txtTimecode)
         viewRecDot = findViewById(R.id.viewRecDot)
@@ -965,8 +890,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     closeCinemaInputDrawer()
                 } else if (workbenchEraDrawer.visibility == View.VISIBLE) {
                     closeWorkbenchEraDrawer()
-                } else if (currentWorkbench == CameraWorkbench.ERA && activeEraPanel != EraSliderPanel.NONE) {
-                    selectEraPanel(EraSliderPanel.NONE)
+                } else if (currentWorkbench == CameraWorkbench.ERA && activeEraPlugin?.onViewfinderTapped(eraHostBridge) == true) {
+                    // Consumed by active Era Plug-In
                 } else if (currentWorkbench == CameraWorkbench.SAVIOR && hasAnyOpenDrawer()) {
                     closeAllDrawers()
                 } else {
@@ -1021,14 +946,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 return@setOnClickListener
             }
             if (engine.isFinalizingClip) {
-                showSingleToast("Developing 1950s Optical Mono track...")
+                showSingleToast("Developing audio track...")
                 return@setOnClickListener
             }
             if (engine.isRecording) {
-                if (currentWorkbench == CameraWorkbench.ERA && activeEraCamera == EraCameraId.MONO_1950S) {
+                val p = activeEraPlugin
+                if (currentWorkbench == CameraWorkbench.ERA && p != null && p.usesPostAudioProcessor && !p.isSilentAudio) {
                     uiHandler.removeCallbacks(timecodeRunnable)
-                    txtEraFootage.text = "DEVELOPING..."
-                    txtEraFootage.setTextColor(0xFFE8B968.toInt())
+                    p.onRecordingFinalizing(eraHostBridge)
                 }
                 engine.stopRecording()
             } else {
@@ -1091,7 +1016,113 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
-    // ==================== PHASE 7.5: 1920s SILENT 35mm R&D WORKBENCH & UNIFIED INLINE DRAWERS ====================
+    // ==================== FROZEN SAVIOR -> DROP-IN ERA PLUG-IN HOST BRIDGE ====================
+
+    private val eraHostBridge: EraHostBridge = object : EraHostBridge {
+        override fun openWorkbenchDrawer() {
+            if (engine.isRecording || engine.isFinalizingClip) {
+                showSingleToast("Stop recording to switch workbench")
+                return
+            }
+            toggleWorkbenchEraDrawer(EraDrawerMode.WORKBENCH_ONLY)
+        }
+
+        override fun openEraVaultDrawer() {
+            if (engine.isRecording || engine.isFinalizingClip) {
+                showSingleToast("Stop recording to select Era camera")
+                return
+            }
+            toggleWorkbenchEraDrawer(EraDrawerMode.ERA_VAULT_ONLY)
+        }
+
+        override fun exitToSavior() {
+            if (engine.isRecording || engine.isFinalizingClip) {
+                showSingleToast("Stop recording to switch workbench")
+                return
+            }
+            exitEraToSaviorWorkbench()
+        }
+
+        override fun pushRenderConfig(config: EraRenderConfig) {
+            engine.updateEraRenderConfig(config)
+        }
+
+        override fun applyFormat(resolution: CinemaResolution, fps: Int, bitrateMbps: Int, codec: CinemaCodec) {
+            val sup = engine.capabilities.supportedResolutions
+            val resolvedRes = when {
+                resolution in sup -> resolution
+                CinemaResolution.FHD_1080P in sup -> CinemaResolution.FHD_1080P
+                else -> sup.lastOrNull { it.width <= resolution.width } ?: sup.firstOrNull() ?: CinemaResolution.FHD_1080P
+            }
+            engine.targetBitrateMbps = bitrateMbps.coerceIn(2, 120)
+            engine.targetCodec = codec
+            if (engine.targetResolution != resolvedRes) {
+                engine.updateSettings(resolvedRes, fps)
+            } else {
+                engine.setTargetFpsSeamless(fps)
+            }
+        }
+
+        override fun setTargetFpsSeamless(fps: Int) = engine.setTargetFpsSeamless(fps)
+        override fun setAutoExposure() = engine.setAutoExposure()
+        override fun setEvCompensation(index: Int): Boolean = engine.setEvCompensation(index)
+        override fun lockManualExposure(iso: Int, shutterNs: Long) = engine.lockEraManualExposure(iso, shutterNs)
+        override fun setAutoFocus() = engine.setAutoFocus()
+        override fun setManualFocusDistance(diopters: Float) = engine.setManualFocusDistance(diopters)
+        override fun toggleTorch(): Boolean {
+            val on = engine.toggleTorch()
+            styleToolPill(btnProTorch, on)
+            return on
+        }
+        override fun toggleFrontBackCamera(): Boolean = engine.toggleFrontBackCamera()
+
+        override fun cycleAntiFlickerMode(): AntiFlickerMode {
+            this@MainActivity.cycleAntiFlickerMode()
+            return engine.antiFlickerMode
+        }
+        override fun getAntiFlickerMode(): AntiFlickerMode = engine.antiFlickerMode
+        override fun compute180ShutterNs(fps: Int): Long = engine.compute180ShutterNs(fps)
+        override fun snapShutterToAntiFlickerNs(desiredNs: Long, maxAllowedNs: Long): Long =
+            engine.snapShutterToAntiFlickerNs(desiredNs, maxAllowedNs)
+
+        override fun getCapabilities(): CameraCapabilities = engine.capabilities
+        override fun getLiveIso(): Int = engine.getLiveSensorIso()
+        override fun getLiveShutterNs(): Long = engine.getLiveSensorShutterNs()
+        override fun getCurrentEvStops(): Float = engine.getCurrentEvStops()
+        override fun getEvCompensationIndex(): Int = engine.evCompensationIndex
+        override fun isManualExposure(): Boolean = engine.isManualExposure
+        override fun getManualIso(): Int = engine.manualIso
+        override fun getManualShutterNs(): Long = engine.manualShutterNs
+        override fun isManualFocus(): Boolean = engine.isManualFocus
+        override fun getManualFocusDistance(): Float = engine.manualFocusDistance
+        override fun isTorchEnabled(): Boolean = engine.isTorchEnabled
+        override fun isRecording(): Boolean = engine.isRecording
+        override fun isFinalizingClip(): Boolean = engine.isFinalizingClip
+
+        override fun showToast(message: String, longDuration: Boolean) {
+            showSingleToast(message, if (longDuration) Toast.LENGTH_LONG else Toast.LENGTH_SHORT)
+        }
+
+        override fun openNumericInput(
+            title: String,
+            hint: String,
+            initialValue: String,
+            allowDecimal: Boolean,
+            step: Float,
+            classicStyle: Boolean,
+            onApply: (String) -> Boolean
+        ) {
+            openCinemaInputDrawer(
+                title = title,
+                hint = hint,
+                initialValue = initialValue,
+                allowDecimal = allowDecimal,
+                step = step,
+                isClassicStyle = classicStyle,
+                onApply = onApply
+            )
+        }
+    }
 
     private fun setupEraWorkbench() {
         btnWorkbenchToEra.setOnClickListener {
@@ -1101,174 +1132,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             toggleWorkbenchEraDrawer(EraDrawerMode.BOTH)
         }
-
-        btnEraWorkbenchSwitch.setOnClickListener {
-            if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop recording to switch workbench")
-                return@setOnClickListener
-            }
-            toggleWorkbenchEraDrawer(EraDrawerMode.WORKBENCH_ONLY)
-        }
-
-        btnEraCameraPicker.setOnClickListener {
-            if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop recording to select Era camera")
-                return@setOnClickListener
-            }
-            toggleWorkbenchEraDrawer(EraDrawerMode.ERA_VAULT_ONLY)
-        }
-
-        btnEraTorch.setOnClickListener {
-            if (!engine.capabilities.hasFlash) {
-                showSingleToast("No lamp / flash on this lens")
-                return@setOnClickListener
-            }
-            val on = engine.toggleTorch()
-            updateEraTorchUi()
-            styleToolPill(btnProTorch, on)
-            showSingleToast(if (on) "Studio Sun-Gun Lamp ON" else "Studio Sun-Gun Lamp OFF")
-        }
-
-        btnEraFlipLens.setOnClickListener {
-            if (engine.isRecording || engine.isFinalizingClip) return@setOnClickListener
-            if (engine.toggleFrontBackCamera()) {
-                selectEraPanel(EraSliderPanel.NONE)
-                showSingleToast("Switched classic lens glass")
-            }
-        }
-
-        // 1. CRANK Pill -> Opens Inline Speed Drawer (16 / 18 / 20 FPS; locked while rolling!)
-        pillEraSpeed.setOnClickListener {
-            if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop cranking to change film speed")
-                return@setOnClickListener
-            }
-            selectEraPanel(if (activeEraPanel == EraSliderPanel.CRANK) EraSliderPanel.NONE else EraSliderPanel.CRANK)
-        }
-
-        // 2. BATH Pill -> Opens Inline 1920s Lab Tint Bath Drawer (SILVER / AMBER / NIGHT / SEPIA / ROSE; locked while rolling!)
-        pillEraTurret.setOnClickListener {
-            if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop cranking to change lab tint bath")
-                return@setOnClickListener
-            }
-            selectEraPanel(if (activeEraPanel == EraSliderPanel.BATH) EraSliderPanel.NONE else EraSliderPanel.BATH)
-        }
-
-        // 3. ASA Pill -> Opens Inline ASA Stock + Mechanical Shutter / Auto Iris Drawer (LIVE while rolling!)
-        pillEraIris.setOnClickListener {
-            selectEraPanel(if (activeEraPanel == EraSliderPanel.IRIS) EraSliderPanel.NONE else EraSliderPanel.IRIS)
-        }
-
-        // 4. FOCUS Pill -> Opens Inline Follow-Focus Ring Drawer (LIVE while rolling!)
-        pillEraFocus.setOnClickListener {
-            if (!engine.capabilities.supportsManualFocus) {
-                showSingleToast("This lens has fixed focus")
-                return@setOnClickListener
-            }
-            selectEraPanel(if (activeEraPanel == EraSliderPanel.FOCUS) EraSliderPanel.NONE else EraSliderPanel.FOCUS)
-        }
-
-        // 5. PRINT Pill -> Opens Inline Nitrate Print Condition Drawer (PREMIERE / VAULT / FOUND; locked while rolling!)
-        pillEraPrint.setOnClickListener {
-            if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop cranking to change film print stock")
-                return@setOnClickListener
-            }
-            selectEraPanel(if (activeEraPanel == EraSliderPanel.PRINT) EraSliderPanel.NONE else EraSliderPanel.PRINT)
-        }
-
-        // Tap readout in ASA drawer to type ANY exact manual ASA/ISO!
-        txtEraSliderReadout.setOnClickListener {
-            if (activeEraPanel == EraSliderPanel.IRIS) {
-                showEraCustomAsaDialog()
-            }
-        }
-
-        btnEraAntiFlicker.setOnClickListener {
-            cycleAntiFlickerMode()
-            if (eraManualExposureActive && engine.capabilities.supportsManualExposure) {
-                val curEraFps = if (activeEraCamera == EraCameraId.MONO_1950S) 24 else eraSilentFps
-                val maxNs = 1_000_000_000L / curEraFps.coerceAtLeast(16).toLong()
-                val safeNs = engine.snapShutterToAntiFlickerNs(engine.manualShutterNs, maxNs)
-                engine.lockEraManualExposure(eraSelectedAsa, safeNs)
-                updateEraIrisUi()
-            }
-            refreshEraSliderUi()
-        }
-
-        // 1-Tap LOCK 180° inside ASA drawer: locks flicker-free cinema shutter (1/50s on 50Hz, 1/60s on 60Hz) & solves exact ASA!
-        btnEraLockExp.setOnClickListener {
-            if (!engine.capabilities.supportsManualExposure) {
-                showSingleToast("This lens does not support manual ASA/shutter lock")
-                return@setOnClickListener
-            }
-            val curEraFps = if (activeEraCamera == EraCameraId.MONO_1950S) 24 else eraSilentFps
-            val safe180Ns = engine.compute180ShutterNs(curEraFps)
-            val baseIso = if (eraManualExposureActive) engine.manualIso else engine.getLiveSensorIso().coerceAtLeast(50)
-            val baseExp = if (eraManualExposureActive) engine.manualShutterNs else engine.getLiveSensorShutterNs().coerceAtLeast(100_000L)
-            val targetIso = ((baseIso.toDouble() * baseExp.toDouble()) / safe180Ns.toDouble()).roundToInt()
-                .coerceIn(engine.capabilities.effectiveIsoRange.lower, engine.capabilities.effectiveIsoRange.upper)
-            applyEraManualStock(targetIso, safe180Ns, announce = true)
-        }
-
-        btnEraSliderAuto.setOnClickListener {
-            when (activeEraPanel) {
-                EraSliderPanel.IRIS -> {
-                    eraManualExposureActive = false
-                    engine.setAutoExposure()
-                    engine.setEvCompensation(0)
-                    pushActiveEraRenderState()
-                    updateEraIrisUi()
-                    showSingleToast("${if (activeEraCamera == EraCameraId.MONO_1950S) "1950s" else "1920s"} Meter: AUTO EV")
-                }
-                EraSliderPanel.FOCUS -> {
-                    engine.setAutoFocus()
-                    updateEraFocusUi()
-                }
-                EraSliderPanel.CRANK, EraSliderPanel.BATH, EraSliderPanel.PRINT -> {
-                    selectEraPanel(EraSliderPanel.NONE)
-                }
-                EraSliderPanel.NONE -> {}
-            }
-            if (activeEraPanel != EraSliderPanel.NONE) refreshEraSliderUi()
-        }
-
-        eraSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (!fromUser || suppressEraSeek) return
-                when (activeEraPanel) {
-                    EraSliderPanel.IRIS -> {
-                        if (eraManualExposureActive && engine.capabilities.supportsManualExposure) {
-                            val denoms = eraManualShutterDenoms
-                            val invIdx = (denoms.lastIndex - progress).coerceIn(0, denoms.lastIndex)
-                            val denom = denoms[invIdx]
-                            val ns = 1_000_000_000L / denom.toLong()
-                            engine.lockEraManualExposure(eraSelectedAsa, ns)
-                            updateEraIrisUi()
-                            txtEraSliderReadout.text = "ASA ${engine.manualIso} • 1/${denom}s"
-                        } else {
-                            val minEv = engine.capabilities.evRange.lower
-                            val maxEv = engine.capabilities.evRange.upper
-                            val idx = (minEv + progress).coerceIn(minEv, maxEv)
-                            engine.setEvCompensation(idx)
-                            updateEraIrisUi()
-                            txtEraSliderReadout.text = "AUTO • ${formatEraIrisFStop(engine.getCurrentEvStops())}"
-                        }
-                    }
-                    EraSliderPanel.FOCUS -> {
-                        val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
-                        val diopters = (progress / 100f) * maxF
-                        engine.setManualFocusDistance(diopters)
-                        updateEraFocusUi()
-                        txtEraSliderReadout.text = formatFocus(diopters, maxF)
-                    }
-                    else -> {}
-                }
-            }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
-            override fun onStopTrackingTouch(sb: SeekBar?) {}
-        })
     }
 
     // ==================== PHASE 7.5.1: UNIFIED INLINE DRAWERS, CLEAN-FRAME EYE & CINEMA INPUT BAR ====================
@@ -1323,9 +1186,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun updateCleanUiToggleStyle() {
-        if (currentWorkbench == CameraWorkbench.ERA) {
+        val plugin = activeEraPlugin
+        if (currentWorkbench == CameraWorkbench.ERA && plugin != null) {
             btnCleanUiToggle.setBackgroundResource(R.drawable.bg_era_pill)
-            ImageViewCompat.setImageTintList(btnCleanUiToggle, ColorStateList.valueOf(0xFFE8B968.toInt()))
+            ImageViewCompat.setImageTintList(btnCleanUiToggle, ColorStateList.valueOf(plugin.accentColorArgb))
         } else {
             btnCleanUiToggle.setBackgroundResource(R.drawable.bg_hud_pill)
             ImageViewCompat.setImageTintList(btnCleanUiToggle, ColorStateList.valueOf(0xFFFFFFFF.toInt()))
@@ -1339,12 +1203,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             closeCinemaInputDrawer()
             closeWorkbenchEraDrawer()
             closeAllDrawers()
-            selectEraPanel(EraSliderPanel.NONE)
-
             saviorTopBar.visibility = View.GONE
             saviorBottomDock.visibility = View.GONE
-            eraTopBar.visibility = View.GONE
-            eraBottomDock.visibility = View.GONE
+            eraPluginContainer.visibility = View.GONE
             leftRailWrapper.visibility = View.GONE
             zoomRockerContainer.visibility = View.GONE
             rightRailContainer.visibility = View.GONE
@@ -1358,8 +1219,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             leftRailWrapper.visibility = View.VISIBLE
             rightRailContainer.visibility = View.VISIBLE
             if (currentWorkbench == CameraWorkbench.ERA) {
-                eraTopBar.visibility = View.VISIBLE
-                eraBottomDock.visibility = View.VISIBLE
+                eraPluginContainer.visibility = View.VISIBLE
                 lensRail.visibility = View.GONE
             } else {
                 saviorTopBar.visibility = View.VISIBLE
@@ -1393,7 +1253,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             return
         }
         closeTopDrawers(except = "ERA_VAULT")
-        selectEraPanel(EraSliderPanel.NONE)
         activeEraDrawerMode = mode
         renderWorkbenchEraDrawerChips(mode)
         workbenchEraDrawer.visibility = View.VISIBLE
@@ -1421,36 +1280,66 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         eraVaultSection.visibility = if (showVault) View.VISIBLE else View.GONE
         txtEraDrawerTitle.text = when (mode) {
             EraDrawerMode.WORKBENCH_ONLY -> "SWITCH WORKBENCH"
-            EraDrawerMode.ERA_VAULT_ONLY -> "ERA CAMERA VAULT"
+            EraDrawerMode.ERA_VAULT_ONLY -> "ERA PLUG-IN VAULT"
             EraDrawerMode.BOTH -> "WORKBENCH & ERA VAULT"
         }
 
+        val eraPlugins = installedEraPlugins.filter { it.category == EraWorkbenchCategory.ERA }
+        val puristPlugin = installedEraPlugins.firstOrNull { it.category == EraWorkbenchCategory.PURIST }
+        val creatorPlugin = installedEraPlugins.firstOrNull { it.category == EraWorkbenchCategory.CREATOR }
+
         if (showWb) {
             workbenchSelectRow.removeAllViews()
-            val wbEntries = listOf(
+            val wbEntries = mutableListOf(
                 Triple("SAVIOR", currentWorkbench == CameraWorkbench.SAVIOR) {
                     closeWorkbenchEraDrawer()
                     exitEraToSaviorWorkbench()
                 },
-                Triple("ERA", currentWorkbench == CameraWorkbench.ERA) {
-                    closeWorkbenchEraDrawer()
-                    enterEraWorkbench()
+                Triple("ERA", currentWorkbench == CameraWorkbench.ERA && activeEraPlugin?.category == EraWorkbenchCategory.ERA) {
+                    val target = activeEraPlugin?.takeIf { it.category == EraWorkbenchCategory.ERA } ?: eraPlugins.firstOrNull()
+                    if (target != null) {
+                        closeWorkbenchEraDrawer()
+                        enterEraPlugin(target)
+                    } else {
+                        txtEraVaultDesc.text = "No Era plug-ins installed yet — SAVIOR Core Stable"
+                        showSingleToast("No Era plug-ins installed yet")
+                    }
                 },
-                Triple("PURIST", false) {
-                    txtEraVaultDesc.text = "PURIST — 65mm / 1.43:1 Celluloid Workflow (Planned)"
-                    showSingleToast("PURIST 65mm Workflow — Planned")
+                Triple("PURIST", currentWorkbench == CameraWorkbench.ERA && activeEraPlugin?.category == EraWorkbenchCategory.PURIST) {
+                    if (puristPlugin != null) {
+                        closeWorkbenchEraDrawer()
+                        enterEraPlugin(puristPlugin)
+                    } else {
+                        txtEraVaultDesc.text = "PURIST — 65mm / 1.43:1 Celluloid Workflow (Drop-in plug-in planned)"
+                        showSingleToast("PURIST 65mm Workflow — Plug-in planned")
+                    }
                 }
             )
+            if (creatorPlugin != null) {
+                wbEntries.add(
+                    Triple(creatorPlugin.chipLabel, currentWorkbench == CameraWorkbench.ERA && activeEraPlugin?.id == creatorPlugin.id) {
+                        closeWorkbenchEraDrawer()
+                        enterEraPlugin(creatorPlugin)
+                    }
+                )
+            }
+
             wbEntries.forEachIndexed { idx, (label, active, onClick) ->
+                val isAvailable = when (idx) {
+                    0 -> true
+                    1 -> eraPlugins.isNotEmpty()
+                    2 -> puristPlugin != null
+                    else -> true
+                }
                 val chip = TextView(this).apply {
                     text = label
                     textSize = 9.5f
                     typeface = android.graphics.Typeface.MONOSPACE
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                     gravity = Gravity.CENTER
-                    alpha = if (idx == 2) 0.45f else 1.0f
-                    setBackgroundResource(if (active) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-                    setTextColor(if (active) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
+                    alpha = if (isAvailable) 1.0f else 0.42f
+                    setBackgroundResource(if (active) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                    setTextColor(if (active) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
                         if (idx < wbEntries.lastIndex) marginEnd = dpToPx(5)
                     }
@@ -1461,86 +1350,63 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         if (showVault) {
-            val in1920s = (currentWorkbench == CameraWorkbench.ERA && activeEraCamera == EraCameraId.SILENT_1920S)
-            val in1950s = (currentWorkbench == CameraWorkbench.ERA && activeEraCamera == EraCameraId.MONO_1950S)
-            val row1 = listOf(
-                Triple("1920s SILENT", in1920s) {
-                    closeWorkbenchEraDrawer()
-                    activeEraCamera = EraCameraId.SILENT_1920S
-                    if (currentWorkbench != CameraWorkbench.ERA) {
-                        enterEraWorkbench()
-                    } else {
-                        selectEraPanel(EraSliderPanel.NONE)
-                        applyActiveEraCamera(announce = true)
-                    }
-                },
-                Triple("1950s MONO", in1950s) {
-                    closeWorkbenchEraDrawer()
-                    activeEraCamera = EraCameraId.MONO_1950S
-                    if (currentWorkbench != CameraWorkbench.ERA) {
-                        enterEraWorkbench()
-                    } else {
-                        selectEraPanel(EraSliderPanel.NONE)
-                        applyActiveEraCamera(announce = true)
-                    }
-                },
-                Triple("1970s S8/16", false) {
-                    txtEraVaultDesc.text = "1970s Super 8 & 16mm — Next Era"
-                    showSingleToast("1970s Super 8 & 16mm — Planned")
-                }
-            )
-            val row2 = listOf(
-                Triple("1980s VHS", false) {
-                    txtEraVaultDesc.text = "1980s–90s Analog VHS — Planned"
-                    showSingleToast("1980s VHS — Planned")
-                },
-                Triple("2000s DV", false) {
-                    txtEraVaultDesc.text = "2000s MiniDV CCD — Planned"
-                    showSingleToast("2000s MiniDV — Planned")
-                },
-                Triple("2008 DSLR", false) {
-                    txtEraVaultDesc.text = "2008 Early Digital Cinema DSLR — Planned"
-                    showSingleToast("2008 DSLR — Planned")
-                }
-            )
+            eraVaultSelectRow.removeAllViews()
+            eraVaultSelectRow2.removeAllViews()
 
-            fun fillVaultRow(rowView: LinearLayout, items: List<Triple<String, Boolean, () -> Unit>>, readyCount: Int) {
-                rowView.removeAllViews()
-                items.forEachIndexed { idx, (label, active, onClick) ->
-                    val enabled = idx < readyCount
-                    val chip = TextView(this).apply {
-                        text = label
-                        textSize = 9f
-                        typeface = android.graphics.Typeface.MONOSPACE
-                        setTypeface(typeface, android.graphics.Typeface.BOLD)
-                        gravity = Gravity.CENTER
-                        alpha = if (enabled) 1.0f else 0.42f
-                        setBackgroundResource(if (active) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-                        setTextColor(if (active) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
-                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                            if (idx < items.lastIndex) marginEnd = dpToPx(5)
+            if (eraPlugins.isEmpty()) {
+                eraVaultSelectRow2.visibility = View.GONE
+                val emptyChip = TextView(this).apply {
+                    text = "NO ERA PLUG-INS INSTALLED • SAVIOR CORE READY"
+                    textSize = 8.8f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = Gravity.CENTER
+                    setBackgroundResource(R.drawable.bg_hud_pill)
+                    setTextColor(0xFF8E96A4.toInt())
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+                }
+                eraVaultSelectRow.addView(emptyChip)
+            } else {
+                val row1Plugins = eraPlugins.take(3)
+                val row2Plugins = eraPlugins.drop(3).take(3)
+
+                fun fillRow(rowView: LinearLayout, plugins: List<EraCameraPlugin>) {
+                    plugins.forEachIndexed { idx, plugin ->
+                        val active = (currentWorkbench == CameraWorkbench.ERA && activeEraPlugin?.id == plugin.id)
+                        val chip = TextView(this).apply {
+                            text = plugin.chipLabel
+                            textSize = 9f
+                            typeface = android.graphics.Typeface.MONOSPACE
+                            setTypeface(typeface, android.graphics.Typeface.BOLD)
+                            gravity = Gravity.CENTER
+                            setBackgroundResource(if (active) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                            setTextColor(if (active) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                                if (idx < plugins.lastIndex) marginEnd = dpToPx(5)
+                            }
+                            setOnClickListener {
+                                closeWorkbenchEraDrawer()
+                                enterEraPlugin(plugin)
+                            }
                         }
-                        setOnClickListener { onClick() }
+                        rowView.addView(chip)
                     }
-                    rowView.addView(chip)
+                }
+
+                fillRow(eraVaultSelectRow, row1Plugins)
+                if (row2Plugins.isNotEmpty()) {
+                    eraVaultSelectRow2.visibility = View.VISIBLE
+                    fillRow(eraVaultSelectRow2, row2Plugins)
+                } else {
+                    eraVaultSelectRow2.visibility = View.GONE
                 }
             }
-
-            fillVaultRow(eraVaultSelectRow, row1, readyCount = 2)
-            fillVaultRow(eraVaultSelectRow2, row2, readyCount = 0)
         }
 
-        txtEraVaultDesc.text = when (mode) {
-            EraDrawerMode.WORKBENCH_ONLY -> if (currentWorkbench == CameraWorkbench.ERA) {
-                "Active: ERA • Tap SAVIOR to return to Digital Cinema Rig"
-            } else {
-                "Active: SAVIOR Digital Cinema Rig"
-            }
-            else -> if (activeEraCamera == EraCameraId.MONO_1950S) {
-                "1950s Monochrome 35mm — Panchromatic + Optical Mono Sound"
-            } else {
-                "1920s Silent 35mm — Orthochromatic Nitrate"
-            }
+        txtEraVaultDesc.text = when {
+            activeEraPlugin != null -> activeEraPlugin!!.description
+            eraPlugins.isEmpty() -> "SAVIOR Core Stable • Drop Era*.kt plug-ins into era/ to add cameras"
+            else -> "Active: SAVIOR Digital Cinema Core • ${eraPlugins.size} Era plug-in(s) ready"
         }
     }
 
@@ -1846,154 +1712,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         enableImmersiveFullscreen()
     }
 
-    private fun activeEraWearFloat(): Float {
-        val lvl = if (activeEraCamera == EraCameraId.MONO_1950S) era1950sPrintLevel else era1920sPrintLevel
-        return when (lvl) {
-            0 -> 0.0f
-            1 -> 0.5f
-            else -> 1.0f
-        }
-    }
-
-    private fun get1920sBathMeta(code: Int): Pair<String, String> = when (code) {
-        1 -> "AMBER" to "The General (1926) — Sunlit Daylight Straw-Amber Bath"
-        2 -> "NIGHT" to "Nosferatu (1922) — Day-for-Night Prussian Blue-Teal"
-        3 -> "SEPIA" to "Lantern Interior — Burnt-Umber Silver & Antique Gold"
-        4 -> "ROSE" to "Pathé Dawn — Delicate Warm Rose-Cream Lab Bath"
-        else -> "SILVER" to "The General (1926) — Pure Red-Blind Orthochromatic Nitrate"
-    }
-
-    private fun get1920sPrintMeta(level: Int): Pair<String, String> = when (level) {
-        0 -> "PREMIERE" to "Brand-New 1926 Premiere Print — Zero Dust, Zero Scratches"
-        1 -> "VAULT" to "Criterion 4K Restoration — Rare 1-Frame Flecks & Organic Breathing"
-        else -> "FOUND" to "100-Yr Discovered Vault Reel — Gate Weave, Clouding & Rare Scratches"
-    }
-
-    private fun get1950sFilterMeta(code: Int): Pair<String, String> = when (code) {
-        1 -> "Y8" to "Wratten #8 Yellow (Pather Panchali) — Cuts Sky Haze & Luminous Skin"
-        2 -> "O21" to "Wratten #21 Orange (Kurosawa) — Dramatic Clouds & Chiseled Contrast"
-        3 -> "R25" to "Wratten #25A Red (Bergman / Noir) — Gothic Black Skies & High Drama"
-        4 -> "G11" to "Wratten #11 Green — Classic Studio Portrait Skin & Lush Foliage"
-        else -> "CLEAR" to "Eastman Plus-X / Double-X — Natural Panchromatic Silver-Gelatin"
-    }
-
-    private fun get1950sPrintMeta(level: Int): Pair<String, String> = when (level) {
-        0 -> "STUDIO" to "Fresh 1955 Lab Print — Pin-Registered, Spotless, Clean Optical Mono"
-        1 -> "CRITERION" to "Restored 35mm Print — Whisper Gate Precision & Fine Silver Grain"
-        else -> "ARCHIVE" to "Touring Theatre Reel — Vintage Reel Patina & Rich Optical Sound Wear"
-    }
-
-    private fun pushActiveEraRenderState() {
-        val grainMul = if (eraManualExposureActive) computeGrainMultiplierForAsa(eraSelectedAsa) else 1.0f
-        if (activeEraCamera == EraCameraId.MONO_1950S) {
-            engine.setEraRenderState(
-                modeCode = EraCameraId.MONO_1950S.shaderCode,
-                wearLevel = activeEraWearFloat(),
-                fps = 24.0f,
-                filterCode = era1950sFilterCode,
-                grainMul = grainMul,
-                gateAspect = if (era1950sGateWide) 1.85f else 1.375f
-            )
-        } else {
-            engine.setEraRenderState(
-                modeCode = EraCameraId.SILENT_1920S.shaderCode,
-                wearLevel = activeEraWearFloat(),
-                fps = eraSilentFps.toFloat(),
-                filterCode = era1920sBathCode,
-                grainMul = grainMul,
-                gateAspect = 1.3333f
-            )
-        }
-    }
-
-    private fun resolveEraNativeResolution(): CinemaResolution {
-        val sup = engine.capabilities.supportedResolutions
-        return when {
-            CinemaResolution.FHD_1080P in sup -> CinemaResolution.FHD_1080P
-            else -> sup.lastOrNull { it.width <= 1920 } ?: sup.firstOrNull() ?: CinemaResolution.FHD_1080P
-        }
-    }
-
-    private fun applyActiveEraCamera(announce: Boolean) {
-        val is1950s = (activeEraCamera == EraCameraId.MONO_1950S)
-        btnEraCameraPicker.text = activeEraCamera.pillLabel
-        txtEraFootage.text = "000 FT • 00:00"
-        txtEraFootage.setTextColor(0xFFF5E6C8.toInt())
-        viewEraRecDot.visibility = View.GONE
-        pillEraTurret.visibility = View.VISIBLE
-
-        val targetEraRes = resolveEraNativeResolution()
-        val targetEraFps = if (is1950s) 24 else eraSilentFps
-        engine.targetBitrateMbps = 24
-        engine.targetCodec = CinemaCodec.H264
-        engine.resetZoom()
-
-        if (is1950s) {
-            txtEraSlot1Label.text = "GATE"
-            txtEraSpeedVal.text = if (era1950sGateWide) "1.85" else "1.37"
-            txtEraSlot2Label.text = "FILTER"
-            txtEraTurretVal.text = get1950sFilterMeta(era1950sFilterCode).first
-            txtEraPrintVal.text = get1950sPrintMeta(era1950sPrintLevel).first
-            txtEraAudioBadge.text = "OPTICAL MONO"
-            txtEraAudioBadge.setTextColor(0xFFE8B968.toInt())
-
-            engine.eraSilentAudio = false
-            engine.eraAudioProfile = EraAudioProfile.OPTICAL_1950S
-            engine.eraFilenameTag = EraCameraId.MONO_1950S.fileTag
-        } else {
-            txtEraSlot1Label.text = "CRANK"
-            txtEraSpeedVal.text = "$eraSilentFps FPS"
-            txtEraSlot2Label.text = "BATH"
-            txtEraTurretVal.text = get1920sBathMeta(era1920sBathCode).first
-            txtEraPrintVal.text = get1920sPrintMeta(era1920sPrintLevel).first
-            txtEraAudioBadge.text = "SILENT"
-            txtEraAudioBadge.setTextColor(0xFFB8A37E.toInt())
-
-            engine.eraSilentAudio = true
-            engine.eraAudioProfile = EraAudioProfile.NONE
-            engine.eraFilenameTag = EraCameraId.SILENT_1920S.fileTag
-        }
-
-        // Enforce Era native 1080P resolution so switching from 480P/720P/4K in SAVIOR NEVER corrupts 35mm resolution!
-        if (engine.targetResolution != targetEraRes) {
-            engine.updateSettings(targetEraRes, targetEraFps)
-        } else {
-            engine.setTargetFpsSeamless(targetEraFps)
-        }
-        pushActiveEraRenderState()
-
-        updateEraRecordingLockVisuals(engine.isRecording)
-        updateEraTorchUi()
-        updateEraIrisUi()
-        updateEraFocusUi()
-        if (announce) {
-            if (is1950s) {
-                val gateTag = if (era1950sGateWide) "1.85:1" else "1.37:1"
-                showSingleToast(
-                    "1950s MONO 35mm • 24 FPS • $gateTag • ${get1950sFilterMeta(era1950sFilterCode).first} • Optical Mono (${targetEraRes.label})",
-                    Toast.LENGTH_LONG
-                )
-            } else {
-                showSingleToast(
-                    "1920s SILENT 35mm • $eraSilentFps FPS • ${get1920sBathMeta(era1920sBathCode).first} • ${get1920sPrintMeta(era1920sPrintLevel).first} (${targetEraRes.label})",
-                    Toast.LENGTH_LONG
-                )
-            }
-        }
-    }
-
-    private fun updateEraRecordingLockVisuals(rolling: Boolean) {
-        val lockAlpha = if (rolling) 0.42f else 1.0f
-        pillEraSpeed.alpha = lockAlpha
-        pillEraTurret.alpha = lockAlpha
-        pillEraPrint.alpha = lockAlpha
-        btnEraWorkbenchSwitch.alpha = lockAlpha
-        btnEraCameraPicker.alpha = lockAlpha
-        btnEraFlipLens.alpha = lockAlpha
-    }
-
-    private fun enterEraWorkbench() {
-        if (currentWorkbench == CameraWorkbench.ERA) return
+    private fun enterEraPlugin(plugin: EraCameraPlugin) {
+        if (currentWorkbench == CameraWorkbench.ERA && activeEraPlugin?.id == plugin.id) return
 
         closeAllDrawers()
         rackAnimator?.cancel()
@@ -2001,30 +1721,36 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         uiHandler.removeCallbacks(countdownRunnable)
         txtTimerCountdown.visibility = View.GONE
 
-        saviorSnapshot = SaviorWorkbenchSnapshot(
-            resolution = currentResolution,
-            bitrateMbps = engine.targetBitrateMbps,
-            codec = engine.targetCodec,
-            fps = currentFps,
-            timelapseIntervalMs = engine.timelapseIntervalMs,
-            evCompensationIndex = engine.evCompensationIndex,
-            isManualExposure = engine.isManualExposure,
-            manualIso = engine.manualIso,
-            manualShutterNs = engine.manualShutterNs,
-            isShutter180Locked = engine.isShutter180Locked,
-            isManualWb = engine.isManualWb,
-            manualKelvin = engine.manualKelvin,
-            manualTint = engine.manualTint,
-            isManualFocus = engine.isManualFocus,
-            manualFocusDistance = engine.manualFocusDistance,
-            isAeAfLocked = engine.isAeAfLocked,
-            zoomRatio = engine.currentZoomRatio,
-            splitCompareActive = isSplitCompareActive,
-            splitCompareFraction = splitCompareFraction,
-            recordAspectMode = engine.recordAspectMode
-        )
+        // Snapshot SAVIOR state ONCE when first leaving SAVIOR (never overwrite snapshot when switching Era A -> Era B!)
+        if (currentWorkbench == CameraWorkbench.SAVIOR) {
+            saviorSnapshot = SaviorWorkbenchSnapshot(
+                resolution = currentResolution,
+                bitrateMbps = engine.targetBitrateMbps,
+                codec = engine.targetCodec,
+                fps = currentFps,
+                timelapseIntervalMs = engine.timelapseIntervalMs,
+                evCompensationIndex = engine.evCompensationIndex,
+                isManualExposure = engine.isManualExposure,
+                manualIso = engine.manualIso,
+                manualShutterNs = engine.manualShutterNs,
+                isShutter180Locked = engine.isShutter180Locked,
+                isManualWb = engine.isManualWb,
+                manualKelvin = engine.manualKelvin,
+                manualTint = engine.manualTint,
+                isManualFocus = engine.isManualFocus,
+                manualFocusDistance = engine.manualFocusDistance,
+                isAeAfLocked = engine.isAeAfLocked,
+                zoomRatio = engine.currentZoomRatio,
+                splitCompareActive = isSplitCompareActive,
+                splitCompareFraction = splitCompareFraction,
+                recordAspectMode = engine.recordAspectMode
+            )
+        } else {
+            activeEraPlugin?.onExit(eraHostBridge)
+        }
 
         currentWorkbench = CameraWorkbench.ERA
+        activeEraPlugin = plugin
         eraMicMonitorPaused = true
         if (isSplitCompareActive) {
             setSplitCompareMode(false)
@@ -2038,36 +1764,51 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnExitSplitWipe.visibility = View.GONE
         overlayView.visibility = View.GONE
 
-        eraTopBar.visibility = View.VISIBLE
-        eraBottomDock.visibility = View.VISIBLE
-        selectEraPanel(EraSliderPanel.NONE)
+        eraPluginContainer.removeAllViews()
+        val hud = plugin.createHudView(this, eraHostBridge)
+        eraPluginContainer.addView(
+            hud,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        eraPluginContainer.visibility = View.VISIBLE
 
         engine.timelapseIntervalMs = 0L
         engine.recordAspectMode = RecordAspectMode.WIDE_16_9
         overlayView.recordAspectMode = RecordAspectMode.WIDE_16_9
         engine.clearAeAfLock()
-        eraManualExposureActive = false
+        engine.resetZoom()
         engine.setAutoExposure()
         engine.setEvCompensation(0)
         engine.setAutoWhiteBalance()
         engine.setAutoFocus()
 
+        engine.setEraPlugin(plugin, plugin.getInitialRenderConfig())
+        eraHostBridge.applyFormat(
+            resolution = plugin.defaultResolution,
+            fps = plugin.defaultFps,
+            bitrateMbps = plugin.defaultBitrateMbps,
+            codec = plugin.defaultCodec
+        )
+        plugin.onEnter(eraHostBridge)
+
         updateCleanUiToggleStyle()
-        applyActiveEraCamera(announce = true)
         updateSystemTelemetry(null)
     }
 
     private fun exitEraToSaviorWorkbench() {
         if (currentWorkbench == CameraWorkbench.SAVIOR) return
+        activeEraPlugin?.onExit(eraHostBridge)
+        activeEraPlugin = null
         currentWorkbench = CameraWorkbench.SAVIOR
         eraMicMonitorPaused = false
-        selectEraPanel(EraSliderPanel.NONE)
 
-        eraManualExposureActive = false
-        engine.setEraRenderState(0, 0.0f, 30.0f, 0, 1.0f, 1.3333f)
-        engine.eraSilentAudio = false
-        engine.eraAudioProfile = EraAudioProfile.NONE
-        engine.eraFilenameTag = ""
+        eraPluginContainer.removeAllViews()
+        eraPluginContainer.visibility = View.GONE
+
+        engine.setEraPlugin(null, null)
 
         val snap = saviorSnapshot
         saviorSnapshot = null
@@ -2117,8 +1858,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
-        eraTopBar.visibility = View.GONE
-        eraBottomDock.visibility = View.GONE
         saviorTopBar.visibility = View.VISIBLE
         saviorBottomDock.visibility = View.VISIBLE
         lensRail.visibility = View.VISIBLE
@@ -2129,376 +1868,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         syncExitSplitPillVisibility()
         syncAnalysisLoop()
         updateSystemTelemetry(null)
-        showSingleToast("Switched back to SAVIOR Cinema Workbench")
-    }
-
-    private fun styleEraDockPill(pill: LinearLayout, valTxt: TextView, active: Boolean, defaultColor: Int) {
-        pill.setBackgroundResource(if (active) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-        valTxt.setTextColor(if (active) 0xFF141210.toInt() else defaultColor)
-    }
-
-    private fun selectEraPanel(panel: EraSliderPanel) {
-        activeEraPanel = panel
-        val gold = 0xFFE8B968.toInt()
-        val cream = 0xFFF5E6C8.toInt()
-        styleEraDockPill(pillEraSpeed, txtEraSpeedVal, panel == EraSliderPanel.CRANK, gold)
-        styleEraDockPill(pillEraTurret, txtEraTurretVal, panel == EraSliderPanel.BATH, gold)
-        styleEraDockPill(pillEraIris, txtEraIrisVal, panel == EraSliderPanel.IRIS, cream)
-        styleEraDockPill(pillEraFocus, txtEraFocusVal, panel == EraSliderPanel.FOCUS, cream)
-        styleEraDockPill(pillEraPrint, txtEraPrintVal, panel == EraSliderPanel.PRINT, cream)
-
-        if (panel == EraSliderPanel.NONE) {
-            eraSliderDrawer.visibility = View.GONE
-            return
-        }
-        eraSliderDrawer.visibility = View.VISIBLE
-        refreshEraSliderUi()
-    }
-
-    private fun computeGrainMultiplierForAsa(iso: Int): Float {
-        return when {
-            iso <= 65 -> 0.78f
-            iso <= 125 -> 0.94f
-            iso <= 280 -> 1.08f
-            iso <= 480 -> 1.28f
-            else -> 1.50f
-        }
-    }
-
-    private fun applyEraManualStock(targetIso: Int, shutterNs: Long? = null, announce: Boolean = false) {
-        if (!engine.capabilities.supportsManualExposure) {
-            showSingleToast("Manual ASA lock unavailable on this lens")
-            return
-        }
-        val curEraFps = if (activeEraCamera == EraCameraId.MONO_1950S) 24 else eraSilentFps
-        val maxFrameNs = 1_000_000_000L / curEraFps.coerceAtLeast(16).toLong()
-        val clampedIso = targetIso.coerceIn(engine.capabilities.effectiveIsoRange.lower, engine.capabilities.effectiveIsoRange.upper)
-        val chosenShutter = if (shutterNs != null) {
-            engine.snapShutterToAntiFlickerNs(shutterNs, maxFrameNs)
-        } else {
-            // Re-solve balanced exposure for the newly picked ASA and snap strictly to anti-flicker safe shutter (1/50s, 1/100s, 1/33s, 1/25s on 50Hz!)
-            val curIso = if (eraManualExposureActive) engine.manualIso else engine.getLiveSensorIso().coerceAtLeast(50)
-            val curExp = if (eraManualExposureActive) engine.manualShutterNs else engine.getLiveSensorShutterNs().coerceAtLeast(100_000L)
-            val ideal = ((curIso.toDouble() * curExp.toDouble()) / clampedIso.toDouble()).toLong()
-            engine.snapShutterToAntiFlickerNs(ideal, maxFrameNs)
-        }
-        eraManualExposureActive = true
-        eraSelectedAsa = clampedIso
-        engine.lockEraManualExposure(clampedIso, chosenShutter)
-        pushActiveEraRenderState()
-        updateEraIrisUi()
-        refreshEraSliderUi()
-        if (announce) {
-            val denom = (1_000_000_000.0 / engine.manualShutterNs.coerceAtLeast(1L).toDouble()).roundToInt().coerceAtLeast(1)
-            showSingleToast("LOCKED: ASA $clampedIso • 1/${denom}s (${engine.antiFlickerMode.label})")
-        }
-    }
-
-    private fun populateInlineChips(
-        entries: List<Triple<String, Boolean, () -> Unit>>
-    ) {
-        eraAsaStockRow.removeAllViews()
-        entries.forEachIndexed { idx, (label, isSelected, onClick) ->
-            val chip = TextView(this).apply {
-                text = label
-                textSize = 9.5f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                gravity = Gravity.CENTER
-                setBackgroundResource(if (isSelected) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-                setTextColor(if (isSelected) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
-                layoutParams = LinearLayout.LayoutParams(0, dpToPx(28), 1f).apply {
-                    if (idx < entries.lastIndex) marginEnd = dpToPx(5)
-                }
-                setOnClickListener { onClick() }
-            }
-            eraAsaStockRow.addView(chip)
-        }
-    }
-
-    private fun showEraCustomAsaDialog() {
-        if (!engine.capabilities.supportsManualExposure) {
-            showSingleToast("Manual ASA lock unavailable on this lens")
-            return
-        }
-        val minI = engine.capabilities.effectiveIsoRange.lower
-        val maxI = engine.capabilities.effectiveIsoRange.upper
-        val cur = if (eraManualExposureActive) eraSelectedAsa else engine.getLiveSensorIso().coerceAtLeast(minI)
-        val stockTitle = if (activeEraCamera == EraCameraId.MONO_1950S) "LOAD 35mm SAFETY FILM ASA" else "LOAD NITRATE FILM ASA"
-        openCinemaInputDrawer(
-            title = stockTitle,
-            hint = "Range: $minI – $maxI (Step ±50)",
-            initialValue = cur.toString(),
-            allowDecimal = false,
-            step = 50f,
-            isClassicStyle = true
-        ) { raw ->
-            val v = raw.toIntOrNull()
-            if (v == null || v <= 0) {
-                showSingleToast("Enter a valid ASA number")
-                false
-            } else {
-                applyEraManualStock(v, shutterNs = null, announce = true)
-                true
-            }
-        }
-    }
-
-    private fun updateEraTorchUi() {
-        val on = engine.isTorchEnabled && engine.capabilities.hasFlash
-        btnEraTorch.alpha = if (engine.capabilities.hasFlash) 1.0f else 0.35f
-        btnEraTorch.setBackgroundResource(if (on) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-        btnEraTorch.setTextColor(if (on) 0xFF141210.toInt() else 0xFFE8B968.toInt())
-        btnEraTorch.text = if (on) "☀ LAMP" else "LAMP"
-    }
-
-    private fun refreshEraSliderUi() {
-        suppressEraSeek = true
-        val is1950s = (activeEraCamera == EraCameraId.MONO_1950S)
-        when (activeEraPanel) {
-            EraSliderPanel.CRANK -> {
-                btnEraAntiFlicker.visibility = View.GONE
-                btnEraLockExp.visibility = View.GONE
-                btnEraSliderAuto.text = "✕"
-                btnEraSliderAuto.setBackgroundResource(R.drawable.bg_era_pill)
-                btnEraSliderAuto.setTextColor(0xFFF5E6C8.toInt())
-                eraAsaStockRow.visibility = View.VISIBLE
-                eraSeekBar.visibility = View.GONE
-                txtEraDrawerSub.visibility = View.VISIBLE
-
-                if (is1950s) {
-                    txtEraSliderTitle.text = "35mm GATE (24 FPS SYNC)"
-                    txtEraSliderReadout.text = if (era1950sGateWide) "1.85:1 WIDESCREEN" else "1.37:1 ACADEMY"
-                    txtEraDrawerSub.text = if (era1950sGateWide) {
-                        "1.85:1 1950s Widescreen Flat • Crystal-Sync 24 FPS • Optical Mono"
-                    } else {
-                        "1.37:1 Classic Academy (Pather Panchali / Seven Samurai) • 24 FPS"
-                    }
-                    populateInlineChips(listOf(
-                        Triple("1.37 ACADEMY", !era1950sGateWide) {
-                            era1950sGateWide = false
-                            txtEraSpeedVal.text = "1.37"
-                            pushActiveEraRenderState()
-                            refreshEraSliderUi()
-                        },
-                        Triple("1.85 WIDE", era1950sGateWide) {
-                            era1950sGateWide = true
-                            txtEraSpeedVal.text = "1.85"
-                            pushActiveEraRenderState()
-                            refreshEraSliderUi()
-                        }
-                    ))
-                } else {
-                    txtEraSliderTitle.text = "HAND-CRANK"
-                    txtEraSliderReadout.text = "$eraSilentFps FPS • ${String.format(Locale.US, "%.2f", eraSilentFps / 16f)} ft/s"
-                    txtEraDrawerSub.text = when (eraSilentFps) {
-                        16 -> "16 FPS — Early Silent Hand-Crank (Chaplin / Early Pathé)"
-                        18 -> "18 FPS — Classic 1920s Standard (Nosferatu / The General)"
-                        else -> "20 FPS — Late 1920s Cinema Palace (Metropolis / Sunrise)"
-                    }
-                    val speeds = listOf(16, 18, 20)
-                    populateInlineChips(speeds.map { fps ->
-                        Triple("$fps FPS", eraSilentFps == fps) {
-                            eraSilentFps = fps
-                            txtEraSpeedVal.text = "$fps FPS"
-                            engine.setTargetFpsSeamless(fps)
-                            pushActiveEraRenderState()
-                            refreshEraSliderUi()
-                        }
-                    })
-                }
-            }
-            EraSliderPanel.BATH -> {
-                btnEraAntiFlicker.visibility = View.GONE
-                btnEraLockExp.visibility = View.GONE
-                btnEraSliderAuto.text = "✕"
-                btnEraSliderAuto.setBackgroundResource(R.drawable.bg_era_pill)
-                btnEraSliderAuto.setTextColor(0xFFF5E6C8.toInt())
-                eraAsaStockRow.visibility = View.VISIBLE
-                eraSeekBar.visibility = View.GONE
-                txtEraDrawerSub.visibility = View.VISIBLE
-
-                if (is1950s) {
-                    val (fName, fDesc) = get1950sFilterMeta(era1950sFilterCode)
-                    txtEraSliderTitle.text = "OPTICAL GLASS FILTER"
-                    txtEraSliderReadout.text = fName
-                    txtEraDrawerSub.text = fDesc
-                    val filters = listOf(0 to "CLEAR", 1 to "Y8", 2 to "O21", 3 to "R25", 4 to "G11")
-                    populateInlineChips(filters.map { (code, label) ->
-                        Triple(label, era1950sFilterCode == code) {
-                            era1950sFilterCode = code
-                            txtEraTurretVal.text = label
-                            pushActiveEraRenderState()
-                            refreshEraSliderUi()
-                        }
-                    })
-                } else {
-                    val (bName, bDesc) = get1920sBathMeta(era1920sBathCode)
-                    txtEraSliderTitle.text = "LAB BATH"
-                    txtEraSliderReadout.text = bName
-                    txtEraDrawerSub.text = bDesc
-                    val baths = listOf(0 to "SILVER", 1 to "AMBER", 2 to "NIGHT", 3 to "SEPIA", 4 to "ROSE")
-                    populateInlineChips(baths.map { (code, label) ->
-                        Triple(label, era1920sBathCode == code) {
-                            era1920sBathCode = code
-                            txtEraTurretVal.text = label
-                            pushActiveEraRenderState()
-                            refreshEraSliderUi()
-                        }
-                    })
-                }
-            }
-            EraSliderPanel.PRINT -> {
-                btnEraAntiFlicker.visibility = View.GONE
-                btnEraLockExp.visibility = View.GONE
-                btnEraSliderAuto.text = "✕"
-                btnEraSliderAuto.setBackgroundResource(R.drawable.bg_era_pill)
-                btnEraSliderAuto.setTextColor(0xFFF5E6C8.toInt())
-                eraAsaStockRow.visibility = View.VISIBLE
-                eraSeekBar.visibility = View.GONE
-                txtEraDrawerSub.visibility = View.VISIBLE
-
-                if (is1950s) {
-                    val (pName, pDesc) = get1950sPrintMeta(era1950sPrintLevel)
-                    txtEraSliderTitle.text = "35mm SAFETY PRINT"
-                    txtEraSliderReadout.text = pName
-                    txtEraDrawerSub.text = pDesc
-                    val prints = listOf(0 to "STUDIO", 1 to "CRITERION", 2 to "ARCHIVE")
-                    populateInlineChips(prints.map { (lvl, label) ->
-                        Triple(label, era1950sPrintLevel == lvl) {
-                            era1950sPrintLevel = lvl
-                            txtEraPrintVal.text = label
-                            pushActiveEraRenderState()
-                            refreshEraSliderUi()
-                        }
-                    })
-                } else {
-                    val (pName, pDesc) = get1920sPrintMeta(era1920sPrintLevel)
-                    txtEraSliderTitle.text = "NITRATE PRINT"
-                    txtEraSliderReadout.text = pName
-                    txtEraDrawerSub.text = pDesc
-                    val prints = listOf(0 to "PREMIERE", 1 to "VAULT", 2 to "FOUND")
-                    populateInlineChips(prints.map { (lvl, label) ->
-                        Triple(label, era1920sPrintLevel == lvl) {
-                            era1920sPrintLevel = lvl
-                            txtEraPrintVal.text = label
-                            pushActiveEraRenderState()
-                            refreshEraSliderUi()
-                        }
-                    })
-                }
-            }
-            EraSliderPanel.IRIS -> {
-                val canManual = engine.capabilities.supportsManualExposure
-                btnEraAntiFlicker.visibility = View.VISIBLE
-                btnEraAntiFlicker.text = engine.antiFlickerMode.label
-                btnEraAntiFlicker.setBackgroundResource(if (engine.antiFlickerMode != AntiFlickerMode.OFF) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-                btnEraAntiFlicker.setTextColor(if (engine.antiFlickerMode != AntiFlickerMode.OFF) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
-                btnEraLockExp.visibility = if (canManual) View.VISIBLE else View.GONE
-                eraAsaStockRow.visibility = if (canManual) View.VISIBLE else View.GONE
-                eraSeekBar.visibility = View.VISIBLE
-                txtEraDrawerSub.visibility = View.GONE
-
-                if (canManual) {
-                    val minIso = engine.capabilities.effectiveIsoRange.lower
-                    val maxIso = engine.capabilities.effectiveIsoRange.upper
-                    val baseStops = when {
-                        is1950s && minIso <= 64 -> listOf(50, 100, 250, 400)
-                        is1950s -> listOf(100, 250, 400, 800)
-                        minIso <= 64 -> listOf(50, 100, 400, 800)
-                        else -> listOf(100, 200, 400, 800)
-                    }
-                    val distinctStops = baseStops
-                        .map { it.coerceIn(minIso, maxIso) }
-                        .distinct()
-                    val matchedStop = if (eraManualExposureActive) {
-                        distinctStops.minByOrNull { kotlin.math.abs(eraSelectedAsa - it) }
-                            ?.takeIf { kotlin.math.abs(eraSelectedAsa - it) <= maxOf(12, it / 10) }
-                    } else null
-                    populateInlineChips(distinctStops.map { asa ->
-                        Triple("ASA $asa", matchedStop == asa) {
-                            applyEraManualStock(asa, shutterNs = null, announce = true)
-                        }
-                    })
-                }
-
-                if (eraManualExposureActive && canManual) {
-                    txtEraSliderTitle.text = "SHUTTER (TAP ASA)"
-                    btnEraLockExp.text = "180°"
-                    btnEraLockExp.setBackgroundResource(R.drawable.bg_era_pill_active)
-                    btnEraLockExp.setTextColor(0xFF141210.toInt())
-                    btnEraSliderAuto.text = "AUTO"
-                    btnEraSliderAuto.setBackgroundResource(R.drawable.bg_era_pill)
-                    btnEraSliderAuto.setTextColor(0xFFF5E6C8.toInt())
-
-                    eraSeekBar.max = eraManualShutterDenoms.lastIndex
-                    val curDenom = (1_000_000_000L / engine.manualShutterNs.coerceAtLeast(1L)).toInt()
-                    val closestIdx = eraManualShutterDenoms.indices.minByOrNull {
-                        kotlin.math.abs(eraManualShutterDenoms[it] - curDenom)
-                    } ?: 6
-                    eraSeekBar.progress = (eraManualShutterDenoms.lastIndex - closestIdx).coerceIn(0, eraManualShutterDenoms.lastIndex)
-                    txtEraSliderReadout.text = "ASA ${engine.manualIso} • 1/${curDenom}s"
-                } else {
-                    txtEraSliderTitle.text = "AUTO IRIS"
-                    btnEraLockExp.text = "LOCK 180°"
-                    btnEraLockExp.setBackgroundResource(R.drawable.bg_era_pill)
-                    btnEraLockExp.setTextColor(0xFFE8B968.toInt())
-                    btnEraSliderAuto.text = "AUTO"
-                    btnEraSliderAuto.setBackgroundResource(R.drawable.bg_era_pill_active)
-                    btnEraSliderAuto.setTextColor(0xFF141210.toInt())
-
-                    val minEv = engine.capabilities.evRange.lower
-                    val maxEv = engine.capabilities.evRange.upper
-                    eraSeekBar.max = (maxEv - minEv).coerceAtLeast(1)
-                    eraSeekBar.progress = (engine.evCompensationIndex - minEv).coerceIn(0, eraSeekBar.max)
-                    txtEraSliderReadout.text = "AUTO • ${formatEraIrisFStop(engine.getCurrentEvStops())}"
-                }
-            }
-            EraSliderPanel.FOCUS -> {
-                btnEraAntiFlicker.visibility = View.GONE
-                btnEraLockExp.visibility = View.GONE
-                eraAsaStockRow.visibility = View.GONE
-                txtEraDrawerSub.visibility = View.GONE
-                eraSeekBar.visibility = View.VISIBLE
-                txtEraSliderTitle.text = "FOCUS RING"
-                btnEraSliderAuto.text = "AF"
-                btnEraSliderAuto.setBackgroundResource(if (!engine.isManualFocus) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-                btnEraSliderAuto.setTextColor(if (!engine.isManualFocus) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
-                eraSeekBar.max = 100
-                val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
-                eraSeekBar.progress = ((engine.manualFocusDistance / maxF) * 100f).roundToInt().coerceIn(0, 100)
-                txtEraSliderReadout.text = if (engine.isManualFocus) formatFocus(engine.manualFocusDistance, maxF) else "AF (AUTO)"
-            }
-            EraSliderPanel.NONE -> {
-                btnEraAntiFlicker.visibility = View.GONE
-                btnEraLockExp.visibility = View.GONE
-                eraAsaStockRow.visibility = View.GONE
-                txtEraDrawerSub.visibility = View.GONE
-            }
-        }
-        suppressEraSeek = false
-    }
-
-    private fun formatEraIrisFStop(evStops: Float): String {
-        val fNum = 5.6 * Math.pow(2.0, (-evStops / 2.0).toDouble())
-        return if (fNum < 10.0) String.format(Locale.US, "f/%.1f", fNum)
-        else String.format(Locale.US, "f/%.0f", fNum)
-    }
-
-    private fun updateEraIrisUi() {
-        if (eraManualExposureActive && engine.isManualExposure) {
-            txtEraIrisLabel.text = "ASA LOCK"
-            txtEraIrisVal.text = "${engine.manualIso}"
-        } else {
-            txtEraIrisLabel.text = "ASA"
-            val liveI = lastTelemetry?.iso
-            txtEraIrisVal.text = if (liveI != null && liveI > 0) "A·$liveI" else formatEraIrisFStop(engine.getCurrentEvStops())
-        }
-    }
-
-    private fun updateEraFocusUi() {
-        val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
-        txtEraFocusVal.text = if (engine.isManualFocus) formatFocus(engine.manualFocusDistance, maxF) else "AF"
+        showSingleToast("Switched back to SAVIOR Cinema Core")
     }
 
     private fun setupMonitoringTools() {
@@ -3191,23 +2561,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 }
             )
 
-            // 2. Update ERA top-bar subtle battery pill (shown ONLY while charging ⚡ or low <= 15% so vintage HUD stays clean)
-            when {
-                charging -> {
-                    txtEraBattery.visibility = View.VISIBLE
-                    txtEraBattery.text = "⚡$pct%"
-                    txtEraBattery.setTextColor(0xFF34C759.toInt())
-                    txtEraBattery.setBackgroundResource(R.drawable.bg_era_pill)
-                }
-                pct <= 15 -> {
-                    txtEraBattery.visibility = View.VISIBLE
-                    txtEraBattery.text = "LOW $pct%"
-                    txtEraBattery.setTextColor(0xFFFF3B30.toInt())
-                    txtEraBattery.setBackgroundResource(R.drawable.bg_hud_pill_muted)
-                }
-                else -> {
-                    txtEraBattery.visibility = View.GONE
-                }
+            // 2. Forward battery telemetry cleanly to active Era Plug-In (if any)
+            if (currentWorkbench == CameraWorkbench.ERA) {
+                activeEraPlugin?.onBatteryUpdated(eraHostBridge, pct, charging)
             }
 
             // 3. Low-Battery Plug-In Warning Banner & One-Time Toast Alerts
@@ -3415,8 +2771,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.6.2"
-    } catch (_: Exception) { "0.7.6.2" }
+        info.versionName ?: "0.7.7"
+    } catch (_: Exception) { "0.7.7" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -5444,15 +4800,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             styleToolPill(btnProStab, engine.isStabilizationEnabled)
             updateAutoPilotUi(engine.autoPilotState)
             pillFocus.alpha = if (caps.supportsManualFocus) 1.0f else 0.45f
-            pillEraFocus.alpha = if (caps.supportsManualFocus) 1.0f else 0.45f
             if (currentWorkbench == CameraWorkbench.ERA) {
-                updateEraTorchUi()
-                if (eraManualExposureActive && caps.supportsManualExposure) {
-                    engine.lockEraManualExposure(eraSelectedAsa, engine.manualShutterNs)
-                }
-                updateEraIrisUi()
-                updateEraFocusUi()
-                if (activeEraPanel != EraSliderPanel.NONE) refreshEraSliderUi()
+                activeEraPlugin?.onCameraReady(eraHostBridge, caps)
             } else if (activePanel != ProControlPanel.NONE) {
                 refreshSliderState()
             }
@@ -5484,8 +4833,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             txtFocusVal.text = if (telemetry.isManualFocus) formatFocus(telemetry.focusDistance, maxF) else "AF-C"
             txtFocusVal.setTextColor(if (telemetry.isManualFocus) orange else white)
 
-            if (currentWorkbench == CameraWorkbench.ERA && !eraManualExposureActive) {
-                txtEraIrisVal.text = "A·${telemetry.iso}"
+            if (currentWorkbench == CameraWorkbench.ERA) {
+                activeEraPlugin?.onTelemetryUpdated(eraHostBridge, telemetry)
             }
 
             // Live-sync the open Pro Slider thumb & readout when running in Auto mode
@@ -5626,13 +4975,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             updateRestoreCleanEyeBadge()
             uiHandler.removeCallbacks(timecodeRunnable)
             if (currentWorkbench == CameraWorkbench.ERA) {
-                if (activeEraPanel == EraSliderPanel.CRANK || activeEraPanel == EraSliderPanel.BATH || activeEraPanel == EraSliderPanel.PRINT) {
-                    selectEraPanel(EraSliderPanel.NONE)
-                }
-                viewEraRecDot.visibility = View.VISIBLE
-                txtEraFootage.setTextColor(0xFFFF3B30.toInt())
-                txtEraFootage.text = "000 FT • 00:00"
-                updateEraRecordingLockVisuals(true)
+                activeEraPlugin?.onRecordingStarted(eraHostBridge)
                 uiHandler.post(timecodeRunnable)
             } else {
                 viewRecDot.visibility = View.VISIBLE
@@ -5665,15 +5008,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         runOnUiThread {
             uiHandler.removeCallbacks(timecodeRunnable)
             viewRecDot.visibility = View.GONE
-            viewEraRecDot.visibility = View.GONE
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_rec)
             btnShutterInner.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140L).start()
             updateRestoreCleanEyeBadge()
             btnAutoPilot.alpha = 1.0f
             if (currentWorkbench == CameraWorkbench.ERA) {
-                txtEraFootage.text = "000 FT • 00:00"
-                txtEraFootage.setTextColor(0xFFF5E6C8.toInt())
-                updateEraRecordingLockVisuals(false)
+                activeEraPlugin?.onRecordingStopped(eraHostBridge)
             } else {
                 updateTimelapseUi()
             }

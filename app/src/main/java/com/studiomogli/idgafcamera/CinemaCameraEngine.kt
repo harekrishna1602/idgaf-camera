@@ -1,6 +1,8 @@
 package com.studiomogli.idgafcamera
 
 import android.annotation.SuppressLint
+import com.studiomogli.idgafcamera.era.EraCameraPlugin
+import com.studiomogli.idgafcamera.era.EraRenderConfig
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Rect
@@ -188,25 +190,15 @@ class CinemaCameraEngine(
     @Volatile var audioMonitorTrimDb: Int = 0
     @Volatile var timelapseIntervalMs: Long = 0L
     fun isTimelapseEnabled(): Boolean = timelapseIntervalMs > 0L
-    @Volatile var eraSilentAudio: Boolean = false
-    @Volatile var eraAudioProfile: EraAudioProfile = EraAudioProfile.NONE
-    @Volatile var eraFilenameTag: String = ""
+    @Volatile var activeEraPlugin: EraCameraPlugin? = null
+        private set
+    @Volatile var eraRenderConfig: EraRenderConfig = EraRenderConfig()
+        private set
     @Volatile var isFinalizingClip: Boolean = false
         private set
     private var activeTempRawFile: File? = null
     private var activeTargetFileName: String = ""
-    @Volatile var eraModeCode: Int = 0
-        private set
-    @Volatile var eraWearLevel: Float = 0.0f
-        private set
-    @Volatile var eraFps: Float = 16.0f
-        private set
-    @Volatile var eraFilterCode: Int = 0
-        private set
-    @Volatile var eraGrainMultiplier: Float = 1.0f
-        private set
-    @Volatile var eraGateAspect: Float = 1.3333f
-        private set
+    private var pendingPostAudioPlugin: EraCameraPlugin? = null
     @Volatile var toneProfile: ToneProfile = ToneProfile.STANDARD
         private set
     @Volatile var isRecording: Boolean = false
@@ -379,12 +371,12 @@ class CinemaCameraEngine(
         glRenderer?.colorState = gpuColorState
         syncEvOverdriveToGpu()
         glRenderer?.splitCompareFraction = splitCompareFraction
-        glRenderer?.eraModeCode = eraModeCode
-        glRenderer?.eraWearLevel = eraWearLevel
-        glRenderer?.eraFps = eraFps
-        glRenderer?.eraFilterCode = eraFilterCode
-        glRenderer?.eraGrainMultiplier = eraGrainMultiplier
-        glRenderer?.eraGateAspect = eraGateAspect
+        val curPlugin = activeEraPlugin
+        if (curPlugin != null) {
+            glRenderer?.setEraPluginShader(curPlugin.id, curPlugin.getFragmentShaderSource(), eraRenderConfig)
+        } else {
+            glRenderer?.setEraPluginShader(null, null, null)
+        }
         syncEvOverdriveToGpu()
         glRenderer?.mirrorFrontExport = mirrorFrontExport
         cleanupOrphanEraCacheFiles()
@@ -435,32 +427,27 @@ class CinemaCameraEngine(
         glRenderer?.splitCompareFraction = fraction
     }
 
-    fun setEraRenderState(
-        modeCode: Int,
-        wearLevel: Float,
-        fps: Float,
-        filterCode: Int = eraFilterCode,
-        grainMul: Float = eraGrainMultiplier,
-        gateAspect: Float = eraGateAspect
-    ) {
-        val wasClassic = (eraModeCode > 0)
-        val isClassic = (modeCode > 0)
-        eraModeCode = modeCode
-        eraWearLevel = wearLevel.coerceIn(0f, 1f)
-        eraFps = fps.coerceIn(1f, 60f)
-        eraFilterCode = filterCode.coerceIn(0, 4)
-        eraGrainMultiplier = grainMul.coerceIn(0.45f, 2.2f)
-        eraGateAspect = gateAspect.coerceIn(1.0f, 2.6f)
-        glRenderer?.eraModeCode = eraModeCode
-        glRenderer?.eraWearLevel = eraWearLevel
-        glRenderer?.eraFps = eraFps
-        glRenderer?.eraFilterCode = eraFilterCode
-        glRenderer?.eraGrainMultiplier = eraGrainMultiplier
-        glRenderer?.eraGateAspect = eraGateAspect
-        // Toggle Camera2 hardware ISP de-sharpening (EDGE_MODE_OFF) & EIS off immediately on SAVIOR <-> CLASSIC transition!
-        if (wasClassic != isClassic) {
+    fun setEraPlugin(plugin: EraCameraPlugin?, initialConfig: EraRenderConfig? = null) {
+        val prevBypassIsp = activeEraPlugin?.disableDigitalEisAndSharpening == true
+        val nextBypassIsp = plugin?.disableDigitalEisAndSharpening == true
+        activeEraPlugin = plugin
+        if (plugin != null) {
+            val cfg = initialConfig ?: plugin.getInitialRenderConfig()
+            eraRenderConfig = cfg
+            glRenderer?.setEraPluginShader(plugin.id, plugin.getFragmentShaderSource(), cfg)
+        } else {
+            eraRenderConfig = EraRenderConfig()
+            glRenderer?.setEraPluginShader(null, null, null)
+        }
+        syncEvOverdriveToGpu()
+        if (prevBypassIsp != nextBypassIsp) {
             pushUpdatedRepeatingRequest()
         }
+    }
+
+    fun updateEraRenderConfig(config: EraRenderConfig) {
+        eraRenderConfig = config
+        glRenderer?.eraRenderConfig = config
     }
 
     /**
@@ -927,7 +914,7 @@ class CinemaCameraEngine(
 
     private fun syncEvOverdriveToGpu() {
         // Only apply smooth GPU EV continuation in SAVIOR Auto Exposure when EV goes beyond typical +1.0 / -2.0 video hardware AE ceilings
-        val overdrive = if (eraModeCode == 0 && !isManualExposure) {
+        val overdrive = if (activeEraPlugin == null && !isManualExposure) {
             val stops = getCurrentEvStops()
             when {
                 stops > 1.0f -> ((stops - 1.0f) * 0.70f).coerceAtMost(1.8f)
@@ -1196,7 +1183,7 @@ class CinemaCameraEngine(
         }
 
         // 3.7. Hardware Video Stabilization (OIS / EIS) — digital EIS is OFF in CLASSIC to avoid modern warp/jello!
-        val useEis = isStabilizationEnabled && (eraModeCode == 0)
+        val useEis = isStabilizationEnabled && (activeEraPlugin?.disableDigitalEisAndSharpening != true)
         if (capabilities.supportsEis) {
             builder.set(
                 CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
@@ -1214,7 +1201,7 @@ class CinemaCameraEngine(
 
         // 3.8. Hardware ISP Edge Sharpening & Noise Reduction:
         // Strip harsh smartphone digital edge halos & plastic AI smoothing in CLASSIC mode for genuine optical film texture!
-        if (eraModeCode > 0) {
+        if (activeEraPlugin?.disableDigitalEisAndSharpening == true) {
             builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_OFF)
             builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_MINIMAL)
         } else {
@@ -1606,7 +1593,7 @@ class CinemaCameraEngine(
         }
 
         try {
-            val activeAspect = if (eraModeCode > 0) RecordAspectMode.WIDE_16_9 else recordAspectMode
+            val activeAspect = if (activeEraPlugin != null) RecordAspectMode.WIDE_16_9 else recordAspectMode
             val wantVertical = (activeAspect != RecordAspectMode.WIDE_16_9)
             var encW = if (wantVertical) resolvedVideoSize.height else resolvedVideoSize.width
             var encH = if (wantVertical) resolvedVideoSize.width else resolvedVideoSize.height
@@ -1703,6 +1690,7 @@ class CinemaCameraEngine(
         val label = activeFileLabel
         activeTempRawFile = null
         activeTargetFileName = ""
+        pendingPostAudioPlugin = null
 
         if (tempRaw != null) {
             activeMediaUri = null
@@ -1712,20 +1700,15 @@ class CinemaCameraEngine(
                 return
             }
 
-            // Phase 7.4 Era Optical Mono Audio DSP Remux (lossless video copy + authentic 1950s Academy Curve audio)
-            val profile = eraAudioProfile
-            val archiveWear = (eraWearLevel > 0.25f)
+            // Plugin Post-Recording Audio DSP Remux (100% lossless video passthrough + plugin's own audio DSP!)
+            val postPlugin = pendingPostAudioPlugin
+            pendingPostAudioPlugin = null
             isFinalizingClip = true
             Thread {
                 val processedFile = File(context.cacheDir, "era_proc_${System.currentTimeMillis()}.mp4")
                 var finalUri: Uri? = null
                 try {
-                    val dspOk = EraAudioProcessor.processMp4Audio(
-                        inputFile = tempRaw,
-                        outputFile = processedFile,
-                        profile = profile,
-                        archiveWear = archiveWear
-                    )
+                    val dspOk = postPlugin?.processRecordedMp4Audio(tempRaw, processedFile) == true
                     val sourceToCommit = if (dspOk && processedFile.exists() && processedFile.length() > 1024L) {
                         processedFile
                     } else {
@@ -1821,7 +1804,8 @@ class CinemaCameraEngine(
     ): MediaRecorder {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val isTl = isTimelapseEnabled()
-        val eraTag = eraFilenameTag.trim()
+        val plugin = activeEraPlugin
+        val eraTag = plugin?.fileTag?.trim().orEmpty()
         val aspectTag = when (aspectMode) {
             RecordAspectMode.VERT_9_16_CROP -> "9x16C_"
             RecordAspectMode.VERT_9_16_PORTRAIT -> "9x16P_"
@@ -1841,8 +1825,10 @@ class CinemaCameraEngine(
             MediaRecorder()
         }
 
-        val useEraAudioDsp = (eraAudioProfile != EraAudioProfile.NONE && !eraSilentAudio && !isTl)
-        val recordAudio = if (useEraAudioDsp) true else (!isAudioMuted && !isTl && !eraSilentAudio)
+        val isSilentPlugin = (plugin?.isSilentAudio == true)
+        val useEraAudioDsp = (plugin != null && plugin.usesPostAudioProcessor && !isSilentPlugin && !isTl)
+        pendingPostAudioPlugin = if (useEraAudioDsp) plugin else null
+        val recordAudio = if (useEraAudioDsp) true else (!isAudioMuted && !isTl && !isSilentPlugin)
         if (recordAudio) {
             recorder.setAudioSource(if (useEraAudioDsp) MediaRecorder.AudioSource.CAMCORDER else audioPreampMode.audioSource)
         }
@@ -1939,6 +1925,7 @@ class CinemaCameraEngine(
         }
         activeTempRawFile = null
         activeTargetFileName = ""
+        pendingPostAudioPlugin = null
     }
 
     private fun closeSession() {
