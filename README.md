@@ -1,12 +1,17 @@
-# IDGAF CAMERA (`v0.7.5.3` — Format Bitrate Integration, 9:16 Vertical Rec in Landscape HUD, 5 Cinema Grids, Top-Left Histogram & 100% Custom Studio UI)
+# IDGAF CAMERA (`v0.7.5.3` — True 9:16 Vertical Recording, Unified Format Drawer, Top-Left Histogram, 6 Cinema Grids & 100% Dark Cinema UI)
 
 *A love letter to indie filmmakers — by Savior San.*
 
 Free, open Android cinema camera powered by the **Savior Cinema Engine** (native **Kotlin + Camera2 + OpenGL ES 2.0**) by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's New in `v0.7.5.3`
-- **Live Green Update Refresh:** Tapping `CHECK FOR UPDATES` inside Credits immediately updates the open button to bright emerald green (`INSTALL vX.X.X`, matching `PILOT`) as soon as a release is detected—no closing/reopening required.
-- **Top-Left RGB Histogram:** Moved the 3-channel RGB + Luma Histogram to the top-left opposite `PILOT` so the right rail stays clean.
-- **Bitrate Inside `VIDEO FORMAT` Drawer + Rebalanced `PRO` Drawer:** Bitrate (`8M – 100M` + custom `✎ Mbps`) now lives right inside `VIDEO FORMAT` beneath Resolution & FPS (auto-updating visibly whenever you switch resolution), while `PRO` rebalances cleanly into `CODEC | STAB | TORCH | MIRROR` and `TMR | TL | PRESETS`.
-- **5 Cinema Grids + True `9:16` Vertical Recording in Landscape HUD:** Expanded `GRID` to `3x3`, `Golden φ`, `4x4`, and `Diagonals (✕+)`, and added `9:16 VERT` recording mode (via `VIDEO FORMAT` or `MON → FRAME: 9:16`) that keeps all menus in your current orientation while encoding and saving true vertical `9:16` MP4s (`1080×1920`).
-- **100% Custom Studio Mogli UI (Zero Old Android Popups):** Replaced low-light ISO jargon with an inline `LOW LIGHT • Turn light on?` (`LIGHT ON` / `KEEP OFF`) card, and replaced all remaining Android `AlertDialog` popups (Presets, 3D LUT Library, `+ .CUBE`, Clip Vault `+ FOLDER` / `MOVE` / `ZIP`) with custom dark Studio Mogli drawers & modals.
+## What's Upgraded in `v0.7.5.3`
+- **True 9:16 Vertical Video Recording (UI Stays Locked in Landscape):**
+  - **`9:16 CROP` (Format Drawer):** Hold the phone normally in landscape, frame inside the live `9:16 CROP REC` vertical box, and the GPU crops and saves a genuine upright `9:16` vertical MP4.
+  - **`9:16 PORT` (Format Drawer):** Hold the phone upright while the HUD stays locked cleanly — records the full camera sensor natively as a full-resolution `9:16` portrait MP4 (with automatic hardware-safe encoder fallback for MediaTek/Snapdragon devices).
+  - **`FRAME: 9:16` (MON Drawer):** Guide-only framing overlay when you want to keep a full `16:9` master file.
+- **Smarter Control Grouping (`VIDEO FORMAT` vs `PRO`):**
+  - Moved **Bitrate (`4M–100M`)** and **Codec (`H.264/HEVC`)** into the **VIDEO FORMAT** drawer so changing resolution visibly updates bitrate right in the same panel.
+  - Streamlined **PRO** into 2 clean 3-button rows (`STAB | TORCH | MIRROR` + `TMR | TL | PRESETS`).
+- **Top-Left Histogram & 6 Composition Grids:** Moved the RGB+Luma Histogram to the empty top-left corner (opposite the Pilot button), and expanded `MON → GRID` to **6 grids** (`OFF`, `3x3`, `φ`, `DIAG`, `SAFE` 90%/80%, `4x4`).
+- **Live Green Update Indicator:** Checking for updates inside Credits refreshes the button immediately into light-green `INSTALL vX.X.X` (and turns the top-left pill green `UPDATE ↑`) without closing the dialog.
+- **100% Dark Cinema Modals (`IdgafUiDialogs.kt`):** Eliminated every remaining stock Android `AlertDialog` across both the camera and Clip Vault (simple `DARK SCENE` light prompt, Presets, 3D LUT Library, `+ .CUBE`, URL Downloader, `+ FOLDER`, Move, and Lossless ZIP Archiver).

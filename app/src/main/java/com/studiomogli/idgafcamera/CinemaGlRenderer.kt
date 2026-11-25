@@ -703,6 +703,8 @@ class CinemaGlRenderer(
     @Volatile private var encoderWidth: Int = 1920
     @Volatile private var encoderHeight: Int = 1080
     @Volatile private var encoderRotation: Int = Surface.ROTATION_90
+    @Volatile private var encoderAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9
+    @Volatile private var encoderUsesHintRotation: Boolean = false
     @Volatile private var targetEncoderFps: Int = 30
     @Volatile private var hardwareFpsUpper: Int = 30
     @Volatile private var isEncoderRecording: Boolean = false
@@ -844,7 +846,9 @@ class CinemaGlRenderer(
         rotation: Int,
         desiredFps: Int,
         hwFpsUpper: Int,
-        timelapseIntervalMs: Long = 0L
+        timelapseIntervalMs: Long = 0L,
+        aspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9,
+        usesHintRotation: Boolean = false
     ): Boolean {
         val handler = glHandler ?: return false
         if (isReleased) return false
@@ -867,6 +871,8 @@ class CinemaGlRenderer(
                 encoderWidth = width.coerceAtLeast(16)
                 encoderHeight = height.coerceAtLeast(16)
                 encoderRotation = rotation
+                encoderAspectMode = aspectMode
+                encoderUsesHintRotation = usesHintRotation
                 targetEncoderFps = desiredFps.coerceIn(1, 60)
                 hardwareFpsUpper = hwFpsUpper.coerceIn(1, 120)
                 isEncoderRecording = false
@@ -1232,36 +1238,71 @@ class CinemaGlRenderer(
     }
 
     private fun buildEncoderMvp(outMvp: FloatArray, encW: Int, encH: Int, rot: Int) {
-        val glRotDeg = displayRotationToGlDegrees(rot)
         val stSwapped = kotlin.math.abs(stMatrix[1]) > kotlin.math.abs(stMatrix[0])
         val rot0W = if (stSwapped) videoHeight.toFloat() else videoWidth.toFloat()
         val rot0H = if (stSwapped) videoWidth.toFloat() else videoHeight.toFloat()
-
-        val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
-        val effVideoW = if (rotSwapped) rot0H else rot0W
-        val effVideoH = if (rotSwapped) rot0W else rot0H
-
-        val encAspect = encW.toFloat() / encH.coerceAtLeast(1).toFloat()
-        val videoAspect = effVideoW / effVideoH.coerceAtLeast(1f)
-        val scaleX: Float
-        val scaleY: Float
-        if (encAspect > videoAspect) {
-            scaleX = 1.0f
-            scaleY = encAspect / videoAspect
-        } else {
-            scaleX = videoAspect / encAspect
-            scaleY = 1.0f
-        }
-
-        // Determinant of upper-left 2x2 of stMatrix: negative = unmirrored (standard GL Y-flip),
-        // positive = HAL applied horizontal selfie mirror (front camera). Un-mirror for clean readable MP4.
         val stDet = stMatrix[0] * stMatrix[5] - stMatrix[1] * stMatrix[4]
-        val unMirrorX = if (isFrontCamera && stDet > 0f && !mirrorFrontExport) -1.0f else 1.0f
+        val unMirror = if (isFrontCamera && stDet > 0f && !mirrorFrontExport) -1.0f else 1.0f
 
-        Matrix.setIdentityM(outMvp, 0)
-        Matrix.scaleM(outMvp, 0, scaleX * unMirrorX, scaleY, 1.0f)
-        if (glRotDeg != 0f) {
-            Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
+        when (encoderAspectMode) {
+            RecordAspectMode.VERT_9_16_PORTRAIT -> {
+                if (!encoderUsesHintRotation) {
+                    // Direct Portrait MP4 (e.g. 1080x1920, hint=0): stMatrix is ALREADY upright Portrait (ROTATION_0)!
+                    val encAspect = encW.toFloat() / encH.coerceAtLeast(1).toFloat()
+                    val videoAspect = rot0W / rot0H.coerceAtLeast(1f)
+                    val sx = if (encAspect > videoAspect) 1.0f else videoAspect / encAspect
+                    val sy = if (encAspect > videoAspect) encAspect / videoAspect else 1.0f
+                    Matrix.setIdentityM(outMvp, 0)
+                    Matrix.scaleM(outMvp, 0, sx * unMirror, sy, 1.0f)
+                } else {
+                    // Fallback Hardware-Safe Portrait (1920x1080 + orientationHint=90/270): full landscape buffer rotated by player
+                    val glRotDeg = displayRotationToGlDegrees(rot)
+                    val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
+                    val effW = if (rotSwapped) rot0H else rot0W
+                    val effH = if (rotSwapped) rot0W else rot0H
+                    val encAspect = encW.toFloat() / encH.coerceAtLeast(1).toFloat()
+                    val videoAspect = effW / effH.coerceAtLeast(1f)
+                    val sx = if (encAspect > videoAspect) 1.0f else videoAspect / encAspect
+                    val sy = if (encAspect > videoAspect) encAspect / videoAspect else 1.0f
+                    // In rotated 90/270 buffer, portrait horizontal axis is screen Y -> unMirror on Y!
+                    Matrix.setIdentityM(outMvp, 0)
+                    Matrix.scaleM(outMvp, 0, sx, sy * unMirror, 1.0f)
+                    if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
+                }
+            }
+            RecordAspectMode.VERT_9_16_CROP -> {
+                // Hold phone Horizontal (Landscape) -> Center-crop exact 9:16 vertical slice from upright landscape frame!
+                val glRotDeg = displayRotationToGlDegrees(rot)
+                val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
+                val effW = if (rotSwapped) rot0H else rot0W
+                val effH = if (rotSwapped) rot0W else rot0H
+                val videoAspect = effW / effH.coerceAtLeast(1f)
+                val targetPortraitAspect = 9.0f / 16.0f
+                val cropScaleX = videoAspect / targetPortraitAspect
+                val cropScaleY = 1.0f
+
+                Matrix.setIdentityM(outMvp, 0)
+                if (encoderUsesHintRotation) {
+                    // Fallback 1920x1080 + orientationHint=90: post-rotate +90 CCW so 90 CW playback stands 100% upright!
+                    Matrix.rotateM(outMvp, 0, 90f, 0f, 0f, 1f)
+                }
+                Matrix.scaleM(outMvp, 0, cropScaleX * unMirror, cropScaleY, 1.0f)
+                if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
+            }
+            RecordAspectMode.WIDE_16_9 -> {
+                val glRotDeg = displayRotationToGlDegrees(rot)
+                val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
+                val effVideoW = if (rotSwapped) rot0H else rot0W
+                val effVideoH = if (rotSwapped) rot0W else rot0H
+                val encAspect = encW.toFloat() / encH.coerceAtLeast(1).toFloat()
+                val videoAspect = effVideoW / effVideoH.coerceAtLeast(1f)
+                val scaleX = if (encAspect > videoAspect) 1.0f else videoAspect / encAspect
+                val scaleY = if (encAspect > videoAspect) encAspect / videoAspect else 1.0f
+
+                Matrix.setIdentityM(outMvp, 0)
+                Matrix.scaleM(outMvp, 0, scaleX * unMirror, scaleY, 1.0f)
+                if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
+            }
         }
     }
 

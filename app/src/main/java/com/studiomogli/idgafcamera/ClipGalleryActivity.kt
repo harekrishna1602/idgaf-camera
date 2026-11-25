@@ -209,16 +209,17 @@ class ClipGalleryActivity : AppCompatActivity() {
         if (totalBytes > 0L && freeBytes < totalBytes + (12L * 1024L * 1024L)) {
             val needMb = (totalBytes / (1024f * 1024f)) + 12f
             val availMb = freeBytes / (1024f * 1024f)
-            StudioMogliDialogHelper.showPrompt(
-                activity = this,
-                title = "NOT ENOUGH FREE STORAGE",
+            IdgafUiDialogs.showActionDialog(
+                context = this,
+                title = "LOW STORAGE",
                 message = String.format(
                     Locale.US,
-                    "Selected clips need ~%.1f MB of free space to build the archive, but only %.1f MB is available.\n\nSelect fewer clips or clear space first.",
+                    "Selected clips need ~%.1f MB free to build the ZIP, but only %.1f MB is available.",
                     needMb,
                     availMb
                 ),
-                positiveLabel = "OK",
+                primaryLabel = "OK",
+                onPrimary = {},
                 cancelLabel = null
             )
             return
@@ -232,35 +233,35 @@ class ClipGalleryActivity : AppCompatActivity() {
         }
         val defaultName = "IDGAF_${folderPrefix}_$timestamp"
 
-        StudioMogliDialogHelper.showInput(
-            activity = this,
-            title = "CREATE LOSSLESS ZIP ARCHIVE",
-            message = String.format(
-                Locale.US,
-                "%d clip(s) • %.1f MB • Lossless STORED into Downloads/%s/.",
-                targets.size,
-                totalMb,
-                ARCHIVE_SUBDIR
-            ),
-            initialText = defaultName,
+        val msg = String.format(
+            Locale.US,
+            "%d clip(s) • %.1f MB (Lossless STORED → Downloads/%s/)",
+            targets.size,
+            totalMb,
+            ARCHIVE_SUBDIR
+        )
+        IdgafUiDialogs.showTextInputDialog(
+            context = this,
+            title = "CREATE LOSSLESS ZIP",
+            message = msg,
             hint = "Archive filename (without .zip)",
-            positiveLabel = "ZIP & KEEP",
-            neutralLabel = "ZIP & CLEAR",
-            onPositive = { raw ->
+            initialText = defaultName,
+            primaryLabel = "ZIP & KEEP",
+            onPrimary = { raw ->
                 val clean = sanitizeArchiveName(raw, defaultName)
                 startZipArchiveJob(targets, clean, clearOriginalsAfterVerify = false)
             },
-            onNeutral = { raw ->
+            secondaryLabel = "ZIP & CLEAR",
+            secondaryTextColor = 0xFFFF5F1F.toInt(),
+            onSecondary = { raw ->
                 val clean = sanitizeArchiveName(raw, defaultName)
-                StudioMogliDialogHelper.showPrompt(
-                    activity = this,
-                    title = "OFFLOAD & CLEAR ORIGINALS?",
-                    message = "All ${targets.size} original .mp4 file(s) will be deleted ONLY AFTER $clean.zip passes 100% integrity verification.",
-                    positiveLabel = "ZIP & CLEAR",
-                    positiveDanger = true,
-                    onPositive = {
-                        startZipArchiveJob(targets, clean, clearOriginalsAfterVerify = true)
-                    }
+                IdgafUiDialogs.showActionDialog(
+                    context = this,
+                    title = "ZIP & CLEAR ORIGINALS?",
+                    message = "All ${targets.size} original .mp4 file(s) will be deleted ONLY AFTER $clean.zip passes 100% verification.",
+                    primaryLabel = "ZIP & CLEAR",
+                    onPrimary = { startZipArchiveJob(targets, clean, clearOriginalsAfterVerify = true) },
+                    cancelLabel = "CANCEL"
                 )
             }
         )
@@ -284,14 +285,16 @@ class ClipGalleryActivity : AppCompatActivity() {
         val zipFileName = "$baseName.zip"
         val cancelled = AtomicBoolean(false)
 
-        val (progressDialog, txtStage, barAndBytes) = StudioMogliDialogHelper.showProgress(
-            activity = this,
+        val progHandle = IdgafUiDialogs.showProgressDialog(
+            context = this,
             title = if (clearOriginalsAfterVerify) "ARCHIVING & VERIFYING..." else "BUILDING ZIP ARCHIVE...",
             initialStage = "Preparing ${targets.size} clip(s)...",
             onCancel = { cancelled.set(true) }
         )
-        val progressBar = barAndBytes.first
-        val txtBytes = barAndBytes.second
+        val progressDialog = progHandle.dialog
+        val txtStage = progHandle.txtStage
+        val progressBar = progHandle.progressBar
+        val txtBytes = progHandle.txtBytes
 
         fun updateProgressUi(stage: String, pct: Int, doneBytes: Long, totalBytes: Long) {
             runOnUiThread {
@@ -558,29 +561,28 @@ class ClipGalleryActivity : AppCompatActivity() {
             "All $clipCount original clip(s) kept in Clip Vault."
         }
 
-        StudioMogliDialogHelper.showPrompt(
-            activity = this,
+        lateinit var dialog: AlertDialog
+        dialog = IdgafUiDialogs.showActionDialog(
+            context = this,
             title = "ARCHIVE READY",
             message = String.format(
                 Locale.US,
-                "%s\nSize: %.1f MB (Lossless STORED)\nSaved: Downloads/%s/\n\n%s\n\nTap SHARE ZIP to send via WhatsApp / Telegram / Drive, then DELETE ZIP here once sent.",
+                "%s (%.1f MB)\nSaved: Downloads/%s/\n\n%s",
                 archive.name,
                 mb,
                 ARCHIVE_SUBDIR,
                 statusLine
             ),
-            positiveLabel = "SHARE ZIP",
-            neutralLabel = "DELETE ZIP",
-            cancelLabel = "DONE",
-            keepOpenOnAction = true,
-            onPositive = {
-                shareZipArchive(archive)
+            primaryLabel = "SHARE ZIP",
+            dismissOnPrimary = false,
+            onPrimary = { shareZipArchive(archive) },
+            secondaryLabel = "DEL ZIP",
+            secondaryTextColor = 0xFFFF3B30.toInt(),
+            dismissOnSecondary = false,
+            onSecondary = {
+                confirmDeleteZipArchive(archive) { dialog.dismiss() }
             },
-            onNeutral = { dlg ->
-                confirmDeleteZipArchive(archive) {
-                    dlg.dismiss()
-                }
-            }
+            cancelLabel = "DONE"
         )
     }
 
@@ -599,17 +601,19 @@ class ClipGalleryActivity : AppCompatActivity() {
     }
 
     private fun confirmDeleteZipArchive(archive: ZipArchiveItem, onDeleted: (() -> Unit)? = null) {
-        StudioMogliDialogHelper.showPrompt(
-            activity = this,
+        IdgafUiDialogs.showActionDialog(
+            context = this,
             title = "DELETE ZIP ARCHIVE?",
-            message = "Permanently remove ${archive.name} from Downloads/$ARCHIVE_SUBDIR?",
-            positiveLabel = "DELETE ZIP",
-            positiveDanger = true,
-            onPositive = {
+            message = "Remove ${archive.name} from Downloads/$ARCHIVE_SUBDIR?",
+            primaryLabel = "DELETE ZIP",
+            primaryBgRes = R.drawable.bg_shutter_stop,
+            primaryTextColor = 0xFFFFFFFF.toInt(),
+            onPrimary = {
                 cleanupZipArchive(archive.uri, archive.legacyFile)
                 Toast.makeText(this, "Deleted ${archive.name}", Toast.LENGTH_SHORT).show()
                 onDeleted?.invoke()
-            }
+            },
+            cancelLabel = "CANCEL"
         )
     }
 
@@ -670,35 +674,21 @@ class ClipGalleryActivity : AppCompatActivity() {
                     ).show()
                     return@runOnUiThread
                 }
-                val rows = archives.map { a ->
-                    String.format(Locale.US, "%s (%.1f MB)", a.name, a.sizeBytes / (1024f * 1024f)) to false
-                }
-
-                StudioMogliDialogHelper.showList(
-                    activity = this,
+                IdgafUiDialogs.showListSheet(
+                    context = this,
                     title = "SAVED ZIP ARCHIVES (${archives.size})",
-                    items = rows
-                ) { which ->
-                    val chosen = archives[which]
-                    StudioMogliDialogHelper.showPrompt(
-                        activity = this,
-                        title = chosen.name,
-                        message = String.format(
-                            Locale.US,
-                            "Size: %.1f MB\nLocation: Downloads/%s/",
-                            chosen.sizeBytes / (1024f * 1024f),
-                            ARCHIVE_SUBDIR
-                        ),
-                        positiveLabel = "SHARE ZIP",
-                        neutralLabel = "DELETE ZIP",
-                        cancelLabel = "CLOSE",
-                        keepOpenOnAction = true,
-                        onPositive = { shareZipArchive(chosen) },
-                        onNeutral = { dlg ->
-                            confirmDeleteZipArchive(chosen) { dlg.dismiss() }
-                        }
-                    )
-                }
+                    subtitle = "Downloads/$ARCHIVE_SUBDIR/ • Tap to share",
+                    items = archives.map { chosen ->
+                        IdgafListItem(
+                            title = chosen.name,
+                            subtitle = String.format(Locale.US, "%.1f MB • Lossless STORED", chosen.sizeBytes / (1024f * 1024f)),
+                            trailingLabel = "DEL",
+                            trailingColor = 0xFFFF3B30.toInt(),
+                            onTrailingClick = { confirmDeleteZipArchive(chosen) },
+                            onClick = { shareZipArchive(chosen) }
+                        )
+                    }
+                )
             }
         }.start()
     }
@@ -750,16 +740,16 @@ class ClipGalleryActivity : AppCompatActivity() {
     }
 
     private fun showCreateFolderDialog(moveSelectionAfterCreate: Boolean) {
-        StudioMogliDialogHelper.showInput(
-            activity = this,
+        IdgafUiDialogs.showTextInputDialog(
+            context = this,
             title = "CREATE NEW FOLDER",
             hint = "Folder name (e.g. Scene 01, B-Roll)",
-            positiveLabel = "CREATE",
-            onPositive = { raw ->
+            primaryLabel = "CREATE",
+            onPrimary = { raw ->
                 val clean = sanitizeFolderName(raw)
                 if (clean.isEmpty()) {
                     Toast.makeText(this, "Enter a valid folder name.", Toast.LENGTH_SHORT).show()
-                    return@showInput
+                    return@showTextInputDialog
                 }
                 knownFolders.add(clean)
                 persistKnownFolders()
@@ -782,23 +772,37 @@ class ClipGalleryActivity : AppCompatActivity() {
 
     private fun showMoveToFolderDialog() {
         val folderList = knownFolders.toList().sorted()
-        val rows = mutableListOf(
-            "+ CREATE NEW FOLDER..." to true,
-            "ROOT (Movies/IDGAF_Camera)" to false
+        val items = mutableListOf<IdgafListItem>()
+        items.add(
+            IdgafListItem(
+                title = "+ CREATE NEW FOLDER",
+                subtitle = "Make a new folder and move selected clips into it",
+                accentTitle = true,
+                onClick = { showCreateFolderDialog(moveSelectionAfterCreate = true) }
+            )
         )
-        folderList.forEach { rows.add("FOLDER: $it" to false) }
-
-        StudioMogliDialogHelper.showList(
-            activity = this,
-            title = "MOVE ${selectedIds.size} CLIP(S) TO",
-            items = rows
-        ) { which ->
-            when (which) {
-                0 -> showCreateFolderDialog(moveSelectionAfterCreate = true)
-                1 -> moveSelectedClipsToFolder(FOLDER_ROOT)
-                else -> moveSelectedClipsToFolder(folderList[which - 2])
-            }
+        items.add(
+            IdgafListItem(
+                title = "ROOT",
+                subtitle = "Movies/IDGAF_Camera",
+                onClick = { moveSelectedClipsToFolder(FOLDER_ROOT) }
+            )
+        )
+        folderList.forEach { folder ->
+            items.add(
+                IdgafListItem(
+                    title = folder,
+                    subtitle = "Movies/IDGAF_Camera/$folder",
+                    onClick = { moveSelectedClipsToFolder(folder) }
+                )
+            )
         }
+        IdgafUiDialogs.showListSheet(
+            context = this,
+            title = "MOVE ${selectedIds.size} CLIP(S)",
+            subtitle = "Choose destination folder",
+            items = items
+        )
     }
 
     private fun moveSelectedClipsToFolder(targetFolder: String) {
@@ -884,13 +888,14 @@ class ClipGalleryActivity : AppCompatActivity() {
             Toast.makeText(this, "Select at least 1 clip to delete.", Toast.LENGTH_SHORT).show()
             return
         }
-        StudioMogliDialogHelper.showPrompt(
-            activity = this,
+        IdgafUiDialogs.showActionDialog(
+            context = this,
             title = "DELETE ${targets.size} CLIP(S)?",
             message = "This will permanently remove the selected video files.",
-            positiveLabel = "DELETE ALL",
-            positiveDanger = true,
-            onPositive = {
+            primaryLabel = "DELETE ALL",
+            primaryBgRes = R.drawable.bg_shutter_stop,
+            primaryTextColor = 0xFFFFFFFF.toInt(),
+            onPrimary = {
                 Thread {
                     var deleted = 0
                     for (clip in targets) {
@@ -905,7 +910,8 @@ class ClipGalleryActivity : AppCompatActivity() {
                         loadClips()
                     }
                 }.start()
-            }
+            },
+            cancelLabel = "CANCEL"
         )
     }
 
@@ -956,19 +962,21 @@ class ClipGalleryActivity : AppCompatActivity() {
             Toast.makeText(this, "Move or delete the $countInFolder clip(s) inside '$folderName' first.", Toast.LENGTH_SHORT).show()
             return
         }
-        StudioMogliDialogHelper.showPrompt(
-            activity = this,
-            title = "REMOVE FOLDER '$folderName'?",
-            message = "Remove this empty folder tag from Clip Vault?",
-            positiveLabel = "REMOVE",
-            positiveDanger = true,
-            onPositive = {
+        IdgafUiDialogs.showActionDialog(
+            context = this,
+            title = "REMOVE FOLDER?",
+            message = "Remove empty folder '$folderName' from Clip Vault?",
+            primaryLabel = "REMOVE",
+            primaryBgRes = R.drawable.bg_shutter_stop,
+            primaryTextColor = 0xFFFFFFFF.toInt(),
+            onPrimary = {
                 knownFolders.remove(folderName)
                 persistKnownFolders()
                 if (activeFolderFilter == folderName) activeFolderFilter = FOLDER_ALL
                 renderFolderChips()
                 applyFolderFilter()
-            }
+            },
+            cancelLabel = "CANCEL"
         )
     }
 
@@ -1104,13 +1112,14 @@ class ClipGalleryActivity : AppCompatActivity() {
     }
 
     private fun confirmDeleteClip(clip: RecordedClip) {
-        StudioMogliDialogHelper.showPrompt(
-            activity = this,
+        IdgafUiDialogs.showActionDialog(
+            context = this,
             title = "DELETE CLIP?",
             message = clip.name,
-            positiveLabel = "DELETE",
-            positiveDanger = true,
-            onPositive = {
+            primaryLabel = "DELETE",
+            primaryBgRes = R.drawable.bg_shutter_stop,
+            primaryTextColor = 0xFFFFFFFF.toInt(),
+            onPrimary = {
                 try {
                     val deleted = contentResolver.delete(clip.uri, null, null)
                     if (deleted > 0) {
@@ -1122,7 +1131,8 @@ class ClipGalleryActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     Toast.makeText(this, "Delete failed: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
-            }
+            },
+            cancelLabel = "CANCEL"
         )
     }
 

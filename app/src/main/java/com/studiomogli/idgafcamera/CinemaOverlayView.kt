@@ -27,8 +27,15 @@ enum class GridMode(val label: String) {
     OFF("GRID: OFF"),
     THIRDS("GRID: 3x3"),
     GOLDEN("GRID: φ"),
-    GRID_4X4("GRID: 4x4"),
-    DIAGONAL("GRID: ✕+")
+    DIAGONAL("GRID: DIAG"),
+    SAFE("GRID: SAFE"),
+    QUAD("GRID: 4x4")
+}
+
+enum class RecordAspectMode(val label: String, val shortBadge: String) {
+    WIDE_16_9("16:9 WIDE", ""),
+    VERT_9_16_CROP("9:16 CROP", "9:16C"),
+    VERT_9_16_PORTRAIT("9:16 PORT", "9:16P")
 }
 
 enum class PeakingColor(val label: String, val argb: Int) {
@@ -65,6 +72,12 @@ class CinemaOverlayView @JvmOverloads constructor(
         }
 
     @Volatile var aspectGuide: AspectGuide = AspectGuide.OFF
+        set(value) {
+            field = value
+            postInvalidate()
+        }
+
+    @Volatile var recordAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9
         set(value) {
             field = value
             postInvalidate()
@@ -348,19 +361,24 @@ class CinemaOverlayView @JvmOverloads constructor(
 
         val dp = resources.displayMetrics.density
 
-        // 1. Aspect Ratio Frame Guides
-        if (aspectGuide != AspectGuide.OFF && aspectGuide.ratio > 0f) {
+        // 1. Aspect Ratio Frame Guides (or Forced 9:16 Vertical Crop Recording Frame!)
+        val forcedVertCrop = (recordAspectMode == RecordAspectMode.VERT_9_16_CROP)
+        val effRatio = when {
+            forcedVertCrop -> 9f / 16f
+            aspectGuide != AspectGuide.OFF && aspectGuide.ratio > 0f -> aspectGuide.ratio
+            else -> 0f
+        }
+        if (effRatio > 0f) {
             val viewRatio = w / h
-            val targetRatio = aspectGuide.ratio
-            if (targetRatio > viewRatio) {
-                val guideH = w / targetRatio
+            if (effRatio > viewRatio) {
+                val guideH = w / effRatio
                 val barH = (h - guideH) / 2f
                 canvas.drawRect(0f, 0f, w, barH, mattePaint)
                 canvas.drawRect(0f, h - barH, w, h, mattePaint)
                 canvas.drawLine(0f, barH, w, barH, frameBorderPaint)
                 canvas.drawLine(0f, h - barH, w, h - barH, frameBorderPaint)
             } else {
-                val guideW = h * targetRatio
+                val guideW = h * effRatio
                 val barW = (w - guideW) / 2f
                 canvas.drawRect(0f, 0f, barW, h, mattePaint)
                 canvas.drawRect(w - barW, 0f, w, h, mattePaint)
@@ -369,8 +387,28 @@ class CinemaOverlayView @JvmOverloads constructor(
             }
         }
 
-        // 2. Cinema Composition Grids (3x3, Golden φ, 4x4 Symmetry, Dynamic Diagonals) + Center Crosshair
+        // Subtle live badge when Vertical 9:16 Recording Mode is active
+        if (recordAspectMode != RecordAspectMode.WIDE_16_9) {
+            val tag = if (recordAspectMode == RecordAspectMode.VERT_9_16_CROP) {
+                "9:16 CROP REC"
+            } else {
+                "9:16 PORTRAIT • HOLD UPRIGHT"
+            }
+            splitTextPaint.textSize = 8.5f * dp
+            val tw = splitTextPaint.measureText(tag) + 16f * dp
+            val th = 18f * dp
+            val topY = 56f * dp
+            pillRect.set((w - tw) / 2f, topY, (w + tw) / 2f, topY + th)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, histBgPaint)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, frameBorderPaint)
+            splitTextPaint.color = Color.parseColor("#FF5F1F")
+            canvas.drawText(tag, w / 2f, topY + 12.5f * dp, splitTextPaint)
+        }
+
+        // 2. Cinema Composition Grids (3x3, Golden φ, Diagonals, Broadcast Safe 90%/80%, 4x4) + Center Crosshair
         if (gridMode != GridMode.OFF) {
+            val cx = w / 2f
+            val cy = h / 2f
             when (gridMode) {
                 GridMode.THIRDS, GridMode.GOLDEN -> {
                     val f1 = if (gridMode == GridMode.GOLDEN) 0.382f else (1f / 3f)
@@ -380,24 +418,26 @@ class CinemaOverlayView @JvmOverloads constructor(
                     canvas.drawLine(0f, h * f1, w, h * f1, gridPaint)
                     canvas.drawLine(0f, h * f2, w, h * f2, gridPaint)
                 }
-                GridMode.GRID_4X4 -> {
-                    for (step in 1..3) {
-                        val frac = step * 0.25f
+                GridMode.DIAGONAL -> {
+                    canvas.drawLine(0f, 0f, w, h, gridPaint)
+                    canvas.drawLine(w, 0f, 0f, h, gridPaint)
+                    canvas.drawLine(cx, 0f, cx, h, gridPaint)
+                    canvas.drawLine(0f, cy, w, cy, gridPaint)
+                }
+                GridMode.SAFE -> {
+                    // Action Safe (90%) + Title Safe (80%) cinema broadcast guides
+                    canvas.drawRect(w * 0.05f, h * 0.05f, w * 0.95f, h * 0.95f, gridPaint)
+                    canvas.drawRect(w * 0.10f, h * 0.10f, w * 0.90f, h * 0.90f, gridPaint)
+                }
+                GridMode.QUAD -> {
+                    for (i in 1..3) {
+                        val frac = i * 0.25f
                         canvas.drawLine(w * frac, 0f, w * frac, h, gridPaint)
                         canvas.drawLine(0f, h * frac, w, h * frac, gridPaint)
                     }
                 }
-                GridMode.DIAGONAL -> {
-                    canvas.drawLine(0f, 0f, w, h, gridPaint)
-                    canvas.drawLine(w, 0f, 0f, h, gridPaint)
-                    canvas.drawLine(w * 0.5f, 0f, w * 0.5f, h, gridPaint)
-                    canvas.drawLine(0f, h * 0.5f, w, h * 0.5f, gridPaint)
-                }
                 GridMode.OFF -> {}
             }
-
-            val cx = w / 2f
-            val cy = h / 2f
             val arm = 18f
             canvas.drawLine(cx - arm, cy, cx + arm, cy, crosshairPaint)
             canvas.drawLine(cx, cy - arm, cx, cy + arm, crosshairPaint)
@@ -444,12 +484,12 @@ class CinemaOverlayView @JvmOverloads constructor(
             drawFalseColorLegend(canvas, w, h, dp)
         }
 
-        // 5. 3-Channel RGB + Luma Overlay Histogram (Top-Left opposite PILOT button!)
+        // 5. 3-Channel RGB + Luma Overlay Histogram (Top-Left opposite Pilot button, clear of right rail)
         if (showHistogram) {
             val boxW = 132f * dp
             val boxH = 56f * dp
             val left = 18f * dp
-            val top = if (splitFrac in 0f..1f) 92f * dp else 58f * dp
+            val top = 58f * dp
             histRect.set(left, top, left + boxW, top + boxH)
 
             canvas.drawRoundRect(histRect, 8f * dp, 8f * dp, histBgPaint)

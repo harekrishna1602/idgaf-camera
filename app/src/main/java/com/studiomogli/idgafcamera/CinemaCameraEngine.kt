@@ -161,12 +161,12 @@ class CinemaCameraEngine(
     var targetFps: Int = 30
     var targetCodec: CinemaCodec = CinemaCodec.H264
     var targetBitrateMbps: Int = 35
+    @Volatile var recordAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9
     var micPreference: MicPreference = MicPreference.AUTO
     @Volatile var audioPreampMode: AudioPreampMode = AudioPreampMode.CAMCORDER
     @Volatile var isAudioMuted: Boolean = false
     @Volatile var audioMonitorTrimDb: Int = 0
     @Volatile var timelapseIntervalMs: Long = 0L
-    @Volatile var vertical916Mode: Boolean = false
     fun isTimelapseEnabled(): Boolean = timelapseIntervalMs > 0L
     @Volatile var eraSilentAudio: Boolean = false
     @Volatile var eraAudioProfile: EraAudioProfile = EraAudioProfile.NONE
@@ -1497,11 +1497,45 @@ class CinemaCameraEngine(
         }
 
         try {
-            val recorder = createAndPrepareMediaRecorder(lens, displayRotation)
+            val activeAspect = if (eraModeCode > 0) RecordAspectMode.WIDE_16_9 else recordAspectMode
+            val wantVertical = (activeAspect != RecordAspectMode.WIDE_16_9)
+            var encW = if (wantVertical) resolvedVideoSize.height else resolvedVideoSize.width
+            var encH = if (wantVertical) resolvedVideoSize.width else resolvedVideoSize.height
+            var usesHintFallback = false
+
+            val recorder = try {
+                createAndPrepareMediaRecorder(
+                    lens = lens,
+                    displayRotation = displayRotation,
+                    encW = encW,
+                    encH = encH,
+                    orientationHint = 0,
+                    aspectMode = activeAspect
+                )
+            } catch (firstErr: Exception) {
+                if (!wantVertical) throw firstErr
+                // Hardware encoder rejected height > width (common on some MediaTek SoCs):
+                // Cleanly fall back to landscape encoder buffer + MP4 orientationHint (100% upright 9:16 playback everywhere!)
+                cleanupRecorderOnFailure()
+                encW = resolvedVideoSize.width
+                encH = resolvedVideoSize.height
+                usesHintFallback = true
+                val hintDeg = if (activeAspect == RecordAspectMode.VERT_9_16_PORTRAIT && displayRotation == Surface.ROTATION_270) {
+                    270
+                } else {
+                    90
+                }
+                createAndPrepareMediaRecorder(
+                    lens = lens,
+                    displayRotation = displayRotation,
+                    encW = encW,
+                    encH = encH,
+                    orientationHint = hintDeg,
+                    aspectMode = activeAspect
+                )
+            }
             mediaRecorder = recorder
 
-            val encW = if (vertical916Mode) resolvedVideoSize.height else resolvedVideoSize.width
-            val encH = if (vertical916Mode) resolvedVideoSize.width else resolvedVideoSize.height
             val attached = renderer.attachEncoderSurfaceSync(
                 recorderSurface = recorder.surface,
                 width = encW,
@@ -1509,7 +1543,9 @@ class CinemaCameraEngine(
                 rotation = displayRotation,
                 desiredFps = targetFps,
                 hwFpsUpper = resolvedFpsRange.upper,
-                timelapseIntervalMs = timelapseIntervalMs
+                timelapseIntervalMs = timelapseIntervalMs,
+                aspectMode = activeAspect,
+                usesHintRotation = usesHintFallback
             )
             if (!attached) {
                 throw IllegalStateException("Failed to attach OpenGL encoder surface")
@@ -1666,15 +1702,26 @@ class CinemaCameraEngine(
         return if (ms % 1000L == 0L) "${ms / 1000L}s" else String.format(Locale.US, "%.1fs", ms / 1000f).replace('.', 'p')
     }
 
-    private fun createAndPrepareMediaRecorder(lens: CinemaLens, displayRotation: Int): MediaRecorder {
+    private fun createAndPrepareMediaRecorder(
+        lens: CinemaLens,
+        displayRotation: Int,
+        encW: Int,
+        encH: Int,
+        orientationHint: Int,
+        aspectMode: RecordAspectMode
+    ): MediaRecorder {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val isTl = isTimelapseEnabled()
         val eraTag = eraFilenameTag.trim()
-        val vertTag = if (vertical916Mode && eraTag.isEmpty()) "_9x16" else ""
+        val aspectTag = when (aspectMode) {
+            RecordAspectMode.VERT_9_16_CROP -> "9x16C_"
+            RecordAspectMode.VERT_9_16_PORTRAIT -> "9x16P_"
+            RecordAspectMode.WIDE_16_9 -> ""
+        }
         val fileName = when {
             eraTag.isNotEmpty() -> "IDGAF_${eraTag}_${targetFps}fps_$timestamp.mp4"
-            isTl -> "IDGAF_TL${formatTimelapseFileTag()}${vertTag}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
-            else -> "IDGAF${vertTag}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+            isTl -> "IDGAF_${aspectTag}TL${formatTimelapseFileTag()}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+            else -> "IDGAF_${aspectTag}${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
         }
         activeFileLabel = "Movies/IDGAF_Camera/$fileName"
 
@@ -1731,9 +1778,7 @@ class CinemaCameraEngine(
         val bitrateBps = targetBitrateMbps.coerceIn(2, 120) * 1_000_000
         recorder.setVideoEncodingBitRate(bitrateBps)
         recorder.setVideoFrameRate(targetFps.coerceIn(1, 60))
-        val outVidW = if (vertical916Mode) resolvedVideoSize.height else resolvedVideoSize.width
-        val outVidH = if (vertical916Mode) resolvedVideoSize.width else resolvedVideoSize.height
-        recorder.setVideoSize(outVidW, outVidH)
+        recorder.setVideoSize(encW, encH)
         recorder.setVideoEncoder(targetCodec.encoder)
         if (recordAudio) {
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -1746,8 +1791,7 @@ class CinemaCameraEngine(
                 recorder.setAudioSamplingRate(48_000)
             }
         }
-        // Upright orientation is baked directly inside CinemaGlRenderer's GPU encoder pass
-        recorder.setOrientationHint(0)
+        recorder.setOrientationHint(orientationHint)
 
         // Route external USB/Wired mic if preferred or detected in AUTO mode (API 28+)
         if (recordAudio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
