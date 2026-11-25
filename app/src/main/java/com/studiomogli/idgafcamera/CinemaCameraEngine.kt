@@ -166,6 +166,7 @@ class CinemaCameraEngine(
     @Volatile var isAudioMuted: Boolean = false
     @Volatile var audioMonitorTrimDb: Int = 0
     @Volatile var timelapseIntervalMs: Long = 0L
+    @Volatile var vertical916Mode: Boolean = false
     fun isTimelapseEnabled(): Boolean = timelapseIntervalMs > 0L
     @Volatile var eraSilentAudio: Boolean = false
     @Volatile var eraAudioProfile: EraAudioProfile = EraAudioProfile.NONE
@@ -1499,10 +1500,12 @@ class CinemaCameraEngine(
             val recorder = createAndPrepareMediaRecorder(lens, displayRotation)
             mediaRecorder = recorder
 
+            val encW = if (vertical916Mode) resolvedVideoSize.height else resolvedVideoSize.width
+            val encH = if (vertical916Mode) resolvedVideoSize.width else resolvedVideoSize.height
             val attached = renderer.attachEncoderSurfaceSync(
                 recorderSurface = recorder.surface,
-                width = resolvedVideoSize.width,
-                height = resolvedVideoSize.height,
+                width = encW,
+                height = encH,
                 rotation = displayRotation,
                 desiredFps = targetFps,
                 hwFpsUpper = resolvedFpsRange.upper,
@@ -1667,10 +1670,11 @@ class CinemaCameraEngine(
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val isTl = isTimelapseEnabled()
         val eraTag = eraFilenameTag.trim()
+        val vertTag = if (vertical916Mode && eraTag.isEmpty()) "_9x16" else ""
         val fileName = when {
             eraTag.isNotEmpty() -> "IDGAF_${eraTag}_${targetFps}fps_$timestamp.mp4"
-            isTl -> "IDGAF_TL${formatTimelapseFileTag()}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
-            else -> "IDGAF_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+            isTl -> "IDGAF_TL${formatTimelapseFileTag()}${vertTag}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+            else -> "IDGAF${vertTag}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
         }
         activeFileLabel = "Movies/IDGAF_Camera/$fileName"
 
@@ -1727,7 +1731,9 @@ class CinemaCameraEngine(
         val bitrateBps = targetBitrateMbps.coerceIn(2, 120) * 1_000_000
         recorder.setVideoEncodingBitRate(bitrateBps)
         recorder.setVideoFrameRate(targetFps.coerceIn(1, 60))
-        recorder.setVideoSize(resolvedVideoSize.width, resolvedVideoSize.height)
+        val outVidW = if (vertical916Mode) resolvedVideoSize.height else resolvedVideoSize.width
+        val outVidH = if (vertical916Mode) resolvedVideoSize.width else resolvedVideoSize.height
+        recorder.setVideoSize(outVidW, outVidH)
         recorder.setVideoEncoder(targetCodec.encoder)
         if (recordAudio) {
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)

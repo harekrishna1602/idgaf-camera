@@ -116,7 +116,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var proTimelapseRow1: LinearLayout
     private lateinit var proTimelapseRow2: LinearLayout
     private lateinit var btnProCodec: TextView
-    private lateinit var btnProBitrate: TextView
     private lateinit var btnProStab: TextView
     private lateinit var btnProTorch: TextView
     private lateinit var btnProTimer: TextView
@@ -195,6 +194,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var presetStore: PresetStore
     private var updateDownloadUrl: String? = null
     private var updateLatestTag: String? = null
+    private var activeCreditsUpdateBtn: TextView? = null
     private var gridModeIdx = 0
     private val bitrateOptions = listOf(4, 8, 12, 24, 35, 50, 75, 100, 120)
     private var bitrateIdx = 4
@@ -297,8 +297,25 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var formatDrawer: LinearLayout
     private lateinit var txtFormatSummary: TextView
     private lateinit var btnFormatClose: TextView
+    private lateinit var btnFormatVert916: TextView
     private lateinit var formatResRow: LinearLayout
     private lateinit var formatFpsRow: LinearLayout
+    private lateinit var formatBitrateRow: LinearLayout
+    private lateinit var lowLightTorchCard: LinearLayout
+    private lateinit var btnLowLightOn: TextView
+    private lateinit var btnLowLightOff: TextView
+    private lateinit var presetsDrawer: LinearLayout
+    private lateinit var btnPresetSaveNew: TextView
+    private lateinit var btnPresetsClose: TextView
+    private lateinit var presetsListContainer: LinearLayout
+    private lateinit var lutLibraryDrawer: LinearLayout
+    private lateinit var btnLutDrawerAddCube: TextView
+    private lateinit var btnLutDrawerClose: TextView
+    private lateinit var lutAddCubeSourceRow: LinearLayout
+    private lateinit var btnCubeSrcFile: TextView
+    private lateinit var btnCubeSrcUrl: TextView
+    private lateinit var btnCubeSrcWeb: TextView
+    private lateinit var lutListContainer: LinearLayout
     private lateinit var workbenchEraDrawer: LinearLayout
     private lateinit var txtEraDrawerTitle: TextView
     private lateinit var workbenchSection: LinearLayout
@@ -673,7 +690,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         proTimelapseRow1 = findViewById(R.id.proTimelapseRow1)
         proTimelapseRow2 = findViewById(R.id.proTimelapseRow2)
         btnProCodec = findViewById(R.id.btnProCodec)
-        btnProBitrate = findViewById(R.id.btnProBitrate)
         btnProStab = findViewById(R.id.btnProStab)
         btnProTorch = findViewById(R.id.btnProTorch)
         btnProTimer = findViewById(R.id.btnProTimer)
@@ -793,8 +809,25 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         formatDrawer = findViewById(R.id.formatDrawer)
         txtFormatSummary = findViewById(R.id.txtFormatSummary)
         btnFormatClose = findViewById(R.id.btnFormatClose)
+        btnFormatVert916 = findViewById(R.id.btnFormatVert916)
         formatResRow = findViewById(R.id.formatResRow)
         formatFpsRow = findViewById(R.id.formatFpsRow)
+        formatBitrateRow = findViewById(R.id.formatBitrateRow)
+        lowLightTorchCard = findViewById(R.id.lowLightTorchCard)
+        btnLowLightOn = findViewById(R.id.btnLowLightOn)
+        btnLowLightOff = findViewById(R.id.btnLowLightOff)
+        presetsDrawer = findViewById(R.id.presetsDrawer)
+        btnPresetSaveNew = findViewById(R.id.btnPresetSaveNew)
+        btnPresetsClose = findViewById(R.id.btnPresetsClose)
+        presetsListContainer = findViewById(R.id.presetsListContainer)
+        lutLibraryDrawer = findViewById(R.id.lutLibraryDrawer)
+        btnLutDrawerAddCube = findViewById(R.id.btnLutDrawerAddCube)
+        btnLutDrawerClose = findViewById(R.id.btnLutDrawerClose)
+        lutAddCubeSourceRow = findViewById(R.id.lutAddCubeSourceRow)
+        btnCubeSrcFile = findViewById(R.id.btnCubeSrcFile)
+        btnCubeSrcUrl = findViewById(R.id.btnCubeSrcUrl)
+        btnCubeSrcWeb = findViewById(R.id.btnCubeSrcWeb)
+        lutListContainer = findViewById(R.id.lutListContainer)
         workbenchEraDrawer = findViewById(R.id.workbenchEraDrawer)
         txtEraDrawerTitle = findViewById(R.id.txtEraDrawerTitle)
         workbenchSection = findViewById(R.id.workbenchSection)
@@ -1009,20 +1042,23 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 if (currentWorkbench == CameraWorkbench.ERA) {
                     beginRecordingCleanly(rot)
                 } else if (engine.isAudioMuted && !engine.isTimelapseEnabled()) {
-                    AlertDialog.Builder(this)
-                        .setTitle("Audio is MUTED")
-                        .setMessage("Your microphone is currently muted. Record without sound, or unmute and start rolling?")
-                        .setPositiveButton("UNMUTE & REC") { _, _ ->
+                    StudioMogliDialogHelper.showPrompt(
+                        activity = this,
+                        title = "MICROPHONE IS MUTED",
+                        message = "Your mic is currently muted. Unmute and start rolling, or record without sound?",
+                        positiveLabel = "UNMUTE & REC",
+                        neutralLabel = "REC SILENT",
+                        cancelLabel = "CANCEL",
+                        onPositive = {
                             engine.isAudioMuted = false
                             audioMonitorRestartNeeded = true
                             updateAudioDrawerUi()
                             launchRecordingOrTimer(rot)
-                        }
-                        .setNeutralButton("REC SILENT") { _, _ ->
+                        },
+                        onNeutral = {
                             launchRecordingOrTimer(rot)
                         }
-                        .setNegativeButton("Cancel", null)
-                        .show()
+                    )
                 } else {
                     launchRecordingOrTimer(rot)
                 }
@@ -1244,6 +1280,72 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             formatDrawer.visibility = View.GONE
             updateFormatPillUi()
             syncLowBatteryBannerVisibility()
+        }
+
+        btnFormatVert916.setOnClickListener {
+            setVertical916RecordingMode(!engine.vertical916Mode, showNotice = true)
+            renderFormatDrawerChips()
+        }
+
+        btnLowLightOn.setOnClickListener {
+            lowLightTorchCard.visibility = View.GONE
+            if (!engine.isRecording) {
+                val on = engine.setTorchEnabled(true)
+                styleToolPill(btnProTorch, on)
+                if (on) {
+                    engine.engageAutoPilot()
+                }
+            }
+        }
+
+        btnLowLightOff.setOnClickListener {
+            lowLightTorchCard.visibility = View.GONE
+        }
+
+        btnPresetsClose.setOnClickListener {
+            presetsDrawer.visibility = View.GONE
+            syncLowBatteryBannerVisibility()
+        }
+
+        btnPresetSaveNew.setOnClickListener {
+            presetsDrawer.visibility = View.GONE
+            showSavePresetDialog()
+        }
+
+        btnLutDrawerClose.setOnClickListener {
+            lutLibraryDrawer.visibility = View.GONE
+            lutAddCubeSourceRow.visibility = View.GONE
+            syncLowBatteryBannerVisibility()
+        }
+
+        btnLutDrawerAddCube.setOnClickListener {
+            val showing = lutAddCubeSourceRow.visibility == View.VISIBLE
+            lutAddCubeSourceRow.visibility = if (showing) View.GONE else View.VISIBLE
+            styleToolPill(btnLutDrawerAddCube, !showing)
+        }
+
+        btnCubeSrcFile.setOnClickListener {
+            lutAddCubeSourceRow.visibility = View.GONE
+            styleToolPill(btnLutDrawerAddCube, false)
+            launchCubeFilePicker()
+        }
+
+        btnCubeSrcUrl.setOnClickListener {
+            lutLibraryDrawer.visibility = View.GONE
+            lutAddCubeSourceRow.visibility = View.GONE
+            styleToolPill(btnLutDrawerAddCube, false)
+            showDownloadCubeUrlDialog()
+        }
+
+        btnCubeSrcWeb.setOnClickListener {
+            lutAddCubeSourceRow.visibility = View.GONE
+            styleToolPill(btnLutDrawerAddCube, false)
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://freshluts.com/")))
+                showSingleToast("Download a .cube file, then tap + .CUBE → PHONE FILE", Toast.LENGTH_LONG)
+            } catch (_: Exception) {
+                showSingleToast("Download a .cube file in Chrome, then import via PHONE FILE")
+            }
         }
 
         btnEraDrawerClose.setOnClickListener {
@@ -1495,8 +1597,42 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
+    private fun setVertical916RecordingMode(enabled: Boolean, showNotice: Boolean) {
+        if (engine.vertical916Mode == enabled) return
+        engine.vertical916Mode = enabled
+        if (enabled) {
+            overlayView.aspectGuide = AspectGuide.VERT_916
+            frameGuideIdx = AspectGuide.values().indexOf(AspectGuide.VERT_916).coerceAtLeast(0)
+            btnToolFrame.text = "FRAME: 9:16"
+            styleToolPill(btnToolFrame, true)
+            if (showNotice) {
+                val outW = currentResolution.height
+                val outH = currentResolution.width
+                StudioMogliDialogHelper.showPrompt(
+                    activity = this,
+                    title = "9:16 VERTICAL RECORDING ON",
+                    message = "Menus stay in your current orientation while the 9:16 vertical frame guides your shot.\n\nYour video will record and save vertically (${outW}×${outH}).",
+                    positiveLabel = "GOT IT",
+                    cancelLabel = null
+                )
+            }
+        } else {
+            if (overlayView.aspectGuide == AspectGuide.VERT_916) {
+                overlayView.aspectGuide = AspectGuide.OFF
+                frameGuideIdx = 0
+                btnToolFrame.text = "FRAME: OFF"
+                styleToolPill(btnToolFrame, false)
+            }
+            if (showNotice) {
+                showSingleToast("9:16 Vertical Recording OFF (16:9 Widescreen)")
+            }
+        }
+        updateFormatPillUi()
+    }
+
     private fun updateFormatPillUi() {
-        btnFormatToggle.text = "${currentResolution.label} • $currentFps"
+        val vertTag = if (engine.vertical916Mode) " • 9:16" else ""
+        btnFormatToggle.text = "${currentResolution.label} • $currentFps$vertTag"
         val open = formatDrawer.visibility == View.VISIBLE
         if (open) {
             styleToolPill(btnFormatToggle, true)
@@ -1504,7 +1640,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             btnFormatToggle.setBackgroundResource(R.drawable.bg_hud_pill)
             btnFormatToggle.setTextColor(0xFFFF5F1F.toInt())
         }
-        txtFormatSummary.text = "${currentResolution.width}×${currentResolution.height} • $currentFps FPS"
+        val dispW = if (engine.vertical916Mode) currentResolution.height else currentResolution.width
+        val dispH = if (engine.vertical916Mode) currentResolution.width else currentResolution.height
+        txtFormatSummary.text = "${dispW}×${dispH} • $currentFps FPS • ${engine.targetBitrateMbps}M"
+        styleToolPill(btnFormatVert916, engine.vertical916Mode)
     }
 
     private fun renderFormatDrawerChips() {
@@ -1579,6 +1718,65 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
         formatFpsRow.addView(customChip)
+
+        // Row 3: Bitrate (Quality in Mbps) right inside VIDEO FORMAT drawer!
+        formatBitrateRow.removeAllViews()
+        val mbpsPresets = listOf(8, 12, 24, 35, 50, 75, 100)
+        val curMbps = engine.targetBitrateMbps
+        val isCustomMbps = curMbps !in mbpsPresets
+        mbpsPresets.forEachIndexed { idx, mbps ->
+            val selected = (curMbps == mbps)
+            val chip = TextView(this).apply {
+                text = "${mbps}M"
+                textSize = 8.5f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    marginEnd = dpToPx(3)
+                }
+                setOnClickListener {
+                    engine.targetBitrateMbps = mbps
+                    bitrateIdx = bitrateOptions.indexOf(mbps).takeIf { it >= 0 } ?: 4
+                    renderFormatDrawerChips()
+                }
+            }
+            formatBitrateRow.addView(chip)
+        }
+        val customMbpsChip = TextView(this).apply {
+            text = if (isCustomMbps) "${curMbps}M" else "✎"
+            textSize = 9f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setBackgroundResource(if (isCustomMbps) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+            setTextColor(if (isCustomMbps) 0xFF0B0D10.toInt() else 0xFFFF5F1F.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+            setOnClickListener {
+                formatDrawer.visibility = View.GONE
+                updateFormatPillUi()
+                openCinemaInputDrawer(
+                    title = "CUSTOM BITRATE (MBPS)",
+                    hint = "2 to 120 Mbps (Step ±5 Mbps)",
+                    initialValue = engine.targetBitrateMbps.toString(),
+                    allowDecimal = false,
+                    step = 5f
+                ) { raw ->
+                    val v = raw.toIntOrNull()
+                    if (v == null || v !in 2..120) {
+                        showSingleToast("Enter 2 to 120 Mbps")
+                        false
+                    } else {
+                        engine.targetBitrateMbps = v
+                        updateFormatPillUi()
+                        true
+                    }
+                }
+            }
+        }
+        formatBitrateRow.addView(customMbpsChip)
         updateFormatPillUi()
     }
 
@@ -1593,10 +1791,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         engine.targetBitrateMbps = smartMbps
         bitrateIdx = bitrateOptions.indexOf(smartMbps).takeIf { it >= 0 } ?: 3
-        btnProBitrate.text = "$smartMbps Mbps"
         engine.updateSettings(currentResolution, currentFps)
         renderFormatDrawerChips()
-        showSingleToast("Format: ${chosen.label} (${chosen.width}×${chosen.height})")
     }
 
     private fun openCinemaInputDrawer(
@@ -2190,6 +2386,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             overlayView.aspectGuide = g
             btnToolFrame.text = "FRAME: ${g.label}"
             styleToolPill(btnToolFrame, g != AspectGuide.OFF)
+            setVertical916RecordingMode(g == AspectGuide.VERT_916, showNotice = (g == AspectGuide.VERT_916))
         }
 
         btnToolPeak.setOnClickListener {
@@ -2319,7 +2516,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             proSettingsBar.visibility == View.VISIBLE ||
             formatDrawer.visibility == View.VISIBLE ||
             workbenchEraDrawer.visibility == View.VISIBLE ||
-            cinemaInputDrawer.visibility == View.VISIBLE
+            cinemaInputDrawer.visibility == View.VISIBLE ||
+            presetsDrawer.visibility == View.VISIBLE ||
+            lutLibraryDrawer.visibility == View.VISIBLE ||
+            lowLightTorchCard.visibility == View.VISIBLE
     }
 
     private fun syncLowBatteryBannerVisibility() {
@@ -2332,7 +2532,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             proSettingsBar.visibility == View.VISIBLE ||
             formatDrawer.visibility == View.VISIBLE ||
             workbenchEraDrawer.visibility == View.VISIBLE ||
-            cinemaInputDrawer.visibility == View.VISIBLE
+            cinemaInputDrawer.visibility == View.VISIBLE ||
+            presetsDrawer.visibility == View.VISIBLE ||
+            lutLibraryDrawer.visibility == View.VISIBLE ||
+            lowLightTorchCard.visibility == View.VISIBLE
         txtLowBatteryBanner.visibility = if (!isBatteryCharging && lastBatteryPct <= 15 && !lowBatteryBannerDismissed && !anyTopDrawerOpen) {
             View.VISIBLE
         } else {
@@ -2378,6 +2581,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         if (cinemaInputDrawer.visibility == View.VISIBLE) {
             closeCinemaInputDrawer()
+        }
+        if (except != "PRESETS" && presetsDrawer.visibility == View.VISIBLE) {
+            presetsDrawer.visibility = View.GONE
+        }
+        if (except != "LUT_LIB" && lutLibraryDrawer.visibility == View.VISIBLE) {
+            lutLibraryDrawer.visibility = View.GONE
+            lutAddCubeSourceRow.visibility = View.GONE
+            styleToolPill(btnLutDrawerAddCube, false)
+        }
+        if (lowLightTorchCard.visibility == View.VISIBLE) {
+            lowLightTorchCard.visibility = View.GONE
         }
         syncLowBatteryBannerVisibility()
     }
@@ -2429,14 +2643,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.targetCodec = if (engine.targetCodec == CinemaCodec.H264) CinemaCodec.HEVC else CinemaCodec.H264
             btnProCodec.text = engine.targetCodec.label
             styleToolPill(btnProCodec, engine.targetCodec == CinemaCodec.HEVC)
-        }
-
-        btnProBitrate.setOnClickListener {
-            if (engine.isRecording) return@setOnClickListener
-            bitrateIdx = (bitrateIdx + 1) % bitrateOptions.size
-            val mbps = bitrateOptions[bitrateIdx]
-            engine.targetBitrateMbps = mbps
-            btnProBitrate.text = "$mbps Mbps"
         }
 
         btnProStab.setOnClickListener {
@@ -2584,88 +2790,164 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun showPresetsDialog() {
-        val saved = presetStore.getAll()
-        val items = mutableListOf("+ Save Current Settings as Template")
-        saved.forEach { items.add("Load: ${it.name} (${it.resolutionName.replace("FHD_", "").replace("UHD_", "")} ${it.fps}fps)") }
+        val showing = presetsDrawer.visibility == View.VISIBLE
+        if (showing) {
+            presetsDrawer.visibility = View.GONE
+        } else {
+            closeTopDrawers(except = "PRESETS")
+            renderPresetsDrawerList()
+            presetsDrawer.visibility = View.VISIBLE
+        }
+        syncLowBatteryBannerVisibility()
+    }
 
-        AlertDialog.Builder(this)
-            .setTitle("Shooting Templates / Presets")
-            .setItems(items.toTypedArray()) { _, which ->
-                if (which == 0) {
-                    showSavePresetDialog()
-                } else {
-                    val preset = saved[which - 1]
-                    AlertDialog.Builder(this)
-                        .setTitle(preset.name)
-                        .setPositiveButton("Load Template") { _, _ -> applyPreset(preset) }
-                        .setNeutralButton("Delete") { _, _ ->
-                            presetStore.delete(preset.name)
-                            Toast.makeText(this, "Deleted '${preset.name}'", Toast.LENGTH_SHORT).show()
-                        }
-                        .setNegativeButton("Cancel", null)
-                        .show()
+    private fun renderPresetsDrawerList() {
+        presetsListContainer.removeAllViews()
+        val saved = presetStore.getAll()
+        if (saved.isEmpty()) {
+            val empty = TextView(this).apply {
+                text = "No saved templates yet — tap + SAVE to store your current camera rig."
+                textSize = 10f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTextColor(0xFF8E96A4.toInt())
+                gravity = Gravity.CENTER
+                setPadding(dpToPx(8), dpToPx(24), dpToPx(8), dpToPx(24))
+            }
+            presetsListContainer.addView(empty)
+            return
+        }
+        saved.forEachIndexed { idx, preset ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setBackgroundResource(R.drawable.bg_hud_pill)
+                setPadding(dpToPx(10), dpToPx(6), dpToPx(8), dpToPx(6))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    if (idx < saved.lastIndex) bottomMargin = dpToPx(6)
                 }
             }
-            .setNegativeButton("Close", null)
-            .show()
+            val resClean = preset.resolutionName.replace("SD_", "").replace("HD_", "").replace("FHD_", "").replace("QHD_", "").replace("UHD_", "")
+            val infoCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val titleTv = TextView(this).apply {
+                text = preset.name
+                textSize = 10.5f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setTextColor(0xFFFFFFFF.toInt())
+            }
+            val subTv = TextView(this).apply {
+                text = "$resClean • ${preset.fps} FPS • ${preset.bitrateMbps} Mbps • ${preset.codecName}"
+                textSize = 8.5f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTextColor(0xFF8E96A4.toInt())
+            }
+            infoCol.addView(titleTv)
+            infoCol.addView(subTv)
+
+            val btnLoad = TextView(this).apply {
+                text = "LOAD"
+                textSize = 9f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setBackgroundResource(R.drawable.bg_lens_active)
+                setTextColor(0xFF0B0D10.toInt())
+                setPadding(dpToPx(10), dpToPx(5), dpToPx(10), dpToPx(5))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = dpToPx(6) }
+                setOnClickListener {
+                    presetsDrawer.visibility = View.GONE
+                    syncLowBatteryBannerVisibility()
+                    applyPreset(preset)
+                }
+            }
+
+            val btnDel = TextView(this).apply {
+                text = "✕"
+                textSize = 10f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setBackgroundResource(R.drawable.bg_hud_pill)
+                setTextColor(0xFFFF3B30.toInt())
+                setPadding(dpToPx(8), dpToPx(5), dpToPx(8), dpToPx(5))
+                setOnClickListener {
+                    presetStore.delete(preset.name)
+                    renderPresetsDrawerList()
+                    showSingleToast("Deleted '${preset.name}'")
+                }
+            }
+
+            row.addView(infoCol)
+            row.addView(btnLoad)
+            row.addView(btnDel)
+            presetsListContainer.addView(row)
+        }
     }
 
     private fun showSavePresetDialog() {
-        val input = EditText(this).apply {
-            hint = "Template name (e.g. Studio 4K, Night Cine)"
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF888888.toInt())
-            setPadding(36, 28, 36, 28)
+        val defaultName = "Template ${presetStore.getAll().size + 1}"
+        openCinemaInputDrawer(
+            title = "SAVE SHOOTING TEMPLATE",
+            hint = "Enter template name (e.g. Studio 4K, Night Cine)",
+            initialValue = defaultName,
+            allowDecimal = false,
+            step = 1f
+        ) { raw ->
+            val name = raw.ifEmpty { defaultName }
+            val preset = CameraPreset(
+                name = name,
+                resolutionName = currentResolution.name,
+                fps = currentFps,
+                codecName = engine.targetCodec.name,
+                bitrateMbps = engine.targetBitrateMbps,
+                micPrefName = engine.micPreference.name,
+                audioPreampModeName = engine.audioPreampMode.name,
+                isAudioMuted = engine.isAudioMuted,
+                isStabilizationEnabled = engine.isStabilizationEnabled,
+                toneProfileName = engine.toneProfile.name,
+                evCompensationIndex = engine.evCompensationIndex,
+                isManualExposure = engine.isManualExposure,
+                manualIso = engine.manualIso,
+                manualShutterNs = engine.manualShutterNs,
+                isShutter180Locked = engine.isShutter180Locked,
+                isManualWb = engine.isManualWb,
+                manualKelvin = engine.manualKelvin,
+                manualTint = engine.manualTint,
+                isManualFocus = engine.isManualFocus,
+                manualFocusDistance = engine.manualFocusDistance,
+                focusPullMs = focusPullDurationMs,
+                zoomCurveName = zoomCurve.name,
+                zoomPullDurationMs = zoomPullDurationMs,
+                gridModeName = overlayView.gridMode.name,
+                aspectGuideName = overlayView.aspectGuide.name,
+                peakingColorName = overlayView.peakingColor.name,
+                peakingSensitivityName = overlayView.peakingSensitivity.name,
+                zebraModeName = overlayView.zebraMode.name,
+                gpuExposureLift = gpuColorState.exposureLift,
+                gpuContrast = gpuColorState.contrast,
+                gpuSaturation = gpuColorState.saturation,
+                gpuShadows = gpuColorState.shadows,
+                gpuHighlights = gpuColorState.highlights,
+                gpuVignette = gpuColorState.vignette,
+                lutSourceId = activeLutSourceId,
+                lutIntensity = gpuColorState.lutIntensity,
+                mirrorFrontExport = engine.mirrorFrontExport
+            )
+            presetStore.save(preset)
+            showSingleToast("Saved template: $name")
+            true
         }
-        AlertDialog.Builder(this)
-            .setTitle("Save Shooting Template")
-            .setView(input)
-            .setPositiveButton("Save") { _, _ ->
-                val name = input.text.toString().trim().ifEmpty { "Template ${presetStore.getAll().size + 1}" }
-                val preset = CameraPreset(
-                    name = name,
-                    resolutionName = currentResolution.name,
-                    fps = currentFps,
-                    codecName = engine.targetCodec.name,
-                    bitrateMbps = engine.targetBitrateMbps,
-                    micPrefName = engine.micPreference.name,
-                    audioPreampModeName = engine.audioPreampMode.name,
-                    isAudioMuted = engine.isAudioMuted,
-                    isStabilizationEnabled = engine.isStabilizationEnabled,
-                    toneProfileName = engine.toneProfile.name,
-                    evCompensationIndex = engine.evCompensationIndex,
-                    isManualExposure = engine.isManualExposure,
-                    manualIso = engine.manualIso,
-                    manualShutterNs = engine.manualShutterNs,
-                    isShutter180Locked = engine.isShutter180Locked,
-                    isManualWb = engine.isManualWb,
-                    manualKelvin = engine.manualKelvin,
-                    manualTint = engine.manualTint,
-                    isManualFocus = engine.isManualFocus,
-                    manualFocusDistance = engine.manualFocusDistance,
-                    focusPullMs = focusPullDurationMs,
-                    zoomCurveName = zoomCurve.name,
-                    zoomPullDurationMs = zoomPullDurationMs,
-                    gridModeName = overlayView.gridMode.name,
-                    aspectGuideName = overlayView.aspectGuide.name,
-                    peakingColorName = overlayView.peakingColor.name,
-                    peakingSensitivityName = overlayView.peakingSensitivity.name,
-                    zebraModeName = overlayView.zebraMode.name,
-                    gpuExposureLift = gpuColorState.exposureLift,
-                    gpuContrast = gpuColorState.contrast,
-                    gpuSaturation = gpuColorState.saturation,
-                    gpuShadows = gpuColorState.shadows,
-                    gpuHighlights = gpuColorState.highlights,
-                    gpuVignette = gpuColorState.vignette,
-                    lutSourceId = activeLutSourceId,
-                    lutIntensity = gpuColorState.lutIntensity,
-                    mirrorFrontExport = engine.mirrorFrontExport
-                )
-                presetStore.save(preset)
-                Toast.makeText(this, "Saved template: $name", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        // Allow full alphanumeric text for template name
+        edtCinemaInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
     }
 
     private fun applyPreset(p: CameraPreset) {
@@ -2754,7 +3036,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         updateFormatPillUi()
         btnProCodec.text = engine.targetCodec.label
         styleToolPill(btnProCodec, engine.targetCodec == CinemaCodec.HEVC)
-        btnProBitrate.text = "${engine.targetBitrateMbps} Mbps"
         updateAudioDrawerUi()
 
         engine.updateSettings(currentResolution, p.fps)
@@ -2859,6 +3140,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
+    private fun syncCreditsUpdateButtonUi(btn: TextView?) {
+        if (btn == null) return
+        val pendingUrl = updateDownloadUrl
+        val pendingTag = updateLatestTag
+        if (!pendingUrl.isNullOrBlank()) {
+            btn.text = if (!pendingTag.isNullOrBlank()) "INSTALL $pendingTag" else "INSTALL UPDATE"
+            btn.setBackgroundResource(R.drawable.bg_pilot_active)
+            btn.setTextColor(0xFF0B0D10.toInt())
+        } else {
+            btn.text = "CHECK FOR UPDATES"
+            btn.setBackgroundResource(R.drawable.bg_lens_active)
+            btn.setTextColor(0xFF0B0D10.toInt())
+        }
+    }
+
     private fun showStudioMogliCreditsDialog() {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_credits, null)
         val dialog = AlertDialog.Builder(this).setView(view).create()
@@ -2880,22 +3176,27 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         val btnUpdateOrCheck = view.findViewById<TextView>(R.id.btnCreditsCheckUpdate)
-        val pendingUrl = updateDownloadUrl
-        val pendingTag = updateLatestTag
-        if (!pendingUrl.isNullOrBlank()) {
-            btnUpdateOrCheck.text = if (!pendingTag.isNullOrBlank()) "INSTALL $pendingTag" else "INSTALL UPDATE"
-            btnUpdateOrCheck.setOnClickListener {
+        activeCreditsUpdateBtn = btnUpdateOrCheck
+        syncCreditsUpdateButtonUi(btnUpdateOrCheck)
+
+        btnUpdateOrCheck.setOnClickListener {
+            val url = updateDownloadUrl
+            if (!url.isNullOrBlank()) {
                 try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pendingUrl)))
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     dialog.dismiss()
                 } catch (_: Exception) {
                     Toast.makeText(this, "Unable to open update link", Toast.LENGTH_SHORT).show()
                 }
-            }
-        } else {
-            btnUpdateOrCheck.setOnClickListener {
-                Toast.makeText(this, "Checking GitHub Releases...", Toast.LENGTH_SHORT).show()
+            } else {
+                btnUpdateOrCheck.text = "CHECKING..."
                 checkForGitHubUpdateSilently(manualCheck = true)
+            }
+        }
+
+        dialog.setOnDismissListener {
+            if (activeCreditsUpdateBtn == btnUpdateOrCheck) {
+                activeCreditsUpdateBtn = null
             }
         }
 
@@ -2927,7 +3228,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     setRequestProperty("Accept", "application/vnd.github+json")
                     setRequestProperty("User-Agent", "idgaf-camera-StudioMogli")
                 }
-                if (conn.responseCode != HttpURLConnection.HTTP_OK) return@Thread
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) {
+                    if (manualCheck) {
+                        runOnUiThread { syncCreditsUpdateButtonUi(activeCreditsUpdateBtn) }
+                    }
+                    return@Thread
+                }
 
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
                 val json = JSONObject(body)
@@ -2935,7 +3241,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 if (latestTag.isEmpty() || !isNewerVersion(latestTag, getCurrentVersionName())) {
                     if (manualCheck) {
                         runOnUiThread {
-                            Toast.makeText(this, "You're on the latest version (v${getCurrentVersionName()})!", Toast.LENGTH_SHORT).show()
+                            syncCreditsUpdateButtonUi(activeCreditsUpdateBtn)
+                            showSingleToast("Already on latest version (v${getCurrentVersionName()})")
                         }
                     }
                     return@Thread
@@ -2959,16 +3266,23 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         if (!isFinishing && !isDestroyed) {
                             updateDownloadUrl = downloadUrl
                             updateLatestTag = latestTag
-                            // Subtle zero-clunk left badge on IDGAF CAM — never shifts or crowds the right top bar!
                             btnBrandCredits.text = "IDGAF CAM ↑"
-                            btnBrandCredits.setBackgroundResource(R.drawable.bg_dock_pill_active)
+                            btnBrandCredits.setBackgroundResource(R.drawable.bg_pilot_active)
+                            btnBrandCredits.setTextColor(0xFF0B0D10.toInt())
+                            syncCreditsUpdateButtonUi(activeCreditsUpdateBtn)
                             if (manualCheck) {
-                                Toast.makeText(this, "Update $latestTag ready! Tap IDGAF CAM ↑ to install.", Toast.LENGTH_LONG).show()
+                                showSingleToast("Update $latestTag found — tap INSTALL $latestTag!")
                             }
                         }
                     }
                 }
             } catch (_: Exception) {
+                if (manualCheck) {
+                    runOnUiThread {
+                        syncCreditsUpdateButtonUi(activeCreditsUpdateBtn)
+                        showSingleToast("Could not reach GitHub right now")
+                    }
+                }
             } finally {
                 conn?.disconnect()
             }
@@ -2981,8 +3295,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.5.2"
-    } catch (_: Exception) { "0.7.5.2" }
+        info.versionName ?: "0.7.5.3"
+    } catch (_: Exception) { "0.7.5.3" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -3413,34 +3727,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun showImportCubeSourceMenu() {
-        val options = arrayOf(
-            "Import .cube from Phone / Downloads",
-            "Download .cube from Direct URL (Internet)",
-            "Browse Free .cube LUTs (Web)"
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Add 3D .cube LUT")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> launchCubeFilePicker()
-                    1 -> showDownloadCubeUrlDialog()
-                    2 -> {
-                        try {
-                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://freshluts.com/")))
-                            showSingleToast("Download any .cube file, then tap + .CUBE → Phone / Downloads", Toast.LENGTH_LONG)
-                        } catch (_: Exception) {
-                            showSingleToast("Download any .cube file in Chrome, then import via + .CUBE")
-                        }
-                    }
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+        closeTopDrawers(except = "LUT_LIB")
+        renderLutLibraryDrawerList()
+        lutLibraryDrawer.visibility = View.VISIBLE
+        lutAddCubeSourceRow.visibility = View.VISIBLE
+        styleToolPill(btnLutDrawerAddCube, true)
+        syncLowBatteryBannerVisibility()
     }
 
     private fun launchCubeFilePicker() {
         try {
-            // Use */* because Android doesn't register a standard MIME type for .cube files
             importCubeLauncher.launch(arrayOf("*/*"))
         } catch (_: Exception) {
             showSingleToast("File picker unavailable on this device")
@@ -3467,38 +3763,35 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     ?: throw IllegalStateException("Saved LUT could not be loaded.")
                 runOnUiThread {
                     applyLoadedCubeLut(lutData)
+                    if (lutLibraryDrawer.visibility == View.VISIBLE) renderLutLibraryDrawerList()
                     showSingleToast("Imported 3D LUT: ${lutData.displayName} (${lutData.size}³)", Toast.LENGTH_LONG)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this, "LUT import failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    showSingleToast("LUT import failed: ${e.message}", Toast.LENGTH_LONG)
                 }
             }
         }.start()
     }
 
     private fun showDownloadCubeUrlDialog() {
-        val input = EditText(this).apply {
-            hint = "https://.../my_cinema_lut.cube"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF888888.toInt())
-            setPadding(36, 28, 36, 28)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Download .cube LUT from URL")
-            .setMessage("Paste a direct .cube file link (e.g. GitHub raw .cube URL). It will be verified & saved permanently in your LUT library.")
-            .setView(input)
-            .setPositiveButton("Download") { _, _ ->
-                val urlStr = input.text.toString().trim()
-                if (!urlStr.startsWith("http://", ignoreCase = true) && !urlStr.startsWith("https://", ignoreCase = true)) {
-                    showSingleToast("Enter a valid https:// .cube URL")
-                    return@setPositiveButton
-                }
+        openCinemaInputDrawer(
+            title = "DOWNLOAD .CUBE LUT URL",
+            hint = "Paste direct https://.../*.cube link",
+            initialValue = "",
+            allowDecimal = false,
+            step = 1f
+        ) { raw ->
+            val urlStr = raw.trim()
+            if (!urlStr.startsWith("http://", ignoreCase = true) && !urlStr.startsWith("https://", ignoreCase = true)) {
+                showSingleToast("Enter a valid https:// .cube URL")
+                false
+            } else {
                 downloadCubeLutFromUrl(urlStr)
+                true
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
+        edtCinemaInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
     }
 
     private fun downloadCubeLutFromUrl(rawUrl: String) {
@@ -3506,7 +3799,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         Thread {
             var conn: HttpURLConnection? = null
             try {
-                // Convert GitHub blob links cleanly to raw links for convenience!
                 val resolvedUrl = if (rawUrl.contains("github.com/") && rawUrl.contains("/blob/")) {
                     rawUrl.replace("github.com/", "raw.githubusercontent.com/").replace("/blob/", "/")
                 } else {
@@ -3522,7 +3814,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 if (conn.responseCode != HttpURLConnection.HTTP_OK) {
                     throw IllegalStateException("HTTP ${conn.responseCode} from server")
                 }
-                // Cap download size to 16 MB (even a 65^3 .cube LUT is ~7.5 MB)
                 val contentLength = conn.contentLengthLong
                 if (contentLength > 16L * 1024L * 1024L) {
                     throw IllegalArgumentException("File too large (> 16 MB) to be a .cube LUT.")
@@ -3534,11 +3825,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     ?: throw IllegalStateException("Downloaded LUT could not be parsed.")
                 runOnUiThread {
                     applyLoadedCubeLut(lutData)
+                    if (lutLibraryDrawer.visibility == View.VISIBLE) renderLutLibraryDrawerList()
                     showSingleToast("Downloaded & Loaded: ${lutData.displayName} (${lutData.size}³)", Toast.LENGTH_LONG)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    showSingleToast("Download failed: ${e.message}", Toast.LENGTH_LONG)
                 }
             } finally {
                 conn?.disconnect()
@@ -3564,67 +3856,129 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun showCubeLutLibraryDialog() {
+        val showing = lutLibraryDrawer.visibility == View.VISIBLE
+        if (showing) {
+            lutLibraryDrawer.visibility = View.GONE
+            lutAddCubeSourceRow.visibility = View.GONE
+            styleToolPill(btnLutDrawerAddCube, false)
+        } else {
+            closeTopDrawers(except = "LUT_LIB")
+            lutAddCubeSourceRow.visibility = View.GONE
+            styleToolPill(btnLutDrawerAddCube, false)
+            renderLutLibraryDrawerList()
+            lutLibraryDrawer.visibility = View.VISIBLE
+        }
+        syncLowBatteryBannerVisibility()
+    }
+
+    private fun renderLutLibraryDrawerList() {
+        lutListContainer.removeAllViews()
         val builtins = CubeLutLibrary.getBuiltInEntries()
         val userLuts = CubeLutLibrary.listSavedUserLuts(this)
 
-        val labels = mutableListOf<String>()
-        val actions = mutableListOf<() -> Unit>()
+        fun addLutRow(
+            title: String,
+            subtitle: String,
+            selected: Boolean,
+            onSelect: () -> Unit,
+            onDelete: (() -> Unit)? = null
+        ) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setBackgroundResource(if (selected) R.drawable.bg_dock_pill_active else R.drawable.bg_hud_pill)
+                setPadding(dpToPx(10), dpToPx(6), dpToPx(8), dpToPx(6))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dpToPx(5) }
+                setOnClickListener { onSelect() }
+            }
+            val col = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val t1 = TextView(this).apply {
+                text = if (selected) "✓ $title" else title
+                textSize = 10f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                setTextColor(if (selected) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
+            }
+            val t2 = TextView(this).apply {
+                text = subtitle
+                textSize = 8.5f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTextColor(0xFF8E96A4.toInt())
+            }
+            col.addView(t1)
+            col.addView(t2)
+            row.addView(col)
 
-        labels.add(if (activeLutSourceId.isEmpty()) "✓ NONE (No 3D LUT)" else "NONE (No 3D LUT)")
-        actions.add {
-            clearActiveCubeLut()
-            pushGpuColorStateAndRefreshUi()
-            showSingleToast("3D LUT: OFF")
+            if (onDelete != null) {
+                val delBtn = TextView(this).apply {
+                    text = "✕"
+                    textSize = 10f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = Gravity.CENTER
+                    setBackgroundResource(R.drawable.bg_hud_pill)
+                    setTextColor(0xFFFF3B30.toInt())
+                    setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4))
+                    setOnClickListener { onDelete() }
+                }
+                row.addView(delBtn)
+            }
+            lutListContainer.addView(row)
+        }
+
+        addLutRow(
+            title = "NONE (NO 3D LUT)",
+            subtitle = "Bypass 3D LUT transform",
+            selected = activeLutSourceId.isEmpty(),
+            onSelect = {
+                clearActiveCubeLut()
+                pushGpuColorStateAndRefreshUi()
+                lutLibraryDrawer.visibility = View.GONE
+                syncLowBatteryBannerVisibility()
+            }
+        )
+
+        userLuts.forEach { entry ->
+            addLutRow(
+                title = entry.displayName,
+                subtitle = "Imported .cube 3D LUT",
+                selected = activeLutSourceId == entry.sourceId,
+                onSelect = {
+                    loadAndActivateCubeLut(entry.sourceId, silent = false)
+                    lutLibraryDrawer.visibility = View.GONE
+                    syncLowBatteryBannerVisibility()
+                },
+                onDelete = {
+                    if (CubeLutLibrary.deleteUserLut(this, entry.sourceId)) {
+                        if (activeLutSourceId == entry.sourceId) {
+                            clearActiveCubeLut()
+                            pushGpuColorStateAndRefreshUi()
+                        }
+                        renderLutLibraryDrawerList()
+                        showSingleToast("Deleted LUT: ${entry.displayName}")
+                    }
+                }
+            )
         }
 
         builtins.forEach { entry ->
-            val mark = if (activeLutSourceId == entry.sourceId) "✓ " else ""
-            labels.add("${mark}★ ${entry.displayName} — ${entry.subtitle}")
-            actions.add { loadAndActivateCubeLut(entry.sourceId, silent = false) }
-        }
-
-        userLuts.forEach { entry ->
-            val mark = if (activeLutSourceId == entry.sourceId) "✓ " else ""
-            labels.add("${mark}📁 ${entry.displayName} (.cube)")
-            actions.add { loadAndActivateCubeLut(entry.sourceId, silent = false) }
-        }
-
-        labels.add("+ Import .cube from Phone / Downloads...")
-        actions.add { launchCubeFilePicker() }
-
-        labels.add("+ Download .cube from Direct URL...")
-        actions.add { showDownloadCubeUrlDialog() }
-
-        if (userLuts.isNotEmpty()) {
-            labels.add("🗑 Delete Saved .cube LUT...")
-            actions.add { showDeleteUserLutDialog(userLuts) }
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("World-Class 3D LUT Library (33³)")
-            .setItems(labels.toTypedArray()) { _, which ->
-                actions.getOrNull(which)?.invoke()
-            }
-            .setNegativeButton("Close", null)
-            .show()
-    }
-
-    private fun showDeleteUserLutDialog(userLuts: List<SavedLutEntry>) {
-        val names = userLuts.map { it.displayName }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Delete Saved .cube LUT")
-            .setItems(names) { _, which ->
-                val target = userLuts[which]
-                if (CubeLutLibrary.deleteUserLut(this, target.sourceId)) {
-                    if (activeLutSourceId == target.sourceId) {
-                        clearActiveCubeLut()
-                        pushGpuColorStateAndRefreshUi()
-                    }
-                    showSingleToast("Deleted LUT: ${target.displayName}")
+            addLutRow(
+                title = entry.displayName,
+                subtitle = entry.subtitle,
+                selected = activeLutSourceId == entry.sourceId,
+                onSelect = {
+                    loadAndActivateCubeLut(entry.sourceId, silent = false)
+                    lutLibraryDrawer.visibility = View.GONE
+                    syncLowBatteryBannerVisibility()
                 }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+            )
+        }
     }
 
     private fun loadAndActivateCubeLut(sourceId: String, silent: Boolean) {
@@ -5028,22 +5382,18 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
-    private fun showPilotLowLightTorchPrompt(lockedIso: Int) {
-        AlertDialog.Builder(this)
-            .setTitle("Low Light Detected (ISO $lockedIso)")
-            .setMessage("The scene is dark. Turning on the Flashlight (Torch) will cut grain and give sharper autofocus — then Auto Pilot will automatically re-balance exposure.")
-            .setPositiveButton("TORCH ON & RE-METER") { _, _ ->
-                if (!engine.isRecording) {
-                    val on = engine.setTorchEnabled(true)
-                    styleToolPill(btnProTorch, on)
-                    if (on) {
-                        engine.engageAutoPilot()
-                        showSingleToast("Torch ON — Auto Pilot re-metering scene...")
-                    }
-                }
-            }
-            .setNegativeButton("KEEP DARK", null)
-            .show()
+    private fun showPilotLowLightTorchPrompt(@Suppress("UNUSED_PARAMETER") lockedIso: Int) {
+        if (isCleanFrameMode || currentWorkbench != CameraWorkbench.SAVIOR) return
+        closeTopDrawers(except = "LOW_LIGHT")
+        lowLightTorchCard.visibility = View.VISIBLE
+        uiHandler.removeCallbacks(hideLowLightCardRunnable)
+        uiHandler.postDelayed(hideLowLightCardRunnable, 9000L)
+    }
+
+    private val hideLowLightCardRunnable = Runnable {
+        if (lowLightTorchCard.visibility == View.VISIBLE) {
+            lowLightTorchCard.visibility = View.GONE
+        }
     }
 
     override fun onRecordingStarted() {

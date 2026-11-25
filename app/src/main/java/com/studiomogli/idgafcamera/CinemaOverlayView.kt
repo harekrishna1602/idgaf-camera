@@ -26,7 +26,9 @@ enum class AspectGuide(val label: String, val ratio: Float) {
 enum class GridMode(val label: String) {
     OFF("GRID: OFF"),
     THIRDS("GRID: 3x3"),
-    GOLDEN("GRID: φ")
+    GOLDEN("GRID: φ"),
+    GRID_4X4("GRID: 4x4"),
+    DIAGONAL("GRID: ✕+")
 }
 
 enum class PeakingColor(val label: String, val argb: Int) {
@@ -367,18 +369,32 @@ class CinemaOverlayView @JvmOverloads constructor(
             }
         }
 
-        // 2. Rule of Thirds OR Golden Ratio (Phi 0.382 / 0.618) Grid + Center Crosshair
+        // 2. Cinema Composition Grids (3x3, Golden φ, 4x4 Symmetry, Dynamic Diagonals) + Center Crosshair
         if (gridMode != GridMode.OFF) {
-            val f1 = if (gridMode == GridMode.GOLDEN) 0.382f else (1f / 3f)
-            val f2 = if (gridMode == GridMode.GOLDEN) 0.618f else (2f / 3f)
-            val x1 = w * f1
-            val x2 = w * f2
-            val y1 = h * f1
-            val y2 = h * f2
-            canvas.drawLine(x1, 0f, x1, h, gridPaint)
-            canvas.drawLine(x2, 0f, x2, h, gridPaint)
-            canvas.drawLine(0f, y1, w, y1, gridPaint)
-            canvas.drawLine(0f, y2, w, y2, gridPaint)
+            when (gridMode) {
+                GridMode.THIRDS, GridMode.GOLDEN -> {
+                    val f1 = if (gridMode == GridMode.GOLDEN) 0.382f else (1f / 3f)
+                    val f2 = if (gridMode == GridMode.GOLDEN) 0.618f else (2f / 3f)
+                    canvas.drawLine(w * f1, 0f, w * f1, h, gridPaint)
+                    canvas.drawLine(w * f2, 0f, w * f2, h, gridPaint)
+                    canvas.drawLine(0f, h * f1, w, h * f1, gridPaint)
+                    canvas.drawLine(0f, h * f2, w, h * f2, gridPaint)
+                }
+                GridMode.GRID_4X4 -> {
+                    for (step in 1..3) {
+                        val frac = step * 0.25f
+                        canvas.drawLine(w * frac, 0f, w * frac, h, gridPaint)
+                        canvas.drawLine(0f, h * frac, w, h * frac, gridPaint)
+                    }
+                }
+                GridMode.DIAGONAL -> {
+                    canvas.drawLine(0f, 0f, w, h, gridPaint)
+                    canvas.drawLine(w, 0f, 0f, h, gridPaint)
+                    canvas.drawLine(w * 0.5f, 0f, w * 0.5f, h, gridPaint)
+                    canvas.drawLine(0f, h * 0.5f, w, h * 0.5f, gridPaint)
+                }
+                GridMode.OFF -> {}
+            }
 
             val cx = w / 2f
             val cy = h / 2f
@@ -428,12 +444,12 @@ class CinemaOverlayView @JvmOverloads constructor(
             drawFalseColorLegend(canvas, w, h, dp)
         }
 
-        // 5. 3-Channel RGB + Luma Overlay Histogram (Top-Right clear of all drawers)
+        // 5. 3-Channel RGB + Luma Overlay Histogram (Top-Left opposite PILOT button!)
         if (showHistogram) {
             val boxW = 132f * dp
             val boxH = 56f * dp
-            val left = w - boxW - 18f * dp
-            val top = 58f * dp
+            val left = 18f * dp
+            val top = if (splitFrac in 0f..1f) 92f * dp else 58f * dp
             histRect.set(left, top, left + boxW, top + boxH)
 
             canvas.drawRoundRect(histRect, 8f * dp, 8f * dp, histBgPaint)
