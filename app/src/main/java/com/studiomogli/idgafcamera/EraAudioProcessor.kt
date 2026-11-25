@@ -9,7 +9,9 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.tanh
@@ -20,12 +22,16 @@ enum class EraAudioProfile {
 }
 
 /**
- * Lossless-Video / Authentic-Era-Audio MP4 Processor:
+ * Lossless-Video / Authentic-Era-Audio MP4 Processor (v0.7.4.3 Westrex R&D Engine):
  * - Video Track: 100% zero-reencode bit-for-bit passthrough via MediaExtractor -> MediaMuxer.
- * - Audio Track: Decodes AAC -> 16-bit PCM, applies historically accurate Era DSP (e.g., 1950s
- *   Academy-Curve Optical Sound-on-Film Mono: 125Hz HPF, 4.8-5.8kHz optical slit LPF, 1.65kHz
- *   warm ribbon-mic vocal presence, Westrex vacuum-tube soft saturation & subtle optical emulsion
- *   noise floor), then re-encodes cleanly to Mono AAC.
+ * - Audio Track (OPTICAL_1950S): Decodes AAC -> 16-bit PCM, applies historically accurate
+ *   1950s Variable-Area 35mm Optical Sound-on-Film DSP:
+ *   1. Steep dual-stage AMPAS Academy Curve HPF (cuts modern sub-bass rumble below 100 Hz)
+ *   2. RCA 44BX Ribbon Mic lower-mid chest warmth (360 Hz) + studio dialogue articulation (2.1 kHz)
+ *   3. 24 dB/oct Optical Slit-Loss HF Roll-off (5.4-6.2 kHz FRESH / 4.4-5.1 kHz ARCHIVE)
+ *   4. Westrex RA-1231 Optical Light-Valve Compressor/Limiter (smooth 8ms/160ms dialogue leveling)
+ *   5. Asymmetric 2nd-order Vacuum-Tube Saturation + 20 Hz DC Blocker
+ *   6. Signal-dependent Variable-Area Optical Modulation Hiss + ARCHIVE 24Hz sprocket micro-flutter & rare dust ticks
  */
 object EraAudioProcessor {
 
@@ -98,19 +104,37 @@ object EraAudioProcessor {
 
     private class Optical1950sDsp(sampleRate: Int, private val archiveWear: Boolean) {
         private val fs = sampleRate.coerceIn(16000, 96000).toDouble()
-        // Authentic 1950s AMPAS Academy Curve Optical Sound-on-Film chain
-        private val hpf = BiquadFilter.highPass(if (archiveWear) 145.0 else 120.0, 0.707, fs)
-        private val lpfSlit1 = BiquadFilter.lowPass(if (archiveWear) 4200.0 else 4900.0, 0.707, fs)
-        private val lpfSlit2 = BiquadFilter.lowPass(if (archiveWear) 5100.0 else 5900.0, 0.707, fs)
-        private val vocalPeak = BiquadFilter.peakingEq(1650.0, 1.0, if (archiveWear) 4.0 else 3.2, fs)
-        private val hissLpf = BiquadFilter.lowPass(3600.0, 0.707, fs)
 
-        // Fast deterministic LCG PRNG for authentic optical track grain hiss & micro dust ticks
+        // 1. Steep 1950s AMPAS Academy Curve + RCA 44BX Ribbon Mic Voicing
+        private val hpf1 = BiquadFilter.highPass(if (archiveWear) 140.0 else 115.0, 0.707, fs)
+        private val hpf2 = BiquadFilter.highPass(if (archiveWear) 120.0 else 95.0, 0.707, fs)
+        private val ribbonWarmth = BiquadFilter.peakingEq(360.0, 0.9, if (archiveWear) 1.8 else 2.2, fs)
+        private val dialogueArt = BiquadFilter.peakingEq(2100.0, 1.1, if (archiveWear) 4.0 else 3.4, fs)
+        private val slitLpf1 = BiquadFilter.lowPass(if (archiveWear) 4400.0 else 5400.0, 0.707, fs)
+        private val slitLpf2 = BiquadFilter.lowPass(if (archiveWear) 5100.0 else 6200.0, 0.707, fs)
+
+        // Optical emulsion noise shaper (band-limited 450 Hz .. 3.4 kHz like real silver-halide optical track)
+        private val hissLpf = BiquadFilter.lowPass(3400.0, 0.707, fs)
+        private val hissHpf = BiquadFilter.highPass(420.0, 0.707, fs)
+
+        // 2. Westrex RA-1231 Optical Light-Valve Compressor Envelope
+        private val atkCoeff = exp(-1.0 / (0.008 * fs))
+        private val relCoeff = exp(-1.0 / (0.160 * fs))
+        private var env = 0.0
+
+        // 3. Asymmetric 2nd-Order Vacuum-Tube Saturation + 20 Hz DC Blocker
+        private val tubeDrive = if (archiveWear) 1.85 else 1.48
+        private val tubeNorm = 1.0 / tanh(tubeDrive)
+        private var dcX1 = 0.0
+        private var dcY1 = 0.0
+        private val dcR = 0.9965
+
+        // 4. Deterministic 64-bit PRNG + 24Hz Sprocket Flutter & 50Hz Exciter-Lamp Warmth
         private var rngState: Long = 0x5DEECE66DL
-        private val drive = if (archiveWear) 1.65 else 1.38
-        private val normScale = 1.0 / tanh(drive)
-        private val hissAmp = if (archiveWear) 0.0135 else 0.0048
-        private var crackleDecay = 0.0
+        private var sampleIndex: Long = 0L
+        private val baseHissAmp = if (archiveWear) 0.0115 else 0.0038
+        private var tickEnv = 0.0
+        private var tickPol = 1.0
 
         private fun nextSignedNoise(): Double {
             rngState = (rngState * 6364136223846793005L + 1442695040888963407L)
@@ -119,29 +143,61 @@ object EraAudioProcessor {
         }
 
         fun processSample(monoIn: Double): Short {
-            // 1. Academy Curve optical bandwidth & warm ribbon-mic vocal voicing
-            var s = hpf.process(monoIn)
-            s = vocalPeak.process(s)
-            s = lpfSlit1.process(s)
-            s = lpfSlit2.process(s)
+            sampleIndex++
+            // A. Academy Curve + RCA Ribbon Mic Frequency Shaping
+            var s = hpf1.process(monoIn)
+            s = hpf2.process(s)
+            s = ribbonWarmth.process(s)
+            s = dialogueArt.process(s)
+            s = slitLpf1.process(s)
+            s = slitLpf2.process(s)
 
-            // 2. Westrex / RCA Photophone vacuum-tube soft saturation & automatic dialogue leveling
-            s = tanh(s * drive) * normScale * 0.92
+            // B. Westrex Optical Light-Valve Auto-Leveling Compressor (gentle 3:1 above -16 dBFS + makeup gain)
+            val level = abs(s)
+            env = if (level > env) {
+                atkCoeff * env + (1.0 - atkCoeff) * level
+            } else {
+                relCoeff * env + (1.0 - relCoeff) * level
+            }
+            val threshold = 0.14
+            val compGain = if (env > threshold) {
+                (threshold / env).pow(0.65)
+            } else {
+                1.0
+            }
+            s *= compGain * 1.45
 
-            // 3. Band-limited 35mm optical emulsion hiss floor
+            // C. Asymmetric Vacuum-Tube Harmonics (adds authentic warm 2nd-order even harmonics) + DC Blocker
+            val asym = s + 0.14 * s * s
+            val sat = tanh(asym * tubeDrive) * tubeNorm * 0.90
+            val dcBlocked = sat - dcX1 + dcR * dcY1
+            dcX1 = sat
+            dcY1 = dcBlocked
+            s = dcBlocked
+
+            // D. Authentic Variable-Area Optical Modulation Noise (hiss breathes subtly with dialogue!)
             val rawNoise = nextSignedNoise()
-            val opticalHiss = hissLpf.process(rawNoise) * hissAmp
-            s += opticalHiss
+            val bandHiss = hissHpf.process(hissLpf.process(rawNoise))
+            val modNoiseMul = 1.0 + (env * 1.65).coerceAtMost(1.2)
+            s += bandHiss * baseHissAmp * modNoiseMul
 
-            // 4. Subtle single-grain optical soundtrack dust pops in ARCHIVE print mode (~2-3 gentle ticks/sec)
+            // E. ARCHIVE-ONLY 35mm Projector Transport Character (24 Hz sprocket micro-flutter + 50 Hz exciter warmth + rare optical dust ticks)
             if (archiveWear) {
+                val tSec = sampleIndex.toDouble() / fs
+                // Subtle 24 Hz sprocket amplitude breathing (~0.8%) + faint 50 Hz exciter lamp warmth (-52 dB)
+                val sprocketMod = 1.0 + 0.008 * sin(2.0 * PI * 24.0 * tSec)
+                val exciterHum = 0.0022 * sin(2.0 * PI * 50.0 * tSec)
+                s = s * sprocketMod + exciterHum
+
+                // Rare crisp optical-slit dust ticks (~1.5/sec average, damped impulse)
                 val r = nextSignedNoise()
-                if (r > 0.99986) {
-                    crackleDecay = (0.14 + (r - 0.99986) * 500.0).coerceAtMost(0.24)
+                if (r > 0.99992) {
+                    tickEnv = (0.11 + (r - 0.99992) * 800.0).coerceAtMost(0.20)
+                    tickPol = if (nextSignedNoise() > 0.0) 1.0 else -1.0
                 }
-                if (crackleDecay > 0.001) {
-                    s += crackleDecay * rawNoise
-                    crackleDecay *= 0.82
+                if (tickEnv > 0.001) {
+                    s += tickEnv * tickPol * (0.4 + 0.6 * rawNoise)
+                    tickEnv *= 0.78
                 }
             }
 

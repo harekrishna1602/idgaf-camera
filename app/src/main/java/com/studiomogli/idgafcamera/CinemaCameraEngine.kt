@@ -182,6 +182,8 @@ class CinemaCameraEngine(
         private set
     @Volatile var eraFilterCode: Int = 0
         private set
+    @Volatile var eraGrainMultiplier: Float = 1.0f
+        private set
     @Volatile var toneProfile: ToneProfile = ToneProfile.STANDARD
         private set
     @Volatile var isRecording: Boolean = false
@@ -357,6 +359,7 @@ class CinemaCameraEngine(
         glRenderer?.eraWearLevel = eraWearLevel
         glRenderer?.eraFps = eraFps
         glRenderer?.eraFilterCode = eraFilterCode
+        glRenderer?.eraGrainMultiplier = eraGrainMultiplier
         glRenderer?.mirrorFrontExport = mirrorFrontExport
         cleanupOrphanEraCacheFiles()
         glRenderer?.setCubeLut(activeCubeLut)
@@ -406,22 +409,47 @@ class CinemaCameraEngine(
         glRenderer?.splitCompareFraction = fraction
     }
 
-    fun setEraRenderState(modeCode: Int, wearLevel: Float, fps: Float, filterCode: Int = eraFilterCode) {
+    fun setEraRenderState(
+        modeCode: Int,
+        wearLevel: Float,
+        fps: Float,
+        filterCode: Int = eraFilterCode,
+        grainMul: Float = eraGrainMultiplier
+    ) {
         val wasClassic = (eraModeCode > 0)
         val isClassic = (modeCode > 0)
         eraModeCode = modeCode
         eraWearLevel = wearLevel.coerceIn(0f, 1f)
         eraFps = fps.coerceIn(1f, 60f)
         eraFilterCode = filterCode.coerceIn(0, 3)
+        eraGrainMultiplier = grainMul.coerceIn(0.45f, 2.2f)
         glRenderer?.eraModeCode = eraModeCode
         glRenderer?.eraWearLevel = eraWearLevel
         glRenderer?.eraFps = eraFps
         glRenderer?.eraFilterCode = eraFilterCode
+        glRenderer?.eraGrainMultiplier = eraGrainMultiplier
         // Toggle Camera2 hardware ISP de-sharpening (EDGE_MODE_OFF) & EIS off immediately on SAVIOR <-> CLASSIC transition!
         if (wasClassic != isClassic) {
             pushUpdatedRepeatingRequest()
         }
     }
+
+    /**
+     * Locks true Manual Film Stock ASA (ISO) + Mechanical Shutter inside CLASSIC mode
+     * so Android Auto-Exposure never pumps or glitches mid-shot!
+     */
+    fun lockEraManualExposure(iso: Int, shutterNs: Long) {
+        if (!capabilities.supportsManualExposure) return
+        clearAutoPilotSilently()
+        isManualExposure = true
+        isShutter180Locked = false
+        manualIso = iso.coerceIn(capabilities.effectiveIsoRange.lower, capabilities.effectiveIsoRange.upper)
+        manualShutterNs = shutterNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+        pushUpdatedRepeatingRequest()
+    }
+
+    fun getLiveSensorIso(): Int = liveIso
+    fun getLiveSensorShutterNs(): Long = liveShutterNs
 
     private fun cleanupOrphanEraCacheFiles() {
         try {
