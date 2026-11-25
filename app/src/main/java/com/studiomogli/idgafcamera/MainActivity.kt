@@ -18,6 +18,8 @@ import android.media.MediaRecorder
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.text.InputType
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import androidx.appcompat.app.AlertDialog
 import android.content.Context
@@ -108,7 +110,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     // Phase 4 Pro Audio / Codec / Bitrate Bar
     private lateinit var btnProSettingsToggle: TextView
-    private lateinit var proSettingsBar: HorizontalScrollView
+    private lateinit var proSettingsBar: LinearLayout
+    private lateinit var proTimelapseSubPanel: LinearLayout
+    private lateinit var proTimelapseRow1: LinearLayout
+    private lateinit var proTimelapseRow2: LinearLayout
     private lateinit var btnProCodec: TextView
     private lateinit var btnProBitrate: TextView
     private lateinit var btnProStab: TextView
@@ -217,7 +222,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     // Phase 3 / 6.10 Monitoring Toolbar
     private lateinit var btnMonitorToggle: TextView
-    private lateinit var monitorToolsBar: HorizontalScrollView
+    private lateinit var monitorToolsBar: LinearLayout
+    private lateinit var monConfigSubPanel: LinearLayout
+    private lateinit var monPeakColorRow: LinearLayout
+    private lateinit var monPeakSensRow: LinearLayout
+    private lateinit var monZebraLevelRow: LinearLayout
     private lateinit var btnToolGrid: TextView
     private lateinit var btnToolFrame: TextView
     private lateinit var btnToolPeak: TextView
@@ -279,8 +288,33 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private lateinit var txtTimecode: TextView
     private lateinit var viewRecDot: View
-    private lateinit var btnResolution: TextView
-    private lateinit var btnFps: TextView
+    private lateinit var btnFormatToggle: TextView
+    private lateinit var btnCleanUiToggle: TextView
+    private lateinit var btnEraCleanUi: TextView
+    private lateinit var btnRestoreCleanUi: TextView
+    private lateinit var rightRailContainer: LinearLayout
+    private lateinit var formatDrawer: LinearLayout
+    private lateinit var txtFormatSummary: TextView
+    private lateinit var btnFormatClose: TextView
+    private lateinit var formatResRow: LinearLayout
+    private lateinit var formatFpsRow: LinearLayout
+    private lateinit var workbenchEraDrawer: LinearLayout
+    private lateinit var btnEraDrawerClose: TextView
+    private lateinit var workbenchSelectRow: LinearLayout
+    private lateinit var eraVaultSelectRow: LinearLayout
+    private lateinit var txtEraVaultDesc: TextView
+    private lateinit var cinemaInputDrawer: LinearLayout
+    private lateinit var txtCinemaInputTitle: TextView
+    private lateinit var txtCinemaInputHint: TextView
+    private lateinit var btnCinemaInputCancel: TextView
+    private lateinit var btnCinemaInputMinus: TextView
+    private lateinit var edtCinemaInput: EditText
+    private lateinit var btnCinemaInputPlus: TextView
+    private lateinit var btnCinemaInputApply: TextView
+    private var cinemaInputStep: Float = 1f
+    private var cinemaInputAllowDecimal: Boolean = false
+    private var cinemaInputOnApply: ((String) -> Boolean)? = null
+    private var isCleanFrameMode: Boolean = false
     private lateinit var lensRail: LinearLayout
     private lateinit var btnAutoPilot: TextView
     private lateinit var btnShutterInner: View
@@ -628,6 +662,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtAudioTrimVal = findViewById(R.id.txtAudioTrimVal)
         btnProSettingsToggle = findViewById(R.id.btnProSettingsToggle)
         proSettingsBar = findViewById(R.id.proSettingsBar)
+        proTimelapseSubPanel = findViewById(R.id.proTimelapseSubPanel)
+        proTimelapseRow1 = findViewById(R.id.proTimelapseRow1)
+        proTimelapseRow2 = findViewById(R.id.proTimelapseRow2)
         btnProCodec = findViewById(R.id.btnProCodec)
         btnProBitrate = findViewById(R.id.btnProBitrate)
         btnProStab = findViewById(R.id.btnProStab)
@@ -690,6 +727,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         presetStore = PresetStore(this)
         btnMonitorToggle = findViewById(R.id.btnMonitorToggle)
         monitorToolsBar = findViewById(R.id.monitorToolsBar)
+        monConfigSubPanel = findViewById(R.id.monConfigSubPanel)
+        monPeakColorRow = findViewById(R.id.monPeakColorRow)
+        monPeakSensRow = findViewById(R.id.monPeakSensRow)
+        monZebraLevelRow = findViewById(R.id.monZebraLevelRow)
         btnToolGrid = findViewById(R.id.btnToolGrid)
         btnToolFrame = findViewById(R.id.btnToolFrame)
         btnToolPeak = findViewById(R.id.btnToolPeak)
@@ -737,8 +778,29 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         txtTimecode = findViewById(R.id.txtTimecode)
         viewRecDot = findViewById(R.id.viewRecDot)
-        btnResolution = findViewById(R.id.btnResolution)
-        btnFps = findViewById(R.id.btnFps)
+        btnFormatToggle = findViewById(R.id.btnFormatToggle)
+        btnCleanUiToggle = findViewById(R.id.btnCleanUiToggle)
+        btnEraCleanUi = findViewById(R.id.btnEraCleanUi)
+        btnRestoreCleanUi = findViewById(R.id.btnRestoreCleanUi)
+        rightRailContainer = findViewById(R.id.rightRailContainer)
+        formatDrawer = findViewById(R.id.formatDrawer)
+        txtFormatSummary = findViewById(R.id.txtFormatSummary)
+        btnFormatClose = findViewById(R.id.btnFormatClose)
+        formatResRow = findViewById(R.id.formatResRow)
+        formatFpsRow = findViewById(R.id.formatFpsRow)
+        workbenchEraDrawer = findViewById(R.id.workbenchEraDrawer)
+        btnEraDrawerClose = findViewById(R.id.btnEraDrawerClose)
+        workbenchSelectRow = findViewById(R.id.workbenchSelectRow)
+        eraVaultSelectRow = findViewById(R.id.eraVaultSelectRow)
+        txtEraVaultDesc = findViewById(R.id.txtEraVaultDesc)
+        cinemaInputDrawer = findViewById(R.id.cinemaInputDrawer)
+        txtCinemaInputTitle = findViewById(R.id.txtCinemaInputTitle)
+        txtCinemaInputHint = findViewById(R.id.txtCinemaInputHint)
+        btnCinemaInputCancel = findViewById(R.id.btnCinemaInputCancel)
+        btnCinemaInputMinus = findViewById(R.id.btnCinemaInputMinus)
+        edtCinemaInput = findViewById(R.id.edtCinemaInput)
+        btnCinemaInputPlus = findViewById(R.id.btnCinemaInputPlus)
+        btnCinemaInputApply = findViewById(R.id.btnCinemaInputApply)
         lensRail = findViewById(R.id.lensRail)
         btnAutoPilot = findViewById(R.id.btnAutoPilot)
         btnShutterInner = findViewById(R.id.btnShutterInner)
@@ -803,6 +865,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         setupAudioControllerDrawer()
         setupColorStudioDrawer()
         setupEraWorkbench()
+        setupUnifiedInlineDrawersAndCleanUi()
 
         btnBrandCredits.setOnClickListener {
             showStudioMogliCreditsDialog()
@@ -859,7 +922,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
             scaleDetector.onTouchEvent(event)
             if (event.actionMasked == MotionEvent.ACTION_DOWN && event.pointerCount == 1 && !scaleDetector.isInProgress) {
-                if (currentWorkbench == CameraWorkbench.ERA && activeEraPanel != EraSliderPanel.NONE) {
+                if (cinemaInputDrawer.visibility == View.VISIBLE) {
+                    closeCinemaInputDrawer()
+                } else if (workbenchEraDrawer.visibility == View.VISIBLE) {
+                    closeWorkbenchEraDrawer()
+                } else if (currentWorkbench == CameraWorkbench.ERA && activeEraPanel != EraSliderPanel.NONE) {
                     selectEraPanel(EraSliderPanel.NONE)
                 } else if (currentWorkbench == CameraWorkbench.SAVIOR && hasAnyOpenDrawer()) {
                     closeAllDrawers()
@@ -950,19 +1017,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
-        btnResolution.setOnClickListener {
-            if (engine.isRecording) return@setOnClickListener
-            showResolutionPickerDialog()
-        }
-
-        btnFps.setOnClickListener {
-            if (engine.isRecording) return@setOnClickListener
-            showFpsPickerDialog()
-        }
-
-        btnFps.setOnLongClickListener {
-            if (!engine.isRecording) showCustomFpsInputDialog()
-            true
+        btnFormatToggle.setOnClickListener {
+            if (engine.isRecording) {
+                showSingleToast("Stop recording to change format")
+                return@setOnClickListener
+            }
+            val showing = formatDrawer.visibility == View.VISIBLE
+            if (!showing) closeTopDrawers(except = "FORMAT")
+            formatDrawer.visibility = if (showing) View.GONE else View.VISIBLE
+            if (!showing) renderFormatDrawerChips()
+            updateFormatPillUi()
+            syncLowBatteryBannerVisibility()
         }
 
         btnLastClip.setOnClickListener {
@@ -991,36 +1056,26 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun setupEraWorkbench() {
         btnWorkbenchToEra.setOnClickListener {
             if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop recording to switch workbench")
+                showSingleToast("Stop recording to switch workbench / era")
                 return@setOnClickListener
             }
-            enterEraWorkbench()
-        }
-
-        btnWorkbenchToEra.setOnLongClickListener {
-            if (!engine.isRecording && !engine.isFinalizingClip) showWorkbenchSwitcherDialog()
-            true
+            toggleWorkbenchEraDrawer()
         }
 
         btnEraWorkbenchSwitch.setOnClickListener {
             if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop recording to switch workbench")
+                showSingleToast("Stop recording to switch workbench / era")
                 return@setOnClickListener
             }
-            showWorkbenchSwitcherDialog()
-        }
-
-        btnEraWorkbenchSwitch.setOnLongClickListener {
-            if (!engine.isRecording && !engine.isFinalizingClip) exitEraToSaviorWorkbench()
-            true
+            toggleWorkbenchEraDrawer()
         }
 
         btnEraCameraPicker.setOnClickListener {
             if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop recording to view Classic Camera Vault")
+                showSingleToast("Stop recording to select Era camera")
                 return@setOnClickListener
             }
-            showEraMuseumPickerDialog()
+            toggleWorkbenchEraDrawer()
         }
 
         btnEraTorch.setOnClickListener {
@@ -1167,45 +1222,383 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         })
     }
 
-    private fun showWorkbenchSwitcherDialog() {
-        val items = arrayOf(
-            (if (currentWorkbench == CameraWorkbench.SAVIOR) "✓ " else "") + "SAVIOR — Digital Cinema Rig",
-            (if (currentWorkbench == CameraWorkbench.ERA) "✓ " else "") + "CLASSIC — 1920s Silent 35mm Vault",
-            "PURIST — Gate 65 Discipline (Coming in Phase 8)"
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Switch Camera Workbench")
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> exitEraToSaviorWorkbench()
-                    1 -> enterEraWorkbench()
-                    2 -> showSingleToast("PURIST (Gate 65) arrives in Phase 8!", Toast.LENGTH_LONG)
-                }
+    // ==================== PHASE 7.5.1: UNIFIED INLINE DRAWERS, CLEAN-FRAME EYE & CINEMA INPUT BAR ====================
+
+    private fun setupUnifiedInlineDrawersAndCleanUi() {
+        btnCleanUiToggle.setOnClickListener { setCleanFrameMode(true) }
+        btnEraCleanUi.setOnClickListener { setCleanFrameMode(true) }
+        btnRestoreCleanUi.setOnClickListener { setCleanFrameMode(false) }
+
+        btnFormatClose.setOnClickListener {
+            formatDrawer.visibility = View.GONE
+            updateFormatPillUi()
+            syncLowBatteryBannerVisibility()
+        }
+
+        btnEraDrawerClose.setOnClickListener {
+            closeWorkbenchEraDrawer()
+        }
+
+        btnCinemaInputCancel.setOnClickListener {
+            closeCinemaInputDrawer()
+        }
+
+        btnCinemaInputApply.setOnClickListener {
+            submitCinemaInputDrawer()
+        }
+
+        edtCinemaInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                submitCinemaInputDrawer()
+                true
+            } else {
+                false
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
+
+        btnCinemaInputMinus.setOnClickListener { stepCinemaInputValue(-1f) }
+        btnCinemaInputPlus.setOnClickListener { stepCinemaInputValue(+1f) }
+
+        updateFormatPillUi()
     }
 
-    private fun showEraMuseumPickerDialog() {
-        val items = arrayOf(
-            "✓ 1920s Classic Silent — 35mm Nitrate (Nosferatu / The General R&D)",
-            "1950s Classic Monochrome — In R&D (Next once 1920s is locked 10/10)",
-            "1970s Indie Celluloid — Super 8 & 16mm (Planned)",
-            "1980s–90s Analog Tape — VHS Camcorder (Planned)",
-            "2000s Classic CCD — MiniDV Handycam (Planned)"
+    private fun setCleanFrameMode(enabled: Boolean) {
+        if (isCleanFrameMode == enabled) return
+        isCleanFrameMode = enabled
+        if (enabled) {
+            closeCinemaInputDrawer()
+            closeWorkbenchEraDrawer()
+            closeAllDrawers()
+            selectEraPanel(EraSliderPanel.NONE)
+
+            saviorTopBar.visibility = View.GONE
+            saviorBottomDock.visibility = View.GONE
+            eraTopBar.visibility = View.GONE
+            eraBottomDock.visibility = View.GONE
+            lensRail.visibility = View.GONE
+            zoomRockerContainer.visibility = View.GONE
+            rightRailContainer.visibility = View.GONE
+            txtLowBatteryBanner.visibility = View.GONE
+            btnExitSplitWipe.visibility = View.GONE
+
+            btnRestoreCleanUi.visibility = View.VISIBLE
+            updateRestoreCleanEyeBadge()
+            showSingleToast("Clean Frame ON — tap 👁 in top-right to restore UI")
+        } else {
+            btnRestoreCleanUi.visibility = View.GONE
+            rightRailContainer.visibility = View.VISIBLE
+            if (currentWorkbench == CameraWorkbench.ERA) {
+                eraTopBar.visibility = View.VISIBLE
+                eraBottomDock.visibility = View.VISIBLE
+            } else {
+                saviorTopBar.visibility = View.VISIBLE
+                saviorBottomDock.visibility = View.VISIBLE
+                lensRail.visibility = View.VISIBLE
+                zoomRockerContainer.visibility = View.VISIBLE
+                syncExitSplitPillVisibility()
+            }
+            syncLowBatteryBannerVisibility()
+        }
+    }
+
+    private fun updateRestoreCleanEyeBadge() {
+        if (!isCleanFrameMode) return
+        if (engine.isRecording) {
+            btnRestoreCleanUi.text = "● 👁"
+            btnRestoreCleanUi.setTextColor(0xFFFF3B30.toInt())
+            btnRestoreCleanUi.alpha = 0.72f
+        } else {
+            btnRestoreCleanUi.text = "👁"
+            btnRestoreCleanUi.setTextColor(0xFFFFFFFF.toInt())
+            btnRestoreCleanUi.alpha = 0.38f
+        }
+    }
+
+    private fun toggleWorkbenchEraDrawer() {
+        val showing = workbenchEraDrawer.visibility == View.VISIBLE
+        if (showing) {
+            closeWorkbenchEraDrawer()
+        } else {
+            closeTopDrawers(except = "ERA_VAULT")
+            selectEraPanel(EraSliderPanel.NONE)
+            renderWorkbenchEraDrawerChips()
+            workbenchEraDrawer.visibility = View.VISIBLE
+            if (currentWorkbench == CameraWorkbench.SAVIOR) {
+                btnWorkbenchToEra.setBackgroundResource(R.drawable.bg_era_pill_active)
+                btnWorkbenchToEra.setTextColor(0xFF141210.toInt())
+            }
+            syncLowBatteryBannerVisibility()
+        }
+    }
+
+    private fun closeWorkbenchEraDrawer() {
+        if (workbenchEraDrawer.visibility == View.VISIBLE) {
+            workbenchEraDrawer.visibility = View.GONE
+        }
+        btnWorkbenchToEra.setBackgroundResource(R.drawable.bg_era_pill)
+        btnWorkbenchToEra.setTextColor(0xFFE8B968.toInt())
+        syncLowBatteryBannerVisibility()
+    }
+
+    private fun renderWorkbenchEraDrawerChips() {
+        workbenchSelectRow.removeAllViews()
+        val wbEntries = listOf(
+            Triple("SAVIOR", currentWorkbench == CameraWorkbench.SAVIOR) {
+                closeWorkbenchEraDrawer()
+                exitEraToSaviorWorkbench()
+            },
+            Triple("ERA", currentWorkbench == CameraWorkbench.ERA) {
+                closeWorkbenchEraDrawer()
+                enterEraWorkbench()
+            },
+            Triple("PURIST • P8", false) {
+                txtEraVaultDesc.text = "PURIST (Gate 65 Discipline) arrives in Phase 8 — try 👁 Clean Frame now!"
+                showSingleToast("PURIST (Gate 65) arrives in Phase 8 — tap 👁 for Clean Frame now!")
+            }
         )
-        AlertDialog.Builder(this)
-            .setTitle("Classic Camera Vault (Master One Era at a Time)")
-            .setItems(items) { _, which ->
-                if (which == 0) {
+        wbEntries.forEachIndexed { idx, (label, active, onClick) ->
+            val chip = TextView(this).apply {
+                text = label
+                textSize = 9.5f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                alpha = if (idx == 2) 0.50f else 1.0f
+                setBackgroundResource(if (active) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
+                setTextColor(if (active) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    if (idx < wbEntries.lastIndex) marginEnd = dpToPx(5)
+                }
+                setOnClickListener { onClick() }
+            }
+            workbenchSelectRow.addView(chip)
+        }
+
+        eraVaultSelectRow.removeAllViews()
+        val in1920s = (currentWorkbench == CameraWorkbench.ERA && activeEraCamera == EraCameraId.SILENT_1920S)
+        val eraEntries = listOf(
+            Triple("1920s SILENT", in1920s) {
+                closeWorkbenchEraDrawer()
+                if (currentWorkbench != CameraWorkbench.ERA) {
+                    enterEraWorkbench()
+                } else {
                     activeEraCamera = EraCameraId.SILENT_1920S
                     applyActiveEraCamera(announce = false)
-                } else {
-                    showSingleToast("Parked cleanly in R&D — mastering 1920s Silent 35mm to 10/10 authenticity first!", Toast.LENGTH_LONG)
+                }
+            },
+            Triple("1950s (R&D)", false) {
+                txtEraVaultDesc.text = "1950s Satyajit Ray Mono is parked in R&D until 1920s Silent hits 10/10!"
+                showSingleToast("1950s parked in R&D — mastering 1920s Silent 35mm first!")
+            },
+            Triple("1970s S8", false) {
+                txtEraVaultDesc.text = "1970s Super 8 / 16mm arrives after 1920s & 1950s are mastered."
+                showSingleToast("1970s Super 8 arrives in a future phase")
+            },
+            Triple("1980s VHS", false) {
+                txtEraVaultDesc.text = "1980s–90s VHS Camcorder arrives after 1970s Super 8."
+                showSingleToast("1980s VHS Camcorder arrives in a future phase")
+            }
+        )
+        eraEntries.forEachIndexed { idx, (label, active, onClick) ->
+            val chip = TextView(this).apply {
+                text = label
+                textSize = 8.5f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                alpha = if (idx == 0) 1.0f else 0.45f
+                setBackgroundResource(if (active) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
+                setTextColor(if (active) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    if (idx < eraEntries.lastIndex) marginEnd = dpToPx(4)
+                }
+                setOnClickListener { onClick() }
+            }
+            eraVaultSelectRow.addView(chip)
+        }
+        txtEraVaultDesc.text = if (in1920s) {
+            "Active: 1920s Silent 35mm — Nosferatu (1922) & The General (1926) Optical R&D"
+        } else {
+            "Tap 1920s SILENT to load the 1920s Silent 35mm Nitrate camera"
+        }
+    }
+
+    private fun updateFormatPillUi() {
+        btnFormatToggle.text = "${currentResolution.label} • $currentFps"
+        val open = formatDrawer.visibility == View.VISIBLE
+        if (open) {
+            styleToolPill(btnFormatToggle, true)
+        } else {
+            btnFormatToggle.setBackgroundResource(R.drawable.bg_hud_pill)
+            btnFormatToggle.setTextColor(0xFFFF5F1F.toInt())
+        }
+        txtFormatSummary.text = "${currentResolution.width}×${currentResolution.height} • $currentFps FPS"
+    }
+
+    private fun renderFormatDrawerChips() {
+        formatResRow.removeAllViews()
+        val allRes = CinemaResolution.values()
+        val supported = engine.capabilities.supportedResolutions
+        allRes.forEachIndexed { idx, res ->
+            val ok = res in supported
+            val selected = (res == currentResolution)
+            val chip = TextView(this).apply {
+                text = res.label
+                textSize = 9.5f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                alpha = if (ok) 1.0f else 0.35f
+                setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    if (idx < allRes.lastIndex) marginEnd = dpToPx(4)
+                }
+                setOnClickListener {
+                    if (!ok) {
+                        showSingleToast("${res.label} is not supported by this lens hardware")
+                        return@setOnClickListener
+                    }
+                    applySelectedResolution(res)
                 }
             }
-            .setNegativeButton("Close", null)
-            .show()
+            formatResRow.addView(chip)
+        }
+
+        formatFpsRow.removeAllViews()
+        val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 60)
+        val presets = listOf(20, 24, 30, 60)
+        val isCustom = currentFps !in presets
+        presets.forEachIndexed { idx, fps ->
+            val ok = fps <= maxHw
+            val selected = (currentFps == fps)
+            val chip = TextView(this).apply {
+                text = "$fps"
+                textSize = 9.5f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                alpha = if (ok) 1.0f else 0.35f
+                setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    marginEnd = dpToPx(4)
+                }
+                setOnClickListener {
+                    applySelectedFps(fps)
+                    renderFormatDrawerChips()
+                }
+            }
+            formatFpsRow.addView(chip)
+        }
+        val customChip = TextView(this).apply {
+            text = if (isCustom) "${currentFps}✎" else "CUSTOM"
+            textSize = 8.5f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setBackgroundResource(if (isCustom) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+            setTextColor(if (isCustom) 0xFF0B0D10.toInt() else 0xFFFF5F1F.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.35f)
+            setOnClickListener {
+                formatDrawer.visibility = View.GONE
+                updateFormatPillUi()
+                showCustomFpsInputDialog()
+            }
+        }
+        formatFpsRow.addView(customChip)
+        updateFormatPillUi()
+    }
+
+    private fun applySelectedResolution(chosen: CinemaResolution) {
+        currentResolution = chosen
+        val smartMbps = when (chosen) {
+            CinemaResolution.SD_480P -> 4
+            CinemaResolution.HD_720P -> 12
+            CinemaResolution.FHD_1080P -> 24
+            CinemaResolution.QHD_2K -> 50
+            CinemaResolution.UHD_4K -> 75
+        }
+        engine.targetBitrateMbps = smartMbps
+        bitrateIdx = bitrateOptions.indexOf(smartMbps).takeIf { it >= 0 } ?: 3
+        btnProBitrate.text = "$smartMbps Mbps"
+        engine.updateSettings(currentResolution, currentFps)
+        renderFormatDrawerChips()
+        showSingleToast("Format: ${chosen.label} (${chosen.width}×${chosen.height})")
+    }
+
+    private fun openCinemaInputDrawer(
+        title: String,
+        hint: String,
+        initialValue: String,
+        allowDecimal: Boolean,
+        allowSigned: Boolean = false,
+        step: Float = 1f,
+        isClassicStyle: Boolean = false,
+        onApply: (String) -> Boolean
+    ) {
+        cinemaInputStep = step
+        cinemaInputAllowDecimal = allowDecimal
+        cinemaInputOnApply = onApply
+
+        txtCinemaInputTitle.text = title
+        txtCinemaInputTitle.setTextColor(if (isClassicStyle) 0xFFE8B968.toInt() else 0xFFFF5F1F.toInt())
+        txtCinemaInputHint.text = hint
+        cinemaInputDrawer.setBackgroundResource(if (isClassicStyle) R.drawable.bg_era_pill else R.drawable.bg_hud_pill)
+        btnCinemaInputApply.setBackgroundResource(if (isClassicStyle) R.drawable.bg_era_pill_active else R.drawable.bg_lens_active)
+        btnCinemaInputApply.setTextColor(if (isClassicStyle) 0xFF141210.toInt() else 0xFF0B0D10.toInt())
+
+        var flags = InputType.TYPE_CLASS_NUMBER
+        if (allowDecimal) flags = flags or InputType.TYPE_NUMBER_FLAG_DECIMAL
+        if (allowSigned) flags = flags or InputType.TYPE_NUMBER_FLAG_SIGNED
+        edtCinemaInput.inputType = flags
+        edtCinemaInput.setText(initialValue)
+        edtCinemaInput.hint = hint
+        edtCinemaInput.setSelection(edtCinemaInput.text?.length ?: 0)
+
+        cinemaInputDrawer.visibility = View.VISIBLE
+        edtCinemaInput.requestFocus()
+        uiHandler.postDelayed({
+            try {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.showSoftInput(edtCinemaInput, InputMethodManager.SHOW_IMPLICIT)
+            } catch (_: Exception) {
+            }
+        }, 60L)
+    }
+
+    private fun stepCinemaInputValue(dir: Float) {
+        val raw = edtCinemaInput.text?.toString()?.trim().orEmpty()
+        val cur = raw.toFloatOrNull() ?: 0f
+        val next = cur + (cinemaInputStep * dir)
+        val formatted = if (cinemaInputAllowDecimal) {
+            String.format(Locale.US, "%.1f", next)
+        } else {
+            next.roundToInt().toString()
+        }
+        edtCinemaInput.setText(formatted)
+        edtCinemaInput.setSelection(formatted.length)
+    }
+
+    private fun submitCinemaInputDrawer() {
+        val text = edtCinemaInput.text?.toString()?.trim().orEmpty()
+        val ok = cinemaInputOnApply?.invoke(text) ?: true
+        if (ok) {
+            closeCinemaInputDrawer()
+        }
+    }
+
+    private fun closeCinemaInputDrawer() {
+        if (cinemaInputDrawer.visibility != View.VISIBLE) return
+        cinemaInputDrawer.visibility = View.GONE
+        cinemaInputOnApply = null
+        try {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(edtCinemaInput.windowToken, 0)
+        } catch (_: Exception) {
+        }
+        edtCinemaInput.clearFocus()
+        enableImmersiveFullscreen()
     }
 
     private fun eraWearFloat(): Float = when (era1920sPrintLevel) {
@@ -1359,7 +1752,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.timelapseIntervalMs = snap.timelapseIntervalMs
             engine.setTargetFpsSeamless(snap.fps)
             currentFps = snap.fps
-            btnFps.text = "$currentFps FPS"
+            updateFormatPillUi()
             if (snap.isManualExposure) {
                 engine.setManualIso(snap.manualIso)
                 engine.setManualShutterNs(snap.manualShutterNs)
@@ -1494,27 +1887,24 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         val minI = engine.capabilities.effectiveIsoRange.lower
         val maxI = engine.capabilities.effectiveIsoRange.upper
-        val input = EditText(this).apply {
-            hint = "Enter exact ASA / ISO ($minI – $maxI)"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText((if (eraManualExposureActive) eraSelectedAsa else engine.getLiveSensorIso()).toString())
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF888888.toInt())
-            setPadding(36, 28, 36, 28)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Load Custom Nitrate ASA ($minI–$maxI)")
-            .setView(input)
-            .setPositiveButton("LOCK ASA") { _, _ ->
-                val v = input.text.toString().trim().toIntOrNull()
-                if (v == null || v <= 0) {
-                    showSingleToast("Enter a valid ASA number")
-                    return@setPositiveButton
-                }
+        val cur = if (eraManualExposureActive) eraSelectedAsa else engine.getLiveSensorIso().coerceAtLeast(minI)
+        openCinemaInputDrawer(
+            title = "LOAD NITRATE FILM ASA",
+            hint = "Range: $minI – $maxI (Step ±50)",
+            initialValue = cur.toString(),
+            allowDecimal = false,
+            step = 50f,
+            isClassicStyle = true
+        ) { raw ->
+            val v = raw.toIntOrNull()
+            if (v == null || v <= 0) {
+                showSingleToast("Enter a valid ASA number")
+                false
+            } else {
                 applyEraManualStock(v, shutterNs = null, announce = true)
+                true
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
     }
 
     private fun updateEraTorchUi() {
@@ -1726,22 +2116,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             syncAnalysisLoop()
         }
 
-        btnToolPeak.setOnLongClickListener {
-            showPeakingConfigDialog()
-            true
-        }
-
-        btnToolZebra.setOnClickListener {
-            overlayView.showZebras = !overlayView.showZebras
-            updateMonitorPillLabels()
-            syncAnalysisLoop()
-        }
-
-        btnToolZebra.setOnLongClickListener {
-            showZebraConfigDialog()
-            true
-        }
-
         btnToolFalseColor.setOnClickListener {
             overlayView.showFalseColor = !overlayView.showFalseColor
             styleToolPill(btnToolFalseColor, overlayView.showFalseColor)
@@ -1761,7 +2135,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnToolMonConfig.setOnClickListener {
-            showMonitorConfigDialog()
+            val showing = monConfigSubPanel.visibility == View.VISIBLE
+            monConfigSubPanel.visibility = if (showing) View.GONE else View.VISIBLE
+            styleToolPill(btnToolMonConfig, !showing)
+            if (!showing) renderMonConfigInlineChips()
         }
     }
 
@@ -1781,91 +2158,56 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         styleToolPill(btnToolZebra, overlayView.showZebras)
     }
 
-    private fun showMonitorConfigDialog() {
-        val items = arrayOf(
-            "Peaking Color: ${overlayView.peakingColor.label}",
-            "Peaking Sensitivity: ${overlayView.peakingSensitivity.label}",
-            "Zebra Level: ${overlayView.zebraMode.label}"
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Monitor Tools Configuration")
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> showPeakingColorDialog()
-                    1 -> showPeakingSensitivityDialog()
-                    2 -> showZebraConfigDialog()
+    private fun renderMonConfigInlineChips() {
+        fun fillRow(row: LinearLayout, items: List<Triple<String, Boolean, () -> Unit>>) {
+            row.removeAllViews()
+            items.forEachIndexed { idx, (lbl, active, onClick) ->
+                val c = TextView(this).apply {
+                    text = lbl
+                    textSize = 8.5f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = Gravity.CENTER
+                    setBackgroundResource(if (active) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                    setTextColor(if (active) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                        if (idx < items.lastIndex) marginEnd = dpToPx(4)
+                    }
+                    setOnClickListener { onClick() }
                 }
+                row.addView(c)
             }
-            .setNegativeButton("Done", null)
-            .show()
-    }
+        }
 
-    private fun showPeakingConfigDialog() {
-        val items = arrayOf(
-            "Peaking Color (${overlayView.peakingColor.label})",
-            "Peaking Sensitivity (${overlayView.peakingSensitivity.label})"
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Focus Peaking Settings")
-            .setItems(items) { _, which ->
-                if (which == 0) showPeakingColorDialog() else showPeakingSensitivityDialog()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun showPeakingColorDialog() {
-        val colors = PeakingColor.values()
-        val labels = colors.map { c ->
-            if (c == overlayView.peakingColor) "✓ ${c.label}" else c.label
-        }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Focus Peaking Color")
-            .setItems(labels) { _, which ->
-                overlayView.peakingColor = colors[which]
+        fillRow(monPeakColorRow, PeakingColor.values().map { pc ->
+            Triple(pc.label.take(3), overlayView.peakingColor == pc) {
+                overlayView.peakingColor = pc
                 if (!overlayView.showPeaking) overlayView.showPeaking = true
                 updateMonitorPillLabels()
                 syncAnalysisLoop()
-                showSingleToast("Peaking Color: ${colors[which].label}")
+                renderMonConfigInlineChips()
             }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
+        })
 
-    private fun showPeakingSensitivityDialog() {
-        val levels = PeakingSensitivity.values()
-        val labels = levels.map { s ->
-            if (s == overlayView.peakingSensitivity) "✓ ${s.label}" else s.label
-        }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Focus Peaking Sensitivity")
-            .setItems(labels) { _, which ->
-                overlayView.peakingSensitivity = levels[which]
+        fillRow(monPeakSensRow, PeakingSensitivity.values().map { ps ->
+            Triple(ps.label, overlayView.peakingSensitivity == ps) {
+                overlayView.peakingSensitivity = ps
                 if (!overlayView.showPeaking) overlayView.showPeaking = true
                 updateMonitorPillLabels()
                 syncAnalysisLoop()
-                showSingleToast("Peaking Sensitivity: ${levels[which].label}")
+                renderMonConfigInlineChips()
             }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
+        })
 
-    private fun showZebraConfigDialog() {
-        val modes = ZebraMode.values()
-        val labels = modes.map { m ->
-            if (m == overlayView.zebraMode) "✓ ${m.label}" else m.label
-        }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Zebra IRE Threshold")
-            .setItems(labels) { _, which ->
-                overlayView.zebraMode = modes[which]
+        fillRow(monZebraLevelRow, ZebraMode.values().map { zm ->
+            Triple(zm.shortLabel, overlayView.zebraMode == zm) {
+                overlayView.zebraMode = zm
                 if (!overlayView.showZebras) overlayView.showZebras = true
                 updateMonitorPillLabels()
                 syncAnalysisLoop()
-                showSingleToast("Zebra Level: ${modes[which].label}")
+                renderMonConfigInlineChips()
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        })
     }
 
     private fun syncHorizonSensor() {
@@ -1886,13 +2228,23 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             audioControlDrawer.visibility == View.VISIBLE ||
             colorControlDrawer.visibility == View.VISIBLE ||
             monitorToolsBar.visibility == View.VISIBLE ||
-            proSettingsBar.visibility == View.VISIBLE
+            proSettingsBar.visibility == View.VISIBLE ||
+            formatDrawer.visibility == View.VISIBLE ||
+            workbenchEraDrawer.visibility == View.VISIBLE ||
+            cinemaInputDrawer.visibility == View.VISIBLE
     }
 
     private fun syncLowBatteryBannerVisibility() {
+        if (isCleanFrameMode) {
+            txtLowBatteryBanner.visibility = View.GONE
+            return
+        }
         val anyTopDrawerOpen = colorControlDrawer.visibility == View.VISIBLE ||
             monitorToolsBar.visibility == View.VISIBLE ||
-            proSettingsBar.visibility == View.VISIBLE
+            proSettingsBar.visibility == View.VISIBLE ||
+            formatDrawer.visibility == View.VISIBLE ||
+            workbenchEraDrawer.visibility == View.VISIBLE ||
+            cinemaInputDrawer.visibility == View.VISIBLE
         txtLowBatteryBanner.visibility = if (!isBatteryCharging && lastBatteryPct <= 15 && !lowBatteryBannerDismissed && !anyTopDrawerOpen) {
             View.VISIBLE
         } else {
@@ -1903,15 +2255,27 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun closeTopDrawers(except: String? = null) {
         if (except != "MON" && monitorToolsBar.visibility == View.VISIBLE) {
             monitorToolsBar.visibility = View.GONE
+            monConfigSubPanel.visibility = View.GONE
+            styleToolPill(btnToolMonConfig, false)
             styleToolPill(btnMonitorToggle, false)
         }
         if (except != "PRO" && proSettingsBar.visibility == View.VISIBLE) {
             proSettingsBar.visibility = View.GONE
+            proTimelapseSubPanel.visibility = View.GONE
             styleToolPill(btnProSettingsToggle, false)
+        }
+        if (except != "FORMAT" && formatDrawer.visibility == View.VISIBLE) {
+            formatDrawer.visibility = View.GONE
+            updateFormatPillUi()
+        }
+        if (except != "ERA_VAULT" && workbenchEraDrawer.visibility == View.VISIBLE) {
+            closeWorkbenchEraDrawer()
         }
         if (except != "AUDIO" && audioControlDrawer.visibility == View.VISIBLE) {
             audioControlDrawer.visibility = View.GONE
-            lensRail.visibility = View.VISIBLE
+            if (!isCleanFrameMode && currentWorkbench == CameraWorkbench.SAVIOR) {
+                lensRail.visibility = View.VISIBLE
+            }
             syncExitSplitPillVisibility()
             updateAudioTopPillVisual()
         }
@@ -1923,6 +2287,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         if (except != "ZOOM" && zoomPopoutDrawer.visibility == View.VISIBLE) {
             zoomPopoutDrawer.visibility = View.GONE
+        }
+        if (cinemaInputDrawer.visibility == View.VISIBLE) {
+            closeCinemaInputDrawer()
         }
         syncLowBatteryBannerVisibility()
     }
@@ -2011,7 +2378,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 showSingleToast("Stop recording to change Time-Lapse interval")
                 return@setOnClickListener
             }
-            showTimelapsePickerDialog()
+            val showing = proTimelapseSubPanel.visibility == View.VISIBLE
+            proTimelapseSubPanel.visibility = if (showing) View.GONE else View.VISIBLE
+            if (!showing) renderTimelapseInlineChips()
         }
 
         btnProMirrorFront.setOnClickListener {
@@ -2032,59 +2401,64 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         else String.format(Locale.US, "%.1fs", ms / 1000f)
     }
 
-    private fun showTimelapsePickerDialog() {
+    private fun renderTimelapseInlineChips() {
         val currentMs = engine.timelapseIntervalMs
-        val presets = listOf(
-            0L to "OFF (Normal Real-Time Video)",
-            500L to "0.5s  (Fast Clouds / Traffic)",
-            1000L to "1s    (Action / Walking)",
-            2000L to "2s    (Clouds / Street)",
-            5000L to "5s    (Sunset / Golden Hour)",
-            10000L to "10s   (Slow Clouds / Building)",
-            30000L to "30s   (Day-to-Night / Stars)"
-        )
-        val labels = presets.map { (ms, desc) ->
-            if (ms == currentMs) "✓ $desc" else desc
-        }.toMutableList()
-        labels.add("Custom Interval (0.5s – 60s)...")
+        val row1Items = listOf(0L to "OFF", 500L to "0.5s", 1000L to "1s", 2000L to "2s")
+        val row2Items = listOf(5000L to "5s", 10000L to "10s", 30000L to "30s", -1L to "CUSTOM")
 
-        AlertDialog.Builder(this)
-            .setTitle("Pro Time-Lapse Interval (Output: ${currentFps.coerceAtLeast(24)} FPS)")
-            .setItems(labels.toTypedArray()) { _, which ->
-                if (which < presets.size) {
-                    applyTimelapseInterval(presets[which].first)
-                } else {
-                    showCustomTimelapseInputDialog()
+        fun fill(row: LinearLayout, items: List<Pair<Long, String>>) {
+            row.removeAllViews()
+            items.forEachIndexed { idx, (ms, lbl) ->
+                val isCustomActive = (ms == -1L && currentMs > 0L && currentMs !in listOf(500L, 1000L, 2000L, 5000L, 10000L, 30000L))
+                val selected = (ms == currentMs) || isCustomActive
+                val chip = TextView(this).apply {
+                    text = if (isCustomActive) "${formatTimelapseLabel(currentMs)}✎" else lbl
+                    textSize = 9f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = Gravity.CENTER
+                    setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                    setTextColor(if (selected) 0xFF0B0D10.toInt() else if (ms == -1L) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                        if (idx < items.lastIndex) marginEnd = dpToPx(4)
+                    }
+                    setOnClickListener {
+                        if (ms == -1L) {
+                            showCustomTimelapseInputDialog()
+                        } else {
+                            applyTimelapseInterval(ms)
+                            renderTimelapseInlineChips()
+                        }
+                    }
                 }
+                row.addView(chip)
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
+        fill(proTimelapseRow1, row1Items)
+        fill(proTimelapseRow2, row2Items)
     }
 
     private fun showCustomTimelapseInputDialog() {
-        val input = EditText(this).apply {
-            hint = "Seconds per frame (0.5 to 60.0, e.g. 1.5, 3, 15)"
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-            if (engine.timelapseIntervalMs > 0L) {
-                setText(String.format(Locale.US, "%.1f", engine.timelapseIntervalMs / 1000f))
-            }
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF888888.toInt())
-            setPadding(36, 28, 36, 28)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Custom Time-Lapse Interval (Seconds)")
-            .setView(input)
-            .setPositiveButton("Apply") { _, _ ->
-                val secs = input.text.toString().trim().toFloatOrNull()
-                if (secs == null || secs < 0.5f || secs > 60.0f) {
-                    showSingleToast("Enter an interval between 0.5 and 60 seconds")
-                    return@setPositiveButton
-                }
+        val initStr = if (engine.timelapseIntervalMs > 0L) {
+            String.format(Locale.US, "%.1f", engine.timelapseIntervalMs / 1000f)
+        } else "2.0"
+        openCinemaInputDrawer(
+            title = "CUSTOM TIME-LAPSE (SEC)",
+            hint = "0.5 to 60.0 sec/frame (Step ±0.5s)",
+            initialValue = initStr,
+            allowDecimal = true,
+            step = 0.5f
+        ) { raw ->
+            val secs = raw.toFloatOrNull()
+            if (secs == null || secs < 0.5f || secs > 60.0f) {
+                showSingleToast("Enter 0.5 to 60.0 seconds")
+                false
+            } else {
                 applyTimelapseInterval((secs * 1000f).roundToInt().toLong())
+                if (proTimelapseSubPanel.visibility == View.VISIBLE) renderTimelapseInlineChips()
+                true
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
     }
 
     private fun applyTimelapseInterval(intervalMs: Long) {
@@ -2093,7 +2467,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             // Ensure Time-Lapse always plays back at smooth cinema FPS (30 FPS) rather than 1 FPS!
             val smoothFps = minOf(30, engine.capabilities.maxHardwareFps.coerceIn(24, 60))
             currentFps = smoothFps
-            btnFps.text = "$smoothFps FPS"
+            updateFormatPillUi()
             engine.updateSettings(currentResolution, smoothFps)
         }
         updateTimelapseUi()
@@ -2289,8 +2663,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         engine.setMirrorFrontExport(p.mirrorFrontExport)
         updateMirrorFrontPillUi()
 
-        btnResolution.text = currentResolution.label
-        btnFps.text = "${p.fps} FPS"
+        updateFormatPillUi()
         btnProCodec.text = engine.targetCodec.label
         styleToolPill(btnProCodec, engine.targetCodec == CinemaCodec.HEVC)
         btnProBitrate.text = "${engine.targetBitrateMbps} Mbps"
@@ -2390,14 +2763,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     lowBatteryWarned15 = true
                     showSingleToast("Low Battery ($pct%) — Plug in charger so recording stays safe", Toast.LENGTH_LONG)
                 }
-                val anyTopDrawerOpen = colorControlDrawer.visibility == View.VISIBLE ||
-                    monitorToolsBar.visibility == View.VISIBLE ||
-                    proSettingsBar.visibility == View.VISIBLE
-                txtLowBatteryBanner.visibility = if (!lowBatteryBannerDismissed && !anyTopDrawerOpen) {
-                    View.VISIBLE
-                } else {
-                    View.GONE
-                }
+                syncLowBatteryBannerVisibility()
             } else {
                 txtLowBatteryBanner.visibility = View.GONE
             }
@@ -2536,8 +2902,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.5"
-    } catch (_: Exception) { "0.7.5" }
+        info.versionName ?: "0.7.5.1"
+    } catch (_: Exception) { "0.7.5.1" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -3498,93 +3864,142 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun showTapToTypeValueDialog() {
         val panel = activePanel
         if (panel == ProControlPanel.NONE) return
+        if (engine.isAeAfLocked && (panel == ProControlPanel.EV || panel == ProControlPanel.ISO || panel == ProControlPanel.SHUTTER)) {
+            showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+            return
+        }
 
         val minEvStops = engine.capabilities.evRange.lower * engine.capabilities.evStep
         val maxEvStops = engine.capabilities.evRange.upper * engine.capabilities.evStep
+        val live = lastTelemetry
 
-        val (title, hint) = when (panel) {
-            ProControlPanel.EV -> "Enter Exposure Comp (EV Stops)" to String.format(
-                Locale.US,
-                "e.g. %.1f to +%.1f (0 = Reset)",
-                minEvStops,
-                maxEvStops
-            )
-            ProControlPanel.ISO -> "Enter Exact ISO" to "e.g. 100, 400, 800, 3200, 16000"
-            ProControlPanel.SHUTTER -> if (shutterInAngleMode) {
-                "Enter Shutter Angle (Degrees)" to "11 to 360 (e.g. 180, 90, 270)"
-            } else {
-                "Enter Shutter Speed (1/X sec)" to "e.g. 48, 50, 60, 120, 500"
-            }
-            ProControlPanel.WB -> "Enter White Balance (Kelvin)" to "2500 to 8500 (e.g. 5600)"
-            ProControlPanel.FOCUS -> "Enter Focus Distance (%)" to "0 (Infinity) to 100 (Macro)"
-            ProControlPanel.NONE -> return
-        }
-
-        val input = EditText(this).apply {
-            this.hint = hint
-            inputType = if (panel == ProControlPanel.EV) {
-                InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED or InputType.TYPE_NUMBER_FLAG_DECIMAL
-            } else {
-                InputType.TYPE_CLASS_NUMBER
-            }
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF888888.toInt())
-            setPadding(36, 28, 36, 28)
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setView(input)
-            .setPositiveButton("Apply") { _, _ ->
-                if (engine.isAeAfLocked && (panel == ProControlPanel.EV || panel == ProControlPanel.ISO || panel == ProControlPanel.SHUTTER)) {
-                    showSingleToast("AE/AF Lock is ON — turn off LOCK first")
-                    return@setPositiveButton
-                }
-                val rawText = input.text.toString().trim()
-                if (panel == ProControlPanel.EV) {
-                    val stops = rawText.toFloatOrNull()
+        when (panel) {
+            ProControlPanel.EV -> {
+                openCinemaInputDrawer(
+                    title = "EXPOSURE COMP (EV STOPS)",
+                    hint = String.format(Locale.US, "Range %.1f to +%.1f (Step ±0.3)", minEvStops, maxEvStops),
+                    initialValue = String.format(Locale.US, "%.1f", engine.getCurrentEvStops()),
+                    allowDecimal = true,
+                    allowSigned = true,
+                    step = 0.3f
+                ) { raw ->
+                    val stops = raw.toFloatOrNull()
                     if (stops == null) {
-                        showSingleToast("Enter a valid EV stop (e.g. -1.5, 0, +1.0)")
-                        return@setPositiveButton
-                    }
-                    val step = engine.capabilities.evStep.coerceAtLeast(0.01f)
-                    val evIdx = (stops / step).roundToInt()
-                    if (engine.setEvCompensation(evIdx)) {
-                        updateEvDisplay()
+                        showSingleToast("Enter a valid EV stop (e.g. -1.0, 0, +1.5)")
+                        false
                     } else {
-                        showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                        val step = engine.capabilities.evStep.coerceAtLeast(0.01f)
+                        if (engine.setEvCompensation((stops / step).roundToInt())) updateEvDisplay()
+                        refreshSliderState()
+                        true
                     }
-                    refreshSliderState()
-                    return@setPositiveButton
                 }
-
-                val v = rawText.toIntOrNull()
-                if (v == null || (v <= 0 && panel != ProControlPanel.FOCUS)) {
-                    showSingleToast("Enter a valid number")
-                    return@setPositiveButton
+            }
+            ProControlPanel.ISO -> {
+                val curIso = if (engine.isManualExposure) engine.manualIso else (live?.iso ?: engine.manualIso)
+                openCinemaInputDrawer(
+                    title = "EXACT MANUAL ISO",
+                    hint = "Range ${engine.capabilities.effectiveIsoRange.lower}–${engine.capabilities.effectiveIsoRange.upper} (Step ±50)",
+                    initialValue = curIso.toString(),
+                    allowDecimal = false,
+                    step = 50f
+                ) { raw ->
+                    val v = raw.toIntOrNull()
+                    if (v == null || v <= 0) {
+                        showSingleToast("Enter a valid ISO number")
+                        false
+                    } else {
+                        engine.setManualIso(v)
+                        refreshSliderState()
+                        true
+                    }
                 }
-                when (panel) {
-                    ProControlPanel.ISO -> engine.setManualIso(v)
-                    ProControlPanel.SHUTTER -> {
-                        if (shutterInAngleMode) {
-                            engine.setManualShutterAngle(v.toFloat())
+            }
+            ProControlPanel.SHUTTER -> {
+                if (shutterInAngleMode) {
+                    val curAng = engine.getCurrentShutterAngle().roundToInt()
+                    openCinemaInputDrawer(
+                        title = "SHUTTER ANGLE (DEGREES)",
+                        hint = "11° to 360° (Step ±15° • Cinema 180°)",
+                        initialValue = curAng.toString(),
+                        allowDecimal = false,
+                        step = 15f
+                    ) { raw ->
+                        val v = raw.toIntOrNull()
+                        if (v == null || v !in 11..360) {
+                            showSingleToast("Enter 11 to 360 degrees")
+                            false
                         } else {
-                            val denom = v.coerceIn(1, 8000)
-                            engine.setManualShutterNs(1_000_000_000L / denom)
+                            engine.setManualShutterAngle(v.toFloat())
+                            refreshSliderState()
+                            true
                         }
                     }
-                    ProControlPanel.WB -> engine.setManualWhiteBalanceKelvin(v)
-                    ProControlPanel.FOCUS -> {
-                        val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
-                        val d = (v.coerceIn(0, 100) / 100f) * maxF
-                        engine.setManualFocusDistance(d)
+                } else {
+                    val shownNs = if (engine.isManualExposure) engine.manualShutterNs else (live?.shutterNs ?: engine.manualShutterNs)
+                    val curDenom = (1_000_000_000L / shownNs.coerceAtLeast(1L)).toInt()
+                    openCinemaInputDrawer(
+                        title = "SHUTTER SPEED (1 / X SEC)",
+                        hint = "Denominator e.g. 48, 50, 60, 120, 500 (Step ±10)",
+                        initialValue = curDenom.toString(),
+                        allowDecimal = false,
+                        step = 10f
+                    ) { raw ->
+                        val v = raw.toIntOrNull()
+                        if (v == null || v !in 1..8000) {
+                            showSingleToast("Enter 1 to 8000")
+                            false
+                        } else {
+                            engine.setManualShutterNs(1_000_000_000L / v)
+                            refreshSliderState()
+                            true
+                        }
                     }
-                    ProControlPanel.EV, ProControlPanel.NONE -> {}
                 }
-                refreshSliderState()
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            ProControlPanel.WB -> {
+                val curK = if (engine.isManualWb) engine.manualKelvin else (live?.kelvin ?: engine.getLiveKelvin())
+                openCinemaInputDrawer(
+                    title = "WHITE BALANCE (KELVIN)",
+                    hint = "2500K – 8500K (Step ±100K)",
+                    initialValue = curK.toString(),
+                    allowDecimal = false,
+                    step = 100f
+                ) { raw ->
+                    val v = raw.toIntOrNull()
+                    if (v == null || v !in 2500..8500) {
+                        showSingleToast("Enter 2500 to 8500 Kelvin")
+                        false
+                    } else {
+                        engine.setManualWhiteBalanceKelvin(v)
+                        refreshSliderState()
+                        true
+                    }
+                }
+            }
+            ProControlPanel.FOCUS -> {
+                val maxF = engine.capabilities.minFocusDistance.coerceAtLeast(0.01f)
+                val curPct = ((engine.manualFocusDistance / maxF) * 100f).roundToInt().coerceIn(0, 100)
+                openCinemaInputDrawer(
+                    title = "FOCUS DISTANCE (%)",
+                    hint = "0 = Infinity ∞ • 100 = Macro (Step ±5%)",
+                    initialValue = curPct.toString(),
+                    allowDecimal = false,
+                    step = 5f
+                ) { raw ->
+                    val v = raw.toIntOrNull()
+                    if (v == null || v !in 0..100) {
+                        showSingleToast("Enter 0 to 100%")
+                        false
+                    } else {
+                        engine.setManualFocusDistance((v / 100f) * maxF)
+                        refreshSliderState()
+                        true
+                    }
+                }
+            }
+            ProControlPanel.NONE -> {}
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -3658,28 +4073,23 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnZoomTime.setOnClickListener {
-            val input = EditText(this).apply {
-                hint = "Seconds (e.g. 0.4, 1.5, 4.0)"
-                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                setText(String.format(Locale.US, "%.1f", zoomPullDurationMs / 1000f))
-                setTextColor(0xFFFFFFFF.toInt())
-                setHintTextColor(0xFF888888.toInt())
-                setPadding(36, 28, 36, 28)
-            }
-            AlertDialog.Builder(this)
-                .setTitle("Smooth Zoom Pull Duration (Seconds)")
-                .setView(input)
-                .setPositiveButton("Set") { _, _ ->
-                    val secs = input.text.toString().trim().toFloatOrNull()
-                    if (secs != null && secs in 0.2f..15.0f) {
-                        zoomPullDurationMs = (secs * 1000f).toLong()
-                        btnZoomTime.text = String.format(Locale.US, "%.1fs", secs)
-                    } else {
-                        showSingleToast("Enter 0.2 to 15.0 seconds")
-                    }
+            openCinemaInputDrawer(
+                title = "ZOOM PULL DURATION (SEC)",
+                hint = "0.2 to 15.0 seconds (Step ±0.5s)",
+                initialValue = String.format(Locale.US, "%.1f", zoomPullDurationMs / 1000f),
+                allowDecimal = true,
+                step = 0.5f
+            ) { raw ->
+                val secs = raw.toFloatOrNull()
+                if (secs != null && secs in 0.2f..15.0f) {
+                    zoomPullDurationMs = (secs * 1000f).toLong()
+                    btnZoomTime.text = String.format(Locale.US, "%.1fs", secs)
+                    true
+                } else {
+                    showSingleToast("Enter 0.2 to 15.0 seconds")
+                    false
                 }
-                .setNegativeButton("Cancel", null)
-                .show()
+            }
         }
 
         btnSetZoomA.setOnClickListener {
@@ -3791,90 +4201,24 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         styleToolPill(btnZoomPresetMax, kotlin.math.abs(z - maxZ) < 0.35f && maxZ > 5.2f)
     }
 
-    private fun showResolutionPickerDialog() {
-        val allRes = CinemaResolution.values()
-        val supported = engine.capabilities.supportedResolutions
-        val labels = allRes.map { res ->
-            val ok = res in supported
-            val suffix = if (ok) " (${res.width}x${res.height})" else " — Not Supported"
-            "${res.label}$suffix"
-        }.toTypedArray()
-
-        AlertDialog.Builder(this)
-            .setTitle("Select Video Resolution")
-            .setItems(labels) { _, which ->
-                val chosen = allRes[which]
-                if (chosen !in supported) {
-                    Toast.makeText(
-                        this,
-                        "${chosen.label} is not supported by this camera lens hardware.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    return@setItems
-                }
-                currentResolution = chosen
-                btnResolution.text = chosen.label
-                val smartMbps = when (chosen) {
-                    CinemaResolution.SD_480P -> 4
-                    CinemaResolution.HD_720P -> 12
-                    CinemaResolution.FHD_1080P -> 24
-                    CinemaResolution.QHD_2K -> 50
-                    CinemaResolution.UHD_4K -> 75
-                }
-                engine.targetBitrateMbps = smartMbps
-                bitrateIdx = bitrateOptions.indexOf(smartMbps).takeIf { it >= 0 } ?: 3
-                btnProBitrate.text = "$smartMbps Mbps"
-                engine.updateSettings(currentResolution, currentFps)
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun showFpsPickerDialog() {
-        val options = arrayOf(
-            "20 FPS",
-            "24 FPS (Cinema)",
-            "30 FPS (Standard)",
-            "60 FPS (Smooth)",
-            "Custom FPS (Type 1–60)..."
-        )
-        AlertDialog.Builder(this)
-            .setTitle("Select Frame Rate (Current: $currentFps FPS)")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> applySelectedFps(20)
-                    1 -> applySelectedFps(24)
-                    2 -> applySelectedFps(30)
-                    3 -> applySelectedFps(60)
-                    4 -> showCustomFpsInputDialog()
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
     private fun showCustomFpsInputDialog() {
-        val input = EditText(this).apply {
-            hint = "Enter FPS (1 to 60, e.g. 1, 12, 24, 30, 60)"
-            inputType = InputType.TYPE_CLASS_NUMBER
-            setText(currentFps.toString())
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF888888.toInt())
-            setPadding(36, 28, 36, 28)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Custom Frame Rate (1–60 FPS)")
-            .setView(input)
-            .setPositiveButton("Apply") { _, _ ->
-                val typed = input.text.toString().trim().toIntOrNull()
-                if (typed == null || typed !in 1..60) {
-                    Toast.makeText(this, "Enter a value between 1 and 60 FPS", Toast.LENGTH_SHORT).show()
-                    return@setPositiveButton
-                }
+        val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 60)
+        openCinemaInputDrawer(
+            title = "CUSTOM FRAME RATE (FPS)",
+            hint = "1 to $maxHw FPS (Step ±1 • GPU Pacer below 20)",
+            initialValue = currentFps.toString(),
+            allowDecimal = false,
+            step = 1f
+        ) { raw ->
+            val typed = raw.toIntOrNull()
+            if (typed == null || typed !in 1..60) {
+                showSingleToast("Enter a value between 1 and 60 FPS")
+                false
+            } else {
                 applySelectedFps(typed)
+                true
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
     }
 
     private fun applySelectedFps(fps: Int) {
@@ -3886,7 +4230,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             showSingleToast("Low-FPS GPU Pacer active: recording $clamped frame(s)/sec", Toast.LENGTH_SHORT)
         }
         currentFps = clamped
-        btnFps.text = "$currentFps FPS"
+        updateFormatPillUi()
         engine.updateSettings(currentResolution, currentFps)
     }
 
@@ -3949,27 +4293,23 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnPullTime.setOnClickListener {
-            val input = EditText(this).apply {
-                hint = "Seconds (e.g. 0.8, 1.5, 3.0)"
-                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                setTextColor(0xFFFFFFFF.toInt())
-                setHintTextColor(0xFF888888.toInt())
-                setPadding(36, 28, 36, 28)
-            }
-            AlertDialog.Builder(this)
-                .setTitle("Focus Pull Duration (Seconds)")
-                .setView(input)
-                .setPositiveButton("Set") { _, _ ->
-                    val secs = input.text.toString().trim().toFloatOrNull()
-                    if (secs != null && secs in 0.2f..15.0f) {
-                        focusPullDurationMs = (secs * 1000f).toLong()
-                        btnPullTime.text = String.format(Locale.US, "%.1fs", secs)
-                    } else {
-                        Toast.makeText(this, "Enter 0.2 to 15.0 seconds", Toast.LENGTH_SHORT).show()
-                    }
+            openCinemaInputDrawer(
+                title = "FOCUS PULL DURATION (SEC)",
+                hint = "0.2 to 15.0 seconds (Step ±0.2s)",
+                initialValue = String.format(Locale.US, "%.1f", focusPullDurationMs / 1000f),
+                allowDecimal = true,
+                step = 0.2f
+            ) { raw ->
+                val secs = raw.toFloatOrNull()
+                if (secs != null && secs in 0.2f..15.0f) {
+                    focusPullDurationMs = (secs * 1000f).toLong()
+                    btnPullTime.text = String.format(Locale.US, "%.1fs", secs)
+                    true
+                } else {
+                    showSingleToast("Enter 0.2 to 15.0 seconds")
+                    false
                 }
-                .setNegativeButton("Cancel", null)
-                .show()
+            }
         }
 
         btnSlider180.setOnClickListener {
@@ -4440,11 +4780,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             configureTransform(previewSize)
             engine.updateGpuScopes(overlayView.toGpuScopeState())
             currentResolution = engine.targetResolution
-            btnResolution.text = currentResolution.label
             if (currentWorkbench == CameraWorkbench.SAVIOR) {
                 currentFps = activeFps
-                btnFps.text = "$activeFps FPS"
             }
+            updateFormatPillUi()
             updateZoomReadout()
             updateEvDisplay()
             styleToolPill(btnProTorch, engine.isTorchEnabled)
@@ -4551,7 +4890,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         val fpsChanged = (currentFps != normalFps || engine.targetFps != normalFps)
         if (fpsChanged) {
             currentFps = normalFps
-            btnFps.text = "$normalFps FPS"
+            updateFormatPillUi()
         }
         // 5. Storage readiness check (< 0.5 GB warning)
         val freeGb = try {
@@ -4628,6 +4967,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             recStartMs = System.currentTimeMillis()
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_stop)
             btnShutterInner.animate().scaleX(0.54f).scaleY(0.54f).setDuration(140L).start()
+            updateRestoreCleanEyeBadge()
             uiHandler.removeCallbacks(timecodeRunnable)
             if (currentWorkbench == CameraWorkbench.ERA) {
                 if (activeEraPanel == EraSliderPanel.CRANK || activeEraPanel == EraSliderPanel.BATH || activeEraPanel == EraSliderPanel.PRINT) {
@@ -4672,6 +5012,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             viewEraRecDot.visibility = View.GONE
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_rec)
             btnShutterInner.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140L).start()
+            updateRestoreCleanEyeBadge()
             btnAutoPilot.alpha = 1.0f
             if (currentWorkbench == CameraWorkbench.ERA) {
                 txtEraFootage.text = "000 FT • 00:00"

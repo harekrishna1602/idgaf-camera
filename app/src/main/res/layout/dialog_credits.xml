@@ -22,7 +22,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
         android:fontFamily="monospace"
-        android:text="v0.7.5 • Savior Cinema Engine"
+        android:text="v0.7.5.1 • Savior Cinema Engine"
         android:textColor="#B0B7C3"
         android:textSize="12sp" />
 
