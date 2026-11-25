@@ -84,13 +84,75 @@ class CinemaGlRenderer(
             uniform mat4 uMvpMatrix;
             uniform mat4 uStMatrix;
             varying vec2 vTexCoord;
+            varying vec2 vRawUv;
             varying vec2 vQuadCoord;
             varying vec2 vScreenPos;
             void main() {
                 gl_Position = uMvpMatrix * aPosition;
                 vTexCoord = (uStMatrix * aTexCoord).xy;
+                vRawUv = aTexCoord.xy;
                 vQuadCoord = aPosition.xy;
                 vScreenPos = gl_Position.xy;
+            }
+        """
+
+        // Offscreen Pass 1 Vertex Shader (renders directly in normalized sensor UV space [0..1])
+        private const val OFFSCREEN_VERT_SHADER = """
+            attribute vec4 aPosition;
+            attribute vec4 aTexCoord;
+            uniform mat4 uStMatrix;
+            varying vec2 vTexCoord;
+            varying vec2 vUv;
+            void main() {
+                gl_Position = aPosition;
+                vTexCoord = (uStMatrix * aTexCoord).xy;
+                vUv = aTexCoord.xy;
+            }
+        """
+
+        // Offscreen Pass 1 Fragment Shader: True 1920s Red-Blind Orthochromatic extraction + Soft-Knee Highlight Bloom map
+        // Rendered into 512x256 trailFbo with hardware GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA temporal motion-blur blending!
+        private const val ORTHO_TRAIL_FRAG_SHADER = """
+            #extension GL_OES_EGL_image_external : require
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
+            precision mediump float;
+            #endif
+            uniform samplerExternalOES uTexture;
+            uniform float uTrailAlpha;
+            varying vec2 vTexCoord;
+            void main() {
+                vec3 rgb = texture2D(uTexture, vTexCoord).rgb;
+                // True 1920s Red-Blind Orthochromatic Nitrate Emulsion (deep dark reds, luminous blue skies)
+                float yOrtho = dot(rgb, vec3(0.04, 0.56, 0.40));
+                // Soft-knee optical highlight excess for true uncoated Petzval bloom & veiling glare
+                float hi = smoothstep(0.50, 0.98, yOrtho) * yOrtho;
+                gl_FragColor = vec4(yOrtho, hi, yOrtho, uTrailAlpha);
+            }
+        """
+
+        // Offscreen Pass 2 & 3 Fragment Shader: 9-Tap Separable Wide Gaussian Optical Bloom (sigma=2.15, stride=2 -> +-64px on 1080p!)
+        private const val GAUSS_BLUR_FRAG_SHADER = """
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
+            precision mediump float;
+            #endif
+            uniform sampler2D uSourceTex;
+            uniform vec2 uBlurDir;
+            varying vec2 vUv;
+            void main() {
+                vec4 sum = texture2D(uSourceTex, vUv) * 0.192220;
+                sum += texture2D(uSourceTex, clamp(vUv + uBlurDir * 1.0, vec2(0.002), vec2(0.998))) * 0.172514;
+                sum += texture2D(uSourceTex, clamp(vUv - uBlurDir * 1.0, vec2(0.002), vec2(0.998))) * 0.172514;
+                sum += texture2D(uSourceTex, clamp(vUv + uBlurDir * 2.0, vec2(0.002), vec2(0.998))) * 0.124708;
+                sum += texture2D(uSourceTex, clamp(vUv - uBlurDir * 2.0, vec2(0.002), vec2(0.998))) * 0.124708;
+                sum += texture2D(uSourceTex, clamp(vUv + uBlurDir * 3.0, vec2(0.002), vec2(0.998))) * 0.072613;
+                sum += texture2D(uSourceTex, clamp(vUv - uBlurDir * 3.0, vec2(0.002), vec2(0.998))) * 0.072613;
+                sum += texture2D(uSourceTex, clamp(vUv + uBlurDir * 4.0, vec2(0.002), vec2(0.998))) * 0.034055;
+                sum += texture2D(uSourceTex, clamp(vUv - uBlurDir * 4.0, vec2(0.002), vec2(0.998))) * 0.034055;
+                gl_FragColor = vec4(sum.rgb, 1.0);
             }
         """
 
@@ -113,7 +175,7 @@ class CinemaGlRenderer(
             uniform vec2 uStepY;
             uniform float uTimeSec;
 
-            // Phase 7.2A/7.2B Live GPU Color Grade + 3D .cube LUT Atlas uniforms (baked cleanly into preview & MP4)
+            // Phase 7.2A/7.2B Live GPU Color Grade + 3D .cube LUT Atlas uniforms
             uniform float uExposureMul;
             uniform float uContrast;
             uniform float uSaturation;
@@ -126,19 +188,28 @@ class CinemaGlRenderer(
             uniform float uLutIntensity;
             uniform float uSplitPixelX;
 
-            // Phase 7.3/7.4 Classic Camera Vault uniforms (0 = SAVIOR, 1 = 1920s Silent 35mm, 2 = 1950s Monochrome 35mm)
-            // When uEraMode > 0, uLutTexture (GL_TEXTURE1) binds our 256x256 seamless Physical Film Emulsion & Debris Atlas:
-            //   .r = 1920s Coarse Clumped Silver-Nitrate | .g = 1950s Fine Kodak Double-X | .b = Real Fibers & Gate Dust | .a = 1920s Lab Bath Clouding
+            // Phase 7.5 1920s Silent 35mm Multi-Pass Optical Engine uniforms
+            // When uEraMode == 1:
+            //   uLutTexture (unit 1)   = 256x256 Pure Seamless Silver-Nitrate Grain & Hand-Bath Atlas (ZERO tiled dots!)
+            //   uBloomTexture (unit 2) = 256x128 True Wide 9-Tap 2D Separable Optical Bloom & MTF Softness FBO
+            //   uTrailTexture (unit 3) = 512x256 Hardware Alpha-Blended Temporal Motion-Blur Ortho FBO
+            uniform sampler2D uBloomTexture;
+            uniform sampler2D uTrailTexture;
+            uniform int uHasOpticalFbo;
             uniform int uEraMode;
-            uniform float uEraWear;
+            uniform float uEraWear;      // 0.0 = PREMIERE, 0.5 = VAULT, 1.0 = FOUND
             uniform float uEraFps;
-            uniform int uEraFilter;
+            uniform int uEraFilter;      // 0 = SILVER, 1 = AMBER, 2 = NIGHT (Nosferatu), 3 = SEPIA, 4 = ROSE
             uniform float uEraGrainMul;
-            uniform vec4 uFilmSeed;      // 64-bit CPU non-repeating Weyl UV offsets (Tap A .xy, Tap B / Fiber .zw)
-            uniform vec4 uFilmTransport; // 64-bit CPU film transport: .xy = gate weave, .z = flicker, .w = drifting scratch X (<-1.5 = none)
+            uniform float uMotionBlend;  // 0.0..0.55 temporal rotary-shutter blend in bright daylight
+            uniform vec4 uFilmSeed;      // 64-bit CPU non-repeating Weyl grain UV offsets
+            uniform vec4 uFilmTransport; // .xy = gate weave, .z = slow organic breathing, .w = drifting scratch X (<-1.5 = none)
+            uniform vec4 uDefectA;       // Event-driven single-frame focal-plane speck/hair A: .xy=pos, .z=rad, .w=polarity+angle (x<-5 = inactive)
+            uniform vec4 uDefectB;       // Event-driven single-frame focal-plane speck/hair B: .xy=pos, .z=rad, .w=polarity+angle (x<-5 = inactive)
             uniform float uViewportAspect;
 
             varying vec2 vTexCoord;
+            varying vec2 vRawUv;
             varying vec2 vQuadCoord;
             varying vec2 vScreenPos;
 
@@ -165,35 +236,114 @@ class CinemaGlRenderer(
                 return mix(s0, s1, bFrac);
             }
 
-            // Cross-rotated irrational dual-tap sampling of the 256x256 Physical Film Emulsion Atlas (GL_TEXTURE1):
-            // 37-degree rotation + sqrt(2) scale ratio + 64-bit CPU Weyl shifts = 100% organic, ZERO tiling, ZERO triangles, ZERO repetition!
             vec2 rot37(vec2 v) {
                 return vec2(0.798635 * v.x - 0.601815 * v.y, 0.601815 * v.x + 0.798635 * v.y);
             }
 
-            // Era 1 (1920s Classic Silent 35mm — Pathé / Bell & Howell 2709 Orthochromatic Nitrate):
-            // Unmistakably 1920s:
-            // - True red-blind Orthochromatic chemistry (red lips/shirts go very dark, blue skies blow luminous chalky white)
-            // - Uncoated brass Petzval lens: sharp portrait center, dreamy swirling peripheral blur, strong veiling glare, heavy rounded corners
-            // - High-contrast punchy Nitrate curve + warm antique ivory base (FRESH) -> aged amber-sepia patina + chemical bath clouding (ARCHIVE)
-            // - Coarse clumped 1920s silver-nitrate emulsion grain (Atlas .r) + physical curved gate fibers (Atlas .b) + drifting scratch bursts
+            // Renders an authentic non-circular, irregular 1-frame focal-plane dust flake or curved micro-hair
+            // using organic silhouette perturbation from the grain atlas (NEVER a smooth button/circle, NEVER repeating!)
+            float evalOrganicDefect(vec2 gatePos, vec4 ev, float grainJitter) {
+                if (ev.x < -5.0) return 0.0;
+                vec2 d = gatePos - ev.xy;
+                // Quick bounding rejection
+                float maxR = ev.z * 4.5;
+                if (abs(d.x) > maxR || abs(d.y) > maxR) return 0.0;
+
+                float pol = (ev.w >= 0.0) ? 1.0 : -1.0;
+                float code = abs(ev.w);
+                float ang = fract(code) * 6.283185;
+                float elong = 1.35 + floor(code) * 0.75; // 1.35 (irregular flake) .. 3.60 (delicate hair sliver)
+                float ca = cos(ang);
+                float sa = sin(ang);
+                vec2 rd = vec2(ca * d.x - sa * d.y, sa * d.x + ca * d.y);
+                // Slight organic bend for micro-fibers
+                rd.y += (rd.x * rd.x) * 32.0 * pol;
+                rd.x /= elong;
+                float dist = length(rd) + grainJitter * ev.z * 0.72;
+                float mask = 1.0 - smoothstep(ev.z * 0.65, ev.z, dist);
+                return mask * pol * ((pol > 0.0) ? 0.52 : 0.72);
+            }
+
+            // True Beer-Lambert 1920s Lab Chemical Tinting & Toning:
+            // Metallic silver shadows remain deeply dark/charcoal while translucent gelatin midtones & highlights absorb lab dye!
+            vec3 apply1920sLabBath(float yIn, int bathCode, float wear) {
+                float y = yIn;
+                if (bathCode == 2) {
+                    // NIGHT (Nosferatu 1922 Day-for-Night Prussian Blue-Teal):
+                    // Pulls midtones down & deepens shadows so sunlit exteriors transform into moonlit night!
+                    y = pow(clamp(y, 0.0, 1.0), 1.42);
+                    y = clamp((y - 0.36) * 1.38 + 0.32, 0.0, 1.0);
+                } else {
+                    float contrast = mix(1.40, 1.26, wear);
+                    y = clamp((y - 0.45) * contrast + 0.47, 0.0, 1.0);
+                }
+
+                // Authentic silver-halide highlight shoulder roll-off + real D-max toe
+                y = clamp((y / (1.0 + 0.12 * y * y)) * 1.12, 0.0, 1.0);
+                float toe = mix(0.007, 0.029, wear);
+                float shoulder = mix(0.990, 0.935, wear);
+                y = clamp(toe + y * (shoulder - toe), 0.0, 1.0);
+
+                vec3 shd = vec3(0.008, 0.008, 0.008);
+                vec3 mid = vec3(0.52, 0.51, 0.48);
+                vec3 hil = vec3(0.99, 0.97, 0.92);
+
+                if (bathCode == 1) {
+                    // AMBER (The General 1926 Sunlit Daylight Straw-Amber)
+                    shd = vec3(0.014, 0.010, 0.004);
+                    mid = vec3(0.62, 0.47, 0.24);
+                    hil = vec3(1.00, 0.89, 0.58);
+                } else if (bathCode == 2) {
+                    // NIGHT (Nosferatu 1922 Moonlit Prussian Blue-Teal)
+                    shd = vec3(0.004, 0.012, 0.028);
+                    mid = vec3(0.14, 0.40, 0.64);
+                    hil = vec3(0.60, 0.86, 0.99);
+                } else if (bathCode == 3) {
+                    // SEPIA (Lantern Interior Burnt-Umber & Antique Gold)
+                    shd = vec3(0.018, 0.010, 0.005);
+                    mid = vec3(0.56, 0.41, 0.25);
+                    hil = vec3(1.00, 0.90, 0.72);
+                } else if (bathCode == 4) {
+                    // ROSE (Pathé Dawn / Melodrama Warm Rose-Cream)
+                    shd = vec3(0.016, 0.009, 0.012);
+                    mid = vec3(0.62, 0.44, 0.44);
+                    hil = vec3(1.00, 0.86, 0.84);
+                }
+
+                vec3 col = (y < 0.5)
+                    ? mix(shd, mid, y * 2.0)
+                    : mix(mid, hil, (y - 0.5) * 2.0);
+
+                // Subtle 100-yr warm aging patina in VAULT/FOUND for SILVER print (never contaminates NIGHT blue!)
+                if (bathCode == 0 && wear > 0.05) {
+                    col *= vec3(1.0 + 0.05 * wear, 1.0 - 0.01 * wear, 1.0 - 0.10 * wear);
+                }
+                return clamp(col, 0.0, 1.0);
+            }
+
+            // Era 1 (1920s Silent 35mm — Nosferatu 1922 / The General 1926 Standard):
+            // 1. Sharp 90-degree rectangular 1.333:1 Silent Full-Aperture Gate (NO fake rounded CRT-TV corners!)
+            // 2. Multi-pass Temporal Motion-Blur FBO (liquid 180-deg shutter motion even in bright daylight)
+            // 3. Multi-pass 9-tap Separable Wide Optical Bloom FBO (authentic ~128px diameter uncoated Petzval glow & optical MTF)
+            // 4. True Beer-Lambert Chemical Tinting & Toning across 5 authentic 1920s Lab Baths
+            // 5. Pure non-repeating 256x256 Silver-Nitrate Grain + Sparse Event-Driven Archive Physics (ZERO tiled dots!)
             vec3 applyEra1920sSilent(vec3 rawRgb) {
                 float aspect = max(uViewportAspect, 0.5);
                 float wear = clamp(uEraWear, 0.0, 1.0);
 
-                // 1. Hand-cranked intermittent-claw gate weave (subtle even in FRESH, pronounced shrunken-nitrate wobble in ARCHIVE)
-                float weaveScale = mix(0.22, 1.0, wear);
-                vec2 weaveUv = clamp(vTexCoord + uFilmTransport.xy * weaveScale, vec2(0.002), vec2(0.998));
-                vec2 weaveScreen = uFilmTransport.xy * weaveScale * vec2(0.70, 0.90);
+                // 1. Subtle physical intermittent-claw gate weave (0.0 in PREMIERE, gentle in VAULT, genuine wobble in FOUND)
+                vec2 weaveUv = clamp(vTexCoord + uFilmTransport.xy * wear, vec2(0.002), vec2(0.998));
+                vec2 weaveRawUv = clamp(vRawUv + uFilmTransport.xy * wear, vec2(0.002), vec2(0.998));
+                vec2 weaveScreen = uFilmTransport.xy * wear * vec2(0.65, 0.85);
 
-                // 2. Distinctive 1.333:1 Silent Brass Aperture Gate (heavily rounded vintage corners + soft matte bevel)
+                // 2. Authentic SHARP 90-Degree Rectangular 1.333:1 Silent 35mm Camera Aperture Gate (1-2px matte feather only)
                 vec2 gatePos = vec2((vScreenPos.x + weaveScreen.x) * aspect, vScreenPos.y + weaveScreen.y);
-                float gateHalfH = 0.955;
+                float gateHalfH = 0.992;
                 float gateHalfW = 1.3333 * gateHalfH;
-                float cornerR = 0.115;
+                float cornerR = 0.008;
                 vec2 q = abs(gatePos) - vec2(gateHalfW - cornerR, gateHalfH - cornerR);
                 float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - cornerR;
-                float gateMask = 1.0 - smoothstep(-0.014, 0.008, sdf);
+                float gateMask = 1.0 - smoothstep(-0.005, 0.004, sdf);
                 if (gateMask <= 0.001) {
                     return vec3(0.0);
                 }
@@ -202,240 +352,75 @@ class CinemaGlRenderer(
                 float rDist = length(gateUv) * 0.7071;
                 float r2 = rDist * rDist;
 
-                // 3. Uncoated 1920s Petzval Glass Optics: crisp center portrait sweet-spot + pronounced dreamy peripheral softening + veiling bloom
-                vec3 c0 = texture2D(uTexture, weaveUv).rgb;
-                float innerSpan = mix(1.15, 2.25, wear) + r2 * mix(4.20, 6.00, wear);
-                vec2 inA = (uStepX + uStepY) * innerSpan;
-                vec2 inB = (uStepX - uStepY) * innerSpan;
-                vec3 innerBlur = 0.25 * (
-                    texture2D(uTexture, clamp(weaveUv + inA, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - inA, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv + inB, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - inB, vec2(0.002), vec2(0.998))).rgb
-                );
-
-                float haloSpan = mix(5.8, 8.2, wear);
-                vec2 hX = uStepX * haloSpan;
-                vec2 hY = uStepY * haloSpan;
-                vec3 haloBlur = 0.25 * (
-                    texture2D(uTexture, clamp(weaveUv + hX, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - hX, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv + hY, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - hY, vec2(0.002), vec2(0.998))).rgb
-                );
-
-                // True 1920s Red-Blind Orthochromatic Nitrate Emulsion (nearly zero red response, luminous sky blue)
+                // 3. Sharp Orthochromatic Base + Multi-Pass Temporal Motion-Blur FBO + Wide Optical Bloom FBO!
                 vec3 orthoW = vec3(0.04, 0.56, 0.40);
-                float yCenter = dot(c0, orthoW);
-                float yInner = dot(innerBlur, orthoW);
-                float yHalo = dot(haloBlur, orthoW);
+                vec3 c0 = (wear > 0.1) ? texture2D(uTexture, weaveUv).rgb : rawRgb;
+                float ySharp = dot(c0, orthoW);
 
-                // Strong radial Petzval focus falloff toward frame corners (unmistakably 1920s vs 1950s!)
-                float softMix = clamp(mix(0.16, 0.44, wear) + r2 * mix(0.52, 0.50, wear), 0.0, 0.85);
-                float y = mix(yCenter, yInner, softMix);
-                // Heavy uncoated lens highlight halation & veiling glare
-                float glare = max(yHalo - 0.56, 0.0) * mix(0.42, 0.58, wear) + max(yInner - 0.70, 0.0) * 0.20;
-                y = clamp(y + glare, 0.0, 1.0);
+                float y;
+                float wideBloom = 0.0;
+                if (uHasOpticalFbo == 1) {
+                    vec3 trailSample = texture2D(uTrailTexture, weaveRawUv).rgb;
+                    vec3 bloomSample = texture2D(uBloomTexture, weaveRawUv).rgb;
+                    // Blend sharp sensor with temporal 512x256 optical MTF + daylight motion-blur trail:
+                    // Even at center, mixing 28% of 512x256 MTF strips clinical 4K phone crispness into real ~800-line 1920s glass!
+                    float mtfAndTrail = clamp(0.28 + uMotionBlend * 0.48 + r2 * 0.42, 0.0, 0.88);
+                    y = mix(ySharp, trailSample.r, mtfAndTrail);
+                    // Peripheral uncoated Petzval optical softness toward corners (reads from wide FBO .r)
+                    y = mix(y, bloomSample.r, clamp(r2 * mix(0.28, 0.46, wear), 0.0, 0.55));
+                    // True 128px-diameter uncoated Petzval highlight bloom & atmospheric veiling glare!
+                    wideBloom = bloomSample.g * mix(0.42, 0.58, wear);
+                } else {
+                    // Fallback if FBO unavailable
+                    vec2 dA = (uStepX + uStepY) * (1.8 + r2 * 4.0);
+                    float ySoft = dot(texture2D(uTexture, clamp(weaveUv + dA, vec2(0.002), vec2(0.998))).rgb, orthoW);
+                    y = mix(ySharp, ySoft, clamp(0.25 + r2 * 0.45, 0.0, 0.75));
+                    wideBloom = max(ySoft - 0.62, 0.0) * 0.35;
+                }
+                y = clamp(y + wideBloom, 0.0, 1.0);
 
-                // 4. Hand-Crank Shutter Exposure Flicker + Punchy Compressed 1920s Nitrate Tone Curve
-                float flicker = 1.0 + uFilmTransport.z * mix(0.28, 1.0, wear);
-                y = clamp(y * flicker, 0.0, 1.0);
+                // 4. Slow Organic Hand-Crank Exposure Breathing (low-pass smoothed in CPU, NOT harsh strobe!)
+                y = clamp(y * (1.0 + uFilmTransport.z), 0.0, 1.0);
 
-                // Subtle 1920s hand-tank developer unevenness (Atlas .a, slow organic density clouding in ARCHIVE)
-                vec4 mottleSample = texture2D(uLutTexture, gatePos * 0.32 + uFilmSeed.xy * 0.15);
-                if (wear > 0.2) {
-                    y = clamp(y + (mottleSample.a - 0.5) * 0.085 * wear, 0.0, 1.0);
+                // 5. Pure Non-Repeating Silver-Nitrate Emulsion Grain + Subtle Chemical Bath Unevenness (ZERO tiled dots!)
+                vec2 uvG1 = gatePos * 2.25 + uFilmSeed.xy;
+                vec2 uvG2 = rot37(gatePos) * 3.18 + uFilmSeed.zw;
+                vec4 gTap1 = texture2D(uLutTexture, uvG1);
+                vec4 gTap2 = texture2D(uLutTexture, uvG2);
+                float nitrateGrain = (gTap1.r - 0.5) * 0.62 + (gTap2.r - 0.5) * 0.38;
+
+                // Subtle slow hand-developed chemical unevenness in FOUND print (and faint in VAULT)
+                if (wear > 0.25) {
+                    float mottle = texture2D(uLutTexture, gatePos * 0.28 + uFilmSeed.xy * 0.12).a - 0.5;
+                    y = clamp(y + mottle * 0.075 * wear, 0.0, 1.0);
                 }
 
-                // Steep dramatic Nitrate contrast with rich deep shadows & glowing chalky highlights
-                float contrast = mix(1.48, 1.32, wear);
-                float toe = mix(0.006, 0.032, wear);
-                float shoulder = mix(0.992, 0.925, wear);
-                y = clamp((y - 0.46) * contrast + 0.48, 0.0, 1.0);
-                y = clamp((y / (1.0 + 0.10 * y * y)) * 1.10, 0.0, 1.0);
-                y = clamp(toe + y * (shoulder - toe), 0.0, 1.0);
-
-                // 5. Coarse Clumped 1920s Silver-Nitrate Grain (Cross-rotated dual-tap from Atlas .r — scales with ASA!)
-                vec2 uvG1 = gatePos * 2.15 + uFilmSeed.xy;
-                vec2 uvG2 = rot37(gatePos) * 3.04 + uFilmSeed.zw;
-                float n1 = texture2D(uLutTexture, uvG1).r - 0.5;
-                float n2 = texture2D(uLutTexture, uvG2).r - 0.5;
-                float nitrateGrain = (n1 * 0.62 + n2 * 0.38);
-                float grainAmp = mix(0.145, 0.255, wear) * uEraGrainMul;
-                float grainEnv = 0.28 + 0.72 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
+                float grainAmp = mix(0.115, 0.210, wear) * uEraGrainMul;
+                float grainEnv = 0.24 + 0.76 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
                 y = clamp(y + nitrateGrain * grainAmp * grainEnv, 0.0, 1.0);
 
-                // 6. ARCHIVE-ONLY Real Physical Gate Fibers & Organic Drifting Nitrate Scratch (ZERO in FRESH!)
-                if (wear > 0.25) {
-                    // A. Real irregular curved micro-fibers & asymmetric debris (Atlas .b, rotated & shifted per frame)
-                    vec2 uvDust = rot37(gatePos) * 0.88 + uFilmSeed.zw;
-                    float fiber = texture2D(uLutTexture, uvDust).b - 0.5;
-                    if (abs(fiber) > 0.04) {
-                        y = clamp(y + fiber * 1.35 * wear, 0.0, 1.0);
-                    }
-                    // B. Genuine multi-frame drifting emulsion scratch (CPU drives burst lifecycle — appears for ~0.8-2s, then disappears!)
+                // 6. Sparse Event-Driven Archive Physics (PREMIERE = 100% spotless; VAULT ~76% spotless; FOUND ~48% spotless)
+                if (wear > 0.15) {
+                    float dA = evalOrganicDefect(gatePos, uDefectA, gTap1.g - 0.5);
+                    float dB = evalOrganicDefect(gatePos, uDefectB, gTap2.g - 0.5);
+                    y = clamp(y + dA + dB, 0.0, 1.0);
+
+                    // Rare, razor-thin 1px drifting emulsion hairline scratch (CPU drives rare bursts & long clean intervals!)
                     if (uFilmTransport.w > -1.4) {
-                        float sx = uFilmTransport.w + sin(gatePos.y * 2.1 + uFilmSeed.x * 6.28) * 0.0020;
+                        float sx = uFilmTransport.w + sin(gatePos.y * 1.9 + uFilmSeed.x * 6.28) * 0.0018;
                         float dx = abs(vScreenPos.x - sx);
-                        float scratchMask = (1.0 - smoothstep(0.0, 0.00085, dx)) * wear;
-                        y = clamp(y - scratchMask * 0.42, 0.0, 1.0);
+                        float scratchMask = (1.0 - smoothstep(0.0, 0.00075, dx)) * clamp(wear * 1.15, 0.0, 1.0);
+                        y = clamp(y - scratchMask * 0.38, 0.0, 1.0);
                     }
                 }
 
-                // 7. Heavy 1920s Brass Barrel Vignette (unmistakably darker & tighter than 1950s!)
-                float vigStrength = mix(0.46, 0.68, wear);
-                float vig = 1.0 - vigStrength * smoothstep(mix(0.36, 0.26, wear), 1.06, rDist);
+                // 7. Natural 1920s Brass Petzval Barrel Falloff (subtle in PREMIERE, rich in VAULT/FOUND)
+                float vigStrength = mix(0.26, 0.48, wear);
+                float vig = 1.0 - vigStrength * smoothstep(mix(0.46, 0.34, wear), 1.14, rDist);
                 y *= clamp(vig, 0.0, 1.0);
 
-                // 8. Authentic 1920s Nitrate Stock Base (warm antique ivory even in FRESH -> deep warm amber-sepia in ARCHIVE!)
-                float baseW = smoothstep(0.06, 0.78, y);
-                vec3 shdTint = mix(vec3(1.01, 0.98, 0.90), vec3(1.04, 0.94, 0.78), wear);
-                vec3 hilTint = mix(vec3(1.04, 1.00, 0.91), vec3(1.13, 0.99, 0.76), wear);
-                if (uEraFilter == 1) {
-                    // AMBER Lab Dye Bath (1920s Candlelight / Interior)
-                    shdTint = vec3(1.05, 0.84, 0.54);
-                    hilTint = vec3(1.14, 0.94, 0.62);
-                } else if (uEraFilter == 2) {
-                    // COBALT Lab Dye Bath (1920s Silent Night / Nosferatu Moonlight)
-                    shdTint = vec3(0.58, 0.76, 1.10);
-                    hilTint = vec3(0.74, 0.90, 1.14);
-                } else if (uEraFilter == 3) {
-                    // SEPIA Lab Dye Bath (Deep Archival Nitrate)
-                    shdTint = vec3(1.04, 0.88, 0.70);
-                    hilTint = vec3(1.14, 0.96, 0.72);
-                }
-                vec3 stockColor = clamp(y * mix(shdTint, hilTint, baseW), 0.0, 1.0);
-                return stockColor * gateMask;
-            }
-
-            // Era 2 (1950s Classic Monochrome — Satyajit Ray / Subrata Mitra / Arriflex 35 — Kodak Plus-X / Double-X / Tri-X):
-            // Night-and-Day different from 1920s:
-            // - Full-spectrum Panchromatic chemistry (glowing sculptural skin, rich reds, dramatic dark skies)
-            // - Coated 1950s Cooke Speed Panchro Prime: crisp edge-to-edge optical resolution + genuine 35mm film acutance micro-contrast
-            // - Wide 10-Zone Subrata Mitra Chiaroscuro: deep velvety D-max blacks + open readable shadow texture + silky rolloff
-            // - Cool pure platinum-silver gelatin base (FRESH) -> subtle selenium/cream Criterion-vault acetate print (ARCHIVE)
-            // - Ultra-fine tight 35mm silver crystal grain (Atlas .g, reactive to chosen ASA: Plus-X 80 -> Double-X 250 -> Tri-X 400 -> Push 800/1600)
-            vec3 applyEra1950sMonochrome(vec3 rawRgb) {
-                float aspect = max(uViewportAspect, 0.5);
-                float wear = clamp(uEraWear, 0.0, 1.0);
-
-                // 1. Pin-Registered Arriflex/Mitchell Registration (0.0 weave in FRESH, tiny 70-yr projector breath in ARCHIVE)
-                vec2 weaveUv = vTexCoord;
-                vec2 weaveScreen = vec2(0.0);
-                if (wear > 0.25) {
-                    weaveUv = clamp(vTexCoord + uFilmTransport.xy * 0.28 * wear, vec2(0.002), vec2(0.998));
-                    weaveScreen = uFilmTransport.xy * 0.22 * wear;
-                }
-
-                // 2. Crisp Machined 1.375:1 AMPAS Academy Sound Gate (razor-clean studio corners vs 1920s heavy rounded corners!)
-                vec2 gatePos = vec2((vScreenPos.x + weaveScreen.x) * aspect, vScreenPos.y + weaveScreen.y);
-                float gateHalfH = 0.978;
-                float gateHalfW = 1.375 * gateHalfH;
-                float cornerR = 0.018;
-                vec2 q = abs(gatePos) - vec2(gateHalfW - cornerR, gateHalfH - cornerR);
-                float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - cornerR;
-                float gateMask = 1.0 - smoothstep(-0.005, 0.005, sdf);
-                if (gateMask <= 0.001) {
-                    return vec3(0.0);
-                }
-
-                vec2 gateUv = vec2(gatePos.x / gateHalfW, gatePos.y / gateHalfH);
-                float rDist = length(gateUv) * 0.7071;
-                float r2 = rDist * rDist;
-
-                // 3. Coated 1950s Cooke Speed Panchro Glass: sharp center + organic 35mm film acutance + controlled specular halation
-                vec3 c0 = (wear > 0.25) ? texture2D(uTexture, weaveUv).rgb : rawRgb;
-                float acutanceSpan = 1.15;
-                vec2 inA = (uStepX + uStepY) * acutanceSpan;
-                vec2 inB = (uStepX - uStepY) * acutanceSpan;
-                vec3 innerAvg = 0.25 * (
-                    texture2D(uTexture, clamp(weaveUv + inA, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - inA, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv + inB, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - inB, vec2(0.002), vec2(0.998))).rgb
-                );
-
-                float haloSpan = mix(3.2, 4.8, wear);
-                vec2 hX = uStepX * haloSpan;
-                vec2 hY = uStepY * haloSpan;
-                vec3 haloBlur = 0.25 * (
-                    texture2D(uTexture, clamp(weaveUv + hX, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - hX, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv + hY, vec2(0.002), vec2(0.998))).rgb +
-                    texture2D(uTexture, clamp(weaveUv - hY, vec2(0.002), vec2(0.998))).rgb
-                );
-
-                // 4. Authentic 1950s Kodak Panchromatic + Screw-On Glass Contrast Filter (uEraFilter)
-                vec3 panW = vec3(0.44, 0.45, 0.11); // 0 = Yellow K2 (Satyajit Ray Classic Default)
-                if (uEraFilter == 1) {
-                    panW = vec3(0.30, 0.59, 0.11);  // 1 = Clear (Neutral Double-X)
-                } else if (uEraFilter == 2) {
-                    panW = vec3(0.70, 0.26, 0.04);  // 2 = Red 25A (Film Noir Black Skies)
-                } else if (uEraFilter == 3) {
-                    panW = vec3(0.22, 0.66, 0.12);  // 3 = Green X1 (Sculptural Portraits)
-                }
-
-                float yCenter = dot(c0, panW);
-                float yInner = dot(innerAvg, panW);
-                float yHalo = dot(haloBlur, panW);
-
-                // Authentic 35mm Silver-Halide Chemical Acutance (gentle crispness in FRESH center, softens softly in ARCHIVE print duping)
-                float acutance = (yCenter - yInner) * mix(0.24, -0.14, wear) * (1.0 - r2 * 0.65);
-                float y = clamp(yCenter + acutance, 0.0, 1.0);
-                // Controlled coated-lens specular halation (only brightest lamps/windows glow delicately!)
-                float halation = max(yHalo - 0.74, 0.0) * mix(0.22, 0.34, wear);
-                y = clamp(y + halation, 0.0, 1.0);
-
-                // 5. Wide-Latitude 10-Zone Subrata Mitra / Satyajit Ray Chiaroscuro Curve
-                if (wear > 0.25) {
-                    y = clamp(y * (1.0 + uFilmTransport.z * 0.32 * wear), 0.0, 1.0);
-                }
-                // Open shadow latitude (preserves silky texture in dark hair & clothes while keeping true deep blacks!)
-                float shadowOpen = (1.0 - y) * (1.0 - y) * y * mix(0.26, 0.12, wear);
-                y = clamp(y + shadowOpen, 0.0, 1.0);
-
-                // In ARCHIVE, a theatrical duping print gets slightly punchier contrast & softer highlights
-                float contrast = mix(1.16, 1.24, wear);
-                float toe = mix(0.005, 0.022, wear);
-                float shoulder = mix(0.990, 0.942, wear);
-                y = clamp((y - 0.47) * contrast + 0.48, 0.0, 1.0);
-                y = clamp((y / (1.0 + 0.14 * y * y)) * 1.14, 0.0, 1.0);
-                y = clamp(toe + y * (shoulder - toe), 0.0, 1.0);
-
-                // 6. Ultra-Fine Tight 35mm Kodak Plus-X / Double-X / Tri-X Silver Grain (Atlas .g — MUCH finer than 1920s!)
-                vec2 uvG1 = gatePos * 3.85 + uFilmSeed.xy;
-                vec2 uvG2 = rot37(gatePos) * 5.44 + uFilmSeed.zw;
-                float n1 = texture2D(uLutTexture, uvG1).g - 0.5;
-                float n2 = texture2D(uLutTexture, uvG2).g - 0.5;
-                float silverGrain = (n1 * 0.65 + n2 * 0.35);
-                float grainAmp = mix(0.072, 0.135, wear) * uEraGrainMul;
-                float grainEnv = 0.22 + 0.78 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
-                y = clamp(y + silverGrain * grainAmp * grainEnv, 0.0, 1.0);
-
-                // 7. ARCHIVE-ONLY Subtle 70-Year Acetate Vault Wear (ZERO in FRESH, far cleaner than 1920s nitrate!)
-                if (wear > 0.25) {
-                    vec2 uvSpeck = rot37(gatePos) * 1.45 + uFilmSeed.zw;
-                    float speck = texture2D(uLutTexture, uvSpeck).b - 0.5;
-                    if (abs(speck) > 0.14) {
-                        y = clamp(y + speck * 0.72 * wear, 0.0, 1.0);
-                    }
-                    // Very rare ultra-fine acetate hairline (half the frequency/opacity of 1920s)
-                    if (uFilmTransport.w > -1.4 && uFilmSeed.x > 0.45) {
-                        float dx = abs(vScreenPos.x - uFilmTransport.w);
-                        float lineM = (1.0 - smoothstep(0.0, 0.00055, dx)) * wear;
-                        y = clamp(y - lineM * 0.22, 0.0, 1.0);
-                    }
-                }
-
-                // 8. Gentle Coated Prime Vignette + Cool Platinum-Silver (FRESH) vs Subtle Selenium-Cream Acetate (ARCHIVE)
-                float vigStrength = mix(0.14, 0.30, wear);
-                float vig = 1.0 - vigStrength * smoothstep(mix(0.56, 0.42, wear), 1.18, rDist);
-                y *= clamp(vig, 0.0, 1.0);
-
-                float baseW = smoothstep(0.08, 0.82, y);
-                vec3 shdTint = mix(vec3(0.96, 0.99, 1.03), vec3(0.99, 0.99, 0.97), wear);
-                vec3 hilTint = mix(vec3(0.99, 1.00, 1.01), vec3(1.04, 1.01, 0.93), wear);
-                vec3 stockColor = clamp(y * mix(shdTint, hilTint, baseW), 0.0, 1.0);
+                // 8. True Beer-Lambert Chemical Tinting & Toning across all 5 1920s Lab Baths!
+                vec3 stockColor = apply1920sLabBath(y, uEraFilter, wear);
                 return stockColor * gateMask;
             }
 
@@ -453,10 +438,6 @@ class CinemaGlRenderer(
                 vec3 rawColor = texture2D(uTexture, vTexCoord).rgb;
                 if (uEraMode == 1) {
                     gl_FragColor = vec4(applyEra1920sSilent(rawColor), 1.0);
-                    return;
-                }
-                if (uEraMode == 2) {
-                    gl_FragColor = vec4(applyEra1950sMonochrome(rawColor), 1.0);
                     return;
                 }
 
@@ -524,7 +505,6 @@ class CinemaGlRenderer(
                     }
 
                     // 2. FiLMiC-Grade High-Frequency Laplacian x Coherent-Gradient Focus Peaking
-                    // Uses rawY against raw neighbors so color grade/exposure lift never causes false peaking!
                     if (uShowPeaking == 1) {
                         float tl = calcLuma(texture2D(uTexture, vTexCoord - uStepX - uStepY).rgb);
                         float tc = calcLuma(texture2D(uTexture, vTexCoord - uStepY).rgb);
@@ -614,10 +594,41 @@ class CinemaGlRenderer(
     private var uEraWearLoc: Int = -1
     private var uEraFpsLoc: Int = -1
     private var uEraFilterLoc: Int = -1
+    private var uBloomTextureLoc: Int = -1
+    private var uTrailTextureLoc: Int = -1
+    private var uHasOpticalFboLoc: Int = -1
     private var uEraGrainMulLoc: Int = -1
+    private var uMotionBlendLoc: Int = -1
     private var uFilmSeedLoc: Int = -1
     private var uFilmTransportLoc: Int = -1
+    private var uDefectALoc: Int = -1
+    private var uDefectBLoc: Int = -1
     private var uViewportAspectLoc: Int = -1
+
+    // Phase 7.5 Offscreen Multi-Pass Optical Bloom + Temporal Motion-Blur FBO resources
+    private var trailProgramId: Int = 0
+    private var trailAPosLoc: Int = -1
+    private var trailATexLoc: Int = -1
+    private var trailUStLoc: Int = -1
+    private var trailUTexLoc: Int = -1
+    private var trailUAlphaLoc: Int = -1
+
+    private var blurProgramId: Int = 0
+    private var blurAPosLoc: Int = -1
+    private var blurATexLoc: Int = -1
+    private var blurUStLoc: Int = -1
+    private var blurUSrcLoc: Int = -1
+    private var blurUDirLoc: Int = -1
+
+    private var trailFboId: Int = 0
+    private var trailTexId: Int = 0
+    private var bloomFboAId: Int = 0
+    private var bloomTexAId: Int = 0
+    private var bloomFboBId: Int = 0
+    private var bloomTexBId: Int = 0
+    private var opticalFbosReady: Boolean = false
+    @Volatile private var trailNeedsReset: Boolean = true
+    private val identityMat4 = FloatArray(16).apply { Matrix.setIdentityM(this, 0) }
 
     private var lutTextureId: Int = 0
     private var dummyLutTextureId: Int = 0
@@ -667,6 +678,16 @@ class CinemaGlRenderer(
     private var filmScratchX: Float = -2.0f
     private var filmScratchLife: Int = 0
     private var filmScratchVel: Float = 0.0f
+    private var filmBreathPhase: Double = 0.0
+    private var defectAx: Float = -9.0f
+    private var defectAy: Float = 0.0f
+    private var defectAr: Float = 0.005f
+    private var defectAw: Float = 0.0f
+    private var defectBx: Float = -9.0f
+    private var defectBy: Float = 0.0f
+    private var defectBr: Float = 0.005f
+    private var defectBw: Float = 0.0f
+    @Volatile var liveShutterNs: Long = 16_666_666L
     @Volatile var mirrorFrontExport: Boolean = false
 
     @Volatile private var previewWidth: Int = 0
@@ -734,6 +755,7 @@ class CinemaGlRenderer(
                 videoHeight = height.coerceAtLeast(16)
                 sensorOrientationDeg = sensorOrientation
                 isFrontCamera = isFront
+                trailNeedsReset = true
 
                 val st = cameraInputTexture
                 if (st != null) {
@@ -942,6 +964,15 @@ class CinemaGlRenderer(
                     GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
                     oesTextureId = 0
                 }
+                destroyOpticalFbosOnGlThread()
+                if (trailProgramId != 0) {
+                    GLES20.glDeleteProgram(trailProgramId)
+                    trailProgramId = 0
+                }
+                if (blurProgramId != 0) {
+                    GLES20.glDeleteProgram(blurProgramId)
+                    blurProgramId = 0
+                }
                 if (programId != 0) {
                     GLES20.glDeleteProgram(programId)
                     programId = 0
@@ -1001,6 +1032,11 @@ class CinemaGlRenderer(
         val timeSec = (elapsedMs % 60_000L) / 1000f
         if (eraModeCode > 0) {
             updateFilmTransportState(elapsedMs)
+            if (opticalFbosReady) {
+                runOpticalPrePassesOnGlThread()
+            }
+        } else {
+            trailNeedsReset = true
         }
 
         // vTexCoord is already in raw OES buffer (bx, by) coordinates, so exact 1-pixel steps are axis-aligned
@@ -1317,10 +1353,23 @@ class CinemaGlRenderer(
         GLES20.glUniform1i(uEraModeLoc, eraModeCode)
         GLES20.glUniform1f(uEraWearLoc, eraWearLevel.coerceIn(0f, 1f))
         GLES20.glUniform1f(uEraFpsLoc, eraFps.coerceIn(1f, 60f))
+        val useOptFbo = (eraModeCode == 1 && opticalFbosReady)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (useOptFbo) bloomTexAId else dummyLutTextureId)
+        GLES20.glUniform1i(uBloomTextureLoc, 2)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE3)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (useOptFbo) trailTexId else dummyLutTextureId)
+        GLES20.glUniform1i(uTrailTextureLoc, 3)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+
+        GLES20.glUniform1i(uHasOpticalFboLoc, if (useOptFbo) 1 else 0)
         GLES20.glUniform1i(uEraFilterLoc, eraFilterCode)
         GLES20.glUniform1f(uEraGrainMulLoc, eraGrainMultiplier.coerceIn(0.45f, 2.2f))
+        GLES20.glUniform1f(uMotionBlendLoc, computeDaylightMotionBlend())
         GLES20.glUniform4f(uFilmSeedLoc, filmSeedX1, filmSeedY1, filmSeedX2, filmSeedY2)
         GLES20.glUniform4f(uFilmTransportLoc, filmWeaveX, filmWeaveY, filmFlicker, filmScratchX)
+        GLES20.glUniform4f(uDefectALoc, defectAx, defectAy, defectAr, defectAw)
+        GLES20.glUniform4f(uDefectBLoc, defectBx, defectBy, defectBr, defectBw)
         GLES20.glUniform1f(uViewportAspectLoc, viewportAspect.coerceIn(0.4f, 4.0f))
 
         GLES20.glEnableVertexAttribArray(aPositionLoc)
@@ -1332,6 +1381,10 @@ class CinemaGlRenderer(
 
         GLES20.glDisableVertexAttribArray(aPositionLoc)
         GLES20.glDisableVertexAttribArray(aTexCoordLoc)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE3)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -1487,10 +1540,16 @@ class CinemaGlRenderer(
             uEraModeLoc = GLES20.glGetUniformLocation(programId, "uEraMode")
             uEraWearLoc = GLES20.glGetUniformLocation(programId, "uEraWear")
             uEraFpsLoc = GLES20.glGetUniformLocation(programId, "uEraFps")
+            uBloomTextureLoc = GLES20.glGetUniformLocation(programId, "uBloomTexture")
+            uTrailTextureLoc = GLES20.glGetUniformLocation(programId, "uTrailTexture")
+            uHasOpticalFboLoc = GLES20.glGetUniformLocation(programId, "uHasOpticalFbo")
             uEraFilterLoc = GLES20.glGetUniformLocation(programId, "uEraFilter")
             uEraGrainMulLoc = GLES20.glGetUniformLocation(programId, "uEraGrainMul")
+            uMotionBlendLoc = GLES20.glGetUniformLocation(programId, "uMotionBlend")
             uFilmSeedLoc = GLES20.glGetUniformLocation(programId, "uFilmSeed")
             uFilmTransportLoc = GLES20.glGetUniformLocation(programId, "uFilmTransport")
+            uDefectALoc = GLES20.glGetUniformLocation(programId, "uDefectA")
+            uDefectBLoc = GLES20.glGetUniformLocation(programId, "uDefectB")
             uViewportAspectLoc = GLES20.glGetUniformLocation(programId, "uViewportAspect")
             if (desiredLutData != null) {
                 lutUploadDirty = true
@@ -1530,13 +1589,18 @@ class CinemaGlRenderer(
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
 
-            // Synthesize & upload seamless 256x256 4-channel Physical Film Emulsion & Debris Atlas for CLASSIC cameras
+            // Synthesize & upload seamless 256x256 Pure Silver-Nitrate Emulsion Grain & Hand-Bath Atlas (ZERO tiled dots!)
             filmAtlasTextureId = createPhysicalFilmAtlasTexture()
 
-            // Lock sampler units immediately after program link (unit 0 = OES camera, unit 1 = 2D LUT / Film Atlas)
+            // Initialize Multi-Pass Optical Bloom (256x128) + Temporal Motion-Blur (512x256) FBO pipeline
+            initOpticalFbosOnGlThread()
+
+            // Lock sampler units immediately after program link (unit 0=OES, 1=LUT/Grain, 2=BloomFBO, 3=TrailFBO)
             GLES20.glUseProgram(programId)
             GLES20.glUniform1i(uTextureLoc, 0)
             GLES20.glUniform1i(uLutTextureLoc, 1)
+            GLES20.glUniform1i(uBloomTextureLoc, 2)
+            GLES20.glUniform1i(uTrailTextureLoc, 3)
 
             cameraInputTexture = SurfaceTexture(oesTextureId).apply {
                 setDefaultBufferSize(videoWidth, videoHeight)
@@ -1627,63 +1691,265 @@ class CinemaGlRenderer(
         return ((z ushr 40) and 0xFFFFFFL).toFloat() / 16777216.0f
     }
 
+    private fun computeDaylightMotionBlend(): Float {
+        // In bright sunlight, Android pushes shutter to 1/500s–1/4000s, making 16/18 FPS look sharp & jerky.
+        // Automatically engage temporal 180-deg rotary-shutter trail when live shutter is faster than 1/90s!
+        val ns = liveShutterNs.coerceAtLeast(100_000L)
+        val slowThresh = 16_000_000.0 // 1/62s (natural motion blur already present)
+        val fastThresh = 2_000_000.0  // 1/500s (bright sunlight -> full optical rotary trail)
+        val t = ((slowThresh - ns.toDouble()) / (slowThresh - fastThresh)).coerceIn(0.0, 1.0)
+        return (t * 0.55).toFloat()
+    }
+
     private fun updateFilmTransportState(elapsedMs: Long) {
         val fps = eraFps.coerceIn(12f, 60f).toDouble()
         val tick = ((elapsedMs / 1000.0) * fps).toLong()
         if (tick == lastFilmTick) return
         lastFilmTick = tick
 
-        // Non-repeating golden-ratio + 64-bit PRNG texture coordinates (zero periodic cycling!)
+        val wear = eraWearLevel.coerceIn(0f, 1f)
+
+        // 1. Non-repeating 64-bit SplitMix64 texture shifts for silver-nitrate grain (period 2^64, never repeats!)
         filmSeedX1 = nextFilmRand01()
         filmSeedY1 = nextFilmRand01()
         filmSeedX2 = nextFilmRand01()
         filmSeedY2 = nextFilmRand01()
 
-        // Smooth physical intermittent-claw gate weave (mild vertical dominance like real 4-perf pull-down)
-        val targetWx = (nextFilmRand01() - 0.5f) * 0.0030f
-        val targetWy = (nextFilmRand01() - 0.5f) * 0.0072f
-        filmWeaveX = filmWeaveX * 0.35f + targetWx * 0.65f
-        filmWeaveY = filmWeaveY * 0.30f + targetWy * 0.70f
-
-        // Organic hand-crank / projector arc-lamp flicker
-        filmFlicker = (nextFilmRand01() - 0.5f) * 0.13f
-
-        // Real multi-frame drifting film scratch burst (appears for 14-36 frames drifting gently, then disappears for 4-10s!)
-        if (filmScratchLife > 0) {
-            filmScratchLife--
-            filmScratchX += filmScratchVel
-            if (filmScratchLife <= 0 || filmScratchX < -0.68f || filmScratchX > 0.68f) {
-                filmScratchX = -2.0f
-            }
+        // 2. Smooth intermittent-claw gate weave (0 in PREMIERE, gentle in VAULT, pronounced in FOUND)
+        if (wear > 0.1f) {
+            val targetWx = (nextFilmRand01() - 0.5f) * 0.0024f
+            val targetWy = (nextFilmRand01() - 0.5f) * 0.0056f
+            filmWeaveX = filmWeaveX * 0.40f + targetWx * 0.60f
+            filmWeaveY = filmWeaveY * 0.35f + targetWy * 0.65f
         } else {
-            if (nextFilmRand01() > 0.991f) {
-                filmScratchX = (nextFilmRand01() * 1.16f) - 0.58f
-                filmScratchVel = (nextFilmRand01() - 0.5f) * 0.0014f
-                filmScratchLife = 14 + (nextFilmRand01() * 24f).toInt()
+            filmWeaveX = 0f
+            filmWeaveY = 0f
+        }
+
+        // 3. Slow Organic Hand-Crank Exposure Breathing (smoothly low-pass filtered, NOT harsh per-frame strobe!)
+        filmBreathPhase += 0.28 + nextFilmRand01() * 0.14
+        val crankSine = kotlin.math.sin(filmBreathPhase).toFloat() * 0.018f
+        val crankJitter = (nextFilmRand01() - 0.5f) * 0.032f
+        val breathAmp = when {
+            wear < 0.15f -> 0.45f  // PREMIERE: tiny ±1.2% hand-crank life
+            wear < 0.75f -> 1.00f  // VAULT: authentic ±3.2% breathing
+            else -> 1.65f          // FOUND: ±5.2% aged projector/crank breathing
+        }
+        val targetFlicker = (crankSine + crankJitter) * breathAmp
+        filmFlicker = filmFlicker * 0.55f + targetFlicker * 0.45f
+
+        // 4. Sparse Event-Driven Physical Film Defects (ZERO tiled dots! ~100% spotless in PREMIERE, ~76% in VAULT, ~48% in FOUND!)
+        defectAx = -9.0f
+        defectBx = -9.0f
+        if (wear < 0.15f) {
+            // PREMIERE: spotless 1926 brand-new lab print
+            filmScratchLife = 0
+            filmScratchX = -2.0f
+        } else {
+            val isFound = wear >= 0.75f
+            val pDustA = if (isFound) 0.34f else 0.16f
+            val pDustB = if (isFound) 0.16f else 0.04f
+            val pScratch = if (isFound) 0.0090f else 0.0035f
+
+            if (nextFilmRand01() < pDustA) {
+                defectAx = (nextFilmRand01() * 2.40f) - 1.20f
+                defectAy = (nextFilmRand01() * 1.84f) - 0.92f
+                val isHair = nextFilmRand01() < 0.28f
+                defectAr = if (isHair) (0.0032f + nextFilmRand01() * 0.0026f) else (0.0036f + nextFilmRand01() * 0.0046f)
+                val shapeIdx = if (isHair) (2 + (nextFilmRand01() * 2f).toInt()) else (nextFilmRand01() * 2f).toInt()
+                val pol = if (nextFilmRand01() < 0.80f) -1.0f else 1.0f
+                defectAw = pol * (shapeIdx.toFloat() + nextFilmRand01() * 0.98f)
+            }
+            if (nextFilmRand01() < pDustB) {
+                defectBx = (nextFilmRand01() * 2.40f) - 1.20f
+                defectBy = (nextFilmRand01() * 1.84f) - 0.92f
+                defectBr = 0.0030f + nextFilmRand01() * 0.0042f
+                val shapeIdx = (nextFilmRand01() * 3f).toInt()
+                val pol = if (nextFilmRand01() < 0.78f) -1.0f else 1.0f
+                defectBw = pol * (shapeIdx.toFloat() + nextFilmRand01() * 0.98f)
+            }
+
+            // Rare multi-frame drifting emulsion hairline scratch (12-26 frames, then 10-20s of clean footage!)
+            if (filmScratchLife > 0) {
+                filmScratchLife--
+                filmScratchX += filmScratchVel
+                if (filmScratchLife <= 0 || filmScratchX < -0.66f || filmScratchX > 0.66f) {
+                    filmScratchX = -2.0f
+                }
             } else {
-                filmScratchX = -2.0f
+                if (nextFilmRand01() < pScratch) {
+                    filmScratchX = (nextFilmRand01() * 1.12f) - 0.56f
+                    filmScratchVel = (nextFilmRand01() - 0.5f) * 0.0012f
+                    filmScratchLife = 12 + (nextFilmRand01() * 15f).toInt()
+                } else {
+                    filmScratchX = -2.0f
+                }
             }
         }
     }
 
+    private fun initOpticalFbosOnGlThread() {
+        destroyOpticalFbosOnGlThread()
+        opticalFbosReady = false
+        try {
+            trailProgramId = createProgram(OFFSCREEN_VERT_SHADER, ORTHO_TRAIL_FRAG_SHADER)
+            blurProgramId = createProgram(OFFSCREEN_VERT_SHADER, GAUSS_BLUR_FRAG_SHADER)
+            if (trailProgramId == 0 || blurProgramId == 0) return
+
+            trailAPosLoc = GLES20.glGetAttribLocation(trailProgramId, "aPosition")
+            trailATexLoc = GLES20.glGetAttribLocation(trailProgramId, "aTexCoord")
+            trailUStLoc = GLES20.glGetUniformLocation(trailProgramId, "uStMatrix")
+            trailUTexLoc = GLES20.glGetUniformLocation(trailProgramId, "uTexture")
+            trailUAlphaLoc = GLES20.glGetUniformLocation(trailProgramId, "uTrailAlpha")
+
+            blurAPosLoc = GLES20.glGetAttribLocation(blurProgramId, "aPosition")
+            blurATexLoc = GLES20.glGetAttribLocation(blurProgramId, "aTexCoord")
+            blurUStLoc = GLES20.glGetUniformLocation(blurProgramId, "uStMatrix")
+            blurUSrcLoc = GLES20.glGetUniformLocation(blurProgramId, "uSourceTex")
+            blurUDirLoc = GLES20.glGetUniformLocation(blurProgramId, "uBlurDir")
+
+            fun makeFbo(w: Int, h: Int): Pair<Int, Int>? {
+                val texIds = IntArray(1)
+                val fboIds = IntArray(1)
+                GLES20.glGenTextures(1, texIds, 0)
+                GLES20.glGenFramebuffers(1, fboIds, 0)
+                val tid = texIds[0]
+                val fid = fboIds[0]
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tid)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fid)
+                GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, tid, 0)
+                val status = GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER)
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+                if (status != GLES20.GL_FRAMEBUFFER_COMPLETE) {
+                    GLES20.glDeleteFramebuffers(1, intArrayOf(fid), 0)
+                    GLES20.glDeleteTextures(1, intArrayOf(tid), 0)
+                    return null
+                }
+                return fid to tid
+            }
+
+            // Strict Power-of-Two dimensions (512x256 & 256x128) guarantee 100% FBO completeness on every ES 2.0 GPU!
+            val trailPair = makeFbo(512, 256) ?: return
+            val bloomAPair = makeFbo(256, 128) ?: return
+            val bloomBPair = makeFbo(256, 128) ?: return
+
+            trailFboId = trailPair.first; trailTexId = trailPair.second
+            bloomFboAId = bloomAPair.first; bloomTexAId = bloomAPair.second
+            bloomFboBId = bloomBPair.first; bloomTexBId = bloomBPair.second
+            trailNeedsReset = true
+            opticalFbosReady = true
+        } catch (_: Exception) {
+            destroyOpticalFbosOnGlThread()
+            opticalFbosReady = false
+        }
+    }
+
+    private fun destroyOpticalFbosOnGlThread() {
+        opticalFbosReady = false
+        val fbos = intArrayOf(trailFboId, bloomFboAId, bloomFboBId).filter { it != 0 }.toIntArray()
+        if (fbos.isNotEmpty()) GLES20.glDeleteFramebuffers(fbos.size, fbos, 0)
+        val texs = intArrayOf(trailTexId, bloomTexAId, bloomTexBId).filter { it != 0 }.toIntArray()
+        if (texs.isNotEmpty()) GLES20.glDeleteTextures(texs.size, texs, 0)
+        trailFboId = 0; trailTexId = 0
+        bloomFboAId = 0; bloomTexAId = 0
+        bloomFboBId = 0; bloomTexBId = 0
+    }
+
     /**
-     * Synthesizes a 256x256 seamless (GL_REPEAT) 4-channel Physical Film Emulsion & Debris Atlas once on GL startup (~30ms):
-     * - R: 1920s Coarse Clumped Silver-Nitrate Emulsion Crystals
-     * - G: 1950s Fine Acutance Kodak Plus-X / Double-X Silver Grain
-     * - B: Real Irregular Curved Gate Micro-Fibers & Asymmetric Dust Specks (0.5 = neutral)
-     * - A: Hand-Developed 1920s Chemical Bath Unevenness / Soft Organic Clouding
+     * Executes our 3 lightweight offscreen optical passes ONCE per camera frame (shared by Preview & MP4 Encoder):
+     * 1. 512x256 Temporal Ortho + Daylight Rotary-Shutter Motion-Blur FBO (hardware alpha blend)
+     * 2. 256x128 Horizontal 9-Tap Wide Gaussian Blur (stride 2 -> +-60px horizontal on 1080p)
+     * 3. 256x128 Vertical 9-Tap Wide Gaussian Blur (stride 2 -> +-67px vertical on 1080p -> true circular Petzval glow!)
+     */
+    private fun runOpticalPrePassesOnGlThread() {
+        // Offscreen Pass 1: OES Camera -> 512x256 trailFbo (Orthochromatic + Highlight Map + Temporal Trail)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, trailFboId)
+        GLES20.glViewport(0, 0, 512, 256)
+        val alpha: Float
+        if (trailNeedsReset) {
+            GLES20.glDisable(GLES20.GL_BLEND)
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            alpha = 1.0f
+            trailNeedsReset = false
+        } else {
+            val motionAmt = computeDaylightMotionBlend()
+            // Bright sun (motionAmt=0.55) -> alpha=0.54 (liquid rotary-shutter trail); Indoors -> alpha=0.90 (crisp)
+            alpha = (0.90f - motionAmt * 0.65f).coerceIn(0.48f, 1.0f)
+            GLES20.glEnable(GLES20.GL_BLEND)
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        }
+
+        GLES20.glUseProgram(trailProgramId)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
+        GLES20.glUniform1i(trailUTexLoc, 0)
+        GLES20.glUniformMatrix4fv(trailUStLoc, 1, false, stMatrix, 0)
+        GLES20.glUniform1f(trailUAlphaLoc, alpha)
+
+        GLES20.glEnableVertexAttribArray(trailAPosLoc)
+        GLES20.glVertexAttribPointer(trailAPosLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
+        GLES20.glEnableVertexAttribArray(trailATexLoc)
+        GLES20.glVertexAttribPointer(trailATexLoc, 2, GLES20.GL_FLOAT, false, 0, texCoordBuf)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDisableVertexAttribArray(trailAPosLoc)
+        GLES20.glDisableVertexAttribArray(trailATexLoc)
+        GLES20.glDisable(GLES20.GL_BLEND)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+
+        // Offscreen Pass 2: Horizontal 9-Tap Wide Gaussian -> 256x128 bloomFboB
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bloomFboBId)
+        GLES20.glViewport(0, 0, 256, 128)
+        GLES20.glUseProgram(blurProgramId)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, trailTexId)
+        GLES20.glUniform1i(blurUSrcLoc, 1)
+        GLES20.glUniformMatrix4fv(blurUStLoc, 1, false, identityMat4, 0)
+        GLES20.glUniform2f(blurUDirLoc, 2.0f / 256.0f, 0.0f)
+
+        GLES20.glEnableVertexAttribArray(blurAPosLoc)
+        GLES20.glVertexAttribPointer(blurAPosLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
+        GLES20.glEnableVertexAttribArray(blurATexLoc)
+        GLES20.glVertexAttribPointer(blurATexLoc, 2, GLES20.GL_FLOAT, false, 0, texCoordBuf)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+        // Offscreen Pass 3: Vertical 9-Tap Wide Gaussian -> 256x128 bloomFboA
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bloomFboAId)
+        GLES20.glViewport(0, 0, 256, 128)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bloomTexBId)
+        GLES20.glUniform2f(blurUDirLoc, 0.0f, 2.0f / 128.0f)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+        GLES20.glDisableVertexAttribArray(blurAPosLoc)
+        GLES20.glDisableVertexAttribArray(blurATexLoc)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    }
+
+    /**
+     * Synthesizes a 256x256 seamless (GL_REPEAT) PURE Silver-Nitrate Emulsion Grain & Hand-Bath Atlas (ZERO tiled dots!):
+     * - R: Coarse Clumped 1920s Silver-Nitrate Emulsion Crystals
+     * - G: High-Frequency Organic Micro-Grain (used both for fine crystal texture & irregular speck silhouette perturbation)
+     * - B: Neutral 0.5 (reserved — ZERO tiled dots!)
+     * - A: Soft Low-Frequency Hand-Developed 1920s Chemical Bath Unevenness
      */
     private fun createPhysicalFilmAtlasTexture(): Int {
         val n = 256
         val total = n * n
-        val rng = java.util.Random(19550826L)
+        val rng = java.util.Random(19220304L) // Nosferatu premiere date seed!
 
         fun boxBlurToroidal(src: FloatArray, radius: Int, passes: Int): FloatArray {
             var cur = src.copyOf()
-            var tmp = FloatArray(total)
+            val tmp = FloatArray(total)
             val diam = (radius * 2 + 1).toFloat()
             repeat(passes) {
-                // Horizontal pass
                 for (y in 0 until n) {
                     val row = y * n
                     var sum = 0f
@@ -1696,7 +1962,6 @@ class CinemaGlRenderer(
                         tmp[row + x] = sum / diam
                     }
                 }
-                // Vertical pass
                 for (x in 0 until n) {
                     var sum = 0f
                     for (dy in -radius..radius) {
@@ -1741,39 +2006,6 @@ class CinemaGlRenderer(
         val combG = FloatArray(total) { i -> rawG[i] * 0.72f + blurG[i] * 0.45f }
         val chG = normalizeToUnit(combG, 0.18f)
 
-        // Channel B: Real physical asymmetric specks & curved 7-15px hair fibers (0.5 = neutral)
-        val chB = FloatArray(total) { 0.5f }
-        repeat(20) {
-            val cx = rng.nextInt(n)
-            val cy = rng.nextInt(n)
-            val pol = if (rng.nextFloat() < 0.78f) -1f else 1f
-            val str = (0.26f + rng.nextFloat() * 0.22f) * pol
-            val count = 2 + rng.nextInt(4)
-            repeat(count) {
-                val ox = rng.nextInt(3) - 1
-                val oy = rng.nextInt(3) - 1
-                val idx = ((cy + oy + n) and 255) * n + ((cx + ox + n) and 255)
-                chB[idx] = (0.5f + str * (0.65f + rng.nextFloat() * 0.35f)).coerceIn(0f, 1f)
-            }
-        }
-        repeat(6) {
-            var fx = rng.nextInt(n).toFloat()
-            var fy = rng.nextInt(n).toFloat()
-            var ang = rng.nextFloat() * 6.283185f
-            val turn = (rng.nextFloat() - 0.5f) * 0.52f
-            val steps = 7 + rng.nextInt(9)
-            val str = -(0.32f + rng.nextFloat() * 0.16f)
-            repeat(steps) {
-                val ix = (fx.toInt() % n + n) and 255
-                val iy = (fy.toInt() % n + n) and 255
-                chB[iy * n + ix] = (0.5f + str).coerceIn(0f, 1f)
-                ang += turn + (rng.nextFloat() - 0.5f) * 0.34f
-                fx += kotlin.math.cos(ang.toDouble()).toFloat() * 0.85f
-                fy += kotlin.math.sin(ang.toDouble()).toFloat() * 0.85f
-            }
-        }
-
-        // Channel A: Soft low-frequency hand-developed 1920s chemical bath unevenness
         val rawA = FloatArray(total) { rng.nextGaussian().toFloat() }
         val chA = normalizeToUnit(boxBlurToroidal(rawA, radius = 8, passes = 2), 0.20f)
 
@@ -1782,7 +2014,7 @@ class CinemaGlRenderer(
             val o = i * 4
             rgba[o] = (chR[i] * 255f).toInt().coerceIn(0, 255).toByte()
             rgba[o + 1] = (chG[i] * 255f).toInt().coerceIn(0, 255).toByte()
-            rgba[o + 2] = (chB[i] * 255f).toInt().coerceIn(0, 255).toByte()
+            rgba[o + 2] = 128.toByte() // Pure neutral — ZERO tiled black dots!
             rgba[o + 3] = (chA[i] * 255f).toInt().coerceIn(0, 255).toByte()
         }
 

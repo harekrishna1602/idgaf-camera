@@ -266,7 +266,7 @@ class CinemaCameraEngine(
                     .toInt()
                     .coerceAtLeast(1)
             }
-            result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { liveShutterNs = it }
+            result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { liveShutterNs = it; glRenderer?.liveShutterNs = it }
             result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { liveFocusDistance = it }
 
             if (!isManualWb) {
@@ -421,7 +421,7 @@ class CinemaCameraEngine(
         eraModeCode = modeCode
         eraWearLevel = wearLevel.coerceIn(0f, 1f)
         eraFps = fps.coerceIn(1f, 60f)
-        eraFilterCode = filterCode.coerceIn(0, 3)
+        eraFilterCode = filterCode.coerceIn(0, 4)
         eraGrainMultiplier = grainMul.coerceIn(0.45f, 2.2f)
         glRenderer?.eraModeCode = eraModeCode
         glRenderer?.eraWearLevel = eraWearLevel
