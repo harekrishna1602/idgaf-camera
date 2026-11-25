@@ -561,7 +561,7 @@ class ClipGalleryActivity : AppCompatActivity() {
             "All $clipCount original clip(s) kept in Clip Vault."
         }
 
-        lateinit var dialog: AlertDialog
+        lateinit var dialog: android.app.Dialog
         dialog = IdgafUiDialogs.showActionDialog(
             context = this,
             title = "ARCHIVE READY",

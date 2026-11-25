@@ -116,6 +116,24 @@ enum class AutoPilotState {
     LOCKED
 }
 
+enum class AntiFlickerMode(val label: String, val camera2Mode: Int, val mainsHz: Int) {
+    HZ_50("50Hz", CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ, 50),
+    HZ_60("60Hz", CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ, 60),
+    OFF("AF:OFF", CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF, 0);
+
+    companion object {
+        private val COUNTRIES_60HZ = setOf(
+            "US", "CA", "MX", "BR", "CO", "PE", "VE", "EC", "GT", "HN", "SV", "NI", "CR", "PA",
+            "DO", "CU", "HT", "JM", "PR", "TT", "BS", "KR", "TW", "PH", "SA", "GU", "VI"
+        )
+
+        fun defaultForDevice(): AntiFlickerMode {
+            val country = Locale.getDefault().country.uppercase(Locale.US)
+            return if (country in COUNTRIES_60HZ) HZ_60 else HZ_50
+        }
+    }
+}
+
 interface CinemaEngineListener {
     fun onLensesReady(lenses: List<CinemaLens>, activeIndex: Int)
     fun onCameraReady(
@@ -161,6 +179,8 @@ class CinemaCameraEngine(
     var targetFps: Int = 30
     var targetCodec: CinemaCodec = CinemaCodec.H264
     var targetBitrateMbps: Int = 35
+    @Volatile var antiFlickerMode: AntiFlickerMode = loadSavedAntiFlickerMode()
+        private set
     @Volatile var recordAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9
     var micPreference: MicPreference = MicPreference.AUTO
     @Volatile var audioPreampMode: AudioPreampMode = AudioPreampMode.CAMCORDER
@@ -725,8 +745,9 @@ class CinemaCameraEngine(
         var isLowLight = false
         var modeTag = "LOCKED"
 
-        // Smart Auto Pilot v2 Exposure Optimizer: preserves exact metered brightness while re-balancing
-        // ISO & Shutter toward clean 180-deg cinema motion blur, base-ISO daylight, or low-noise low-light!
+        // Smart Auto Pilot v3 Anti-Flicker Exposure Optimizer:
+        // Strictly locks flicker-free shutter multiples of the AC grid (1/50s, 1/100s, 1/33s, 1/25s on 50Hz;
+        // 1/60s, 1/120s, 1/30s on 60Hz) and solves exact ISO so there is ZERO indoor banding!
         if (capabilities.supportsManualExposure && liveIso > 0 && liveShutterNs > 0L) {
             val minIso = capabilities.effectiveIsoRange.lower.coerceAtLeast(1)
             val maxIso = capabilities.effectiveIsoRange.upper.coerceAtLeast(minIso)
@@ -734,40 +755,36 @@ class CinemaCameraEngine(
             val maxExp = capabilities.exposureRangeNs.upper.coerceAtLeast(minExp)
 
             val fps = targetFps.coerceIn(1, 60)
-            val ideal180Ns = (1_000_000_000L / (fps * 2L)).coerceIn(minExp, maxExp)
             val maxVideoShutterNs = (1_000_000_000L / fps.toLong()).coerceIn(minExp, maxExp)
+            val ideal180Ns = compute180ShutterNs(fps)
             val evProduct = liveIso.toDouble() * liveShutterNs.toDouble()
             val isoAt180 = Math.round(evProduct / ideal180Ns.toDouble()).toInt()
 
             when {
                 isoAt180 < minIso -> {
-                    // Bright daylight: lock lowest noise base ISO & let shutter absorb excess light
-                    manualIso = minIso
-                    manualShutterNs = (evProduct / minIso.toDouble()).toLong().coerceIn(minExp, maxExp)
+                    // Bright indoor/daylight: try faster flicker-free step first (1/100s on 50Hz, 1/120s on 60Hz) before going high-speed
+                    val rawFastNs = (evProduct / minIso.toDouble()).toLong().coerceIn(minExp, maxExp)
+                    val safeFastNs = snapShutterToAntiFlickerNs(rawFastNs, maxVideoShutterNs)
+                    manualShutterNs = safeFastNs
+                    manualIso = Math.round(evProduct / safeFastNs.toDouble()).toInt().coerceIn(minIso, maxIso)
                     isShutter180Locked = false
                     modeTag = "DAYLIGHT"
                 }
                 isoAt180 <= 800 && isoAt180 <= maxIso -> {
-                    // Cinema sweet spot: true 180-degree shutter rule with clean low ISO!
+                    // Cinema sweet spot: flicker-free 180° shutter (1/50s on 50Hz, 1/60s on 60Hz) + clean low ISO!
                     manualIso = isoAt180
                     manualShutterNs = ideal180Ns
                     isShutter180Locked = true
-                    modeTag = "180° CINE"
+                    modeTag = if (antiFlickerMode != AntiFlickerMode.OFF) "${antiFlickerMode.label} CINE" else "180° CINE"
                 }
                 else -> {
-                    // Dim / Low-Light: open shutter cleanly up to 1/fps first to slash grain before raising ISO
-                    val isoAt360 = Math.round(evProduct / maxVideoShutterNs.toDouble()).toInt()
-                    if (isoAt360 in minIso..800 && isoAt360 <= maxIso) {
-                        manualIso = minOf(800, maxIso)
-                        manualShutterNs = (evProduct / manualIso.toDouble()).toLong().coerceIn(ideal180Ns, maxVideoShutterNs)
-                        isShutter180Locked = false
-                        modeTag = "LOW-LIGHT"
-                    } else {
-                        manualShutterNs = maxVideoShutterNs
-                        manualIso = isoAt360.coerceIn(minIso, maxIso)
-                        isShutter180Locked = false
-                        modeTag = "DARK"
-                    }
+                    // Dim / Low-Light: ONLY step slower along exact flicker-free AC multiples (e.g. 1/33s or 1/25s on 50Hz), NEVER 1/58s!
+                    val slowSafeNs = snapShutterToAntiFlickerNs(maxVideoShutterNs, maxVideoShutterNs)
+                    val isoAtSlow = Math.round(evProduct / slowSafeNs.toDouble()).toInt()
+                    manualShutterNs = slowSafeNs
+                    manualIso = isoAtSlow.coerceIn(minIso, maxIso)
+                    isShutter180Locked = false
+                    modeTag = if (manualIso >= 1600) "DARK" else "LOW-LIGHT"
                 }
             }
             isManualExposure = true
@@ -1003,16 +1020,79 @@ class CinemaCameraEngine(
         return isAeAfLocked
     }
 
-    private fun compute180ShutterNs(fps: Int): Long {
-        val denom = (fps * 2).coerceAtLeast(24)
-        val rawNs = 1_000_000_000L / denom
-        return rawNs.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+    private fun loadSavedAntiFlickerMode(): AntiFlickerMode {
+        return try {
+            val prefs = context.getSharedPreferences("idgaf_camera_prefs_v1", Context.MODE_PRIVATE)
+            val saved = prefs.getString("anti_flicker_mode", null)
+            if (saved != null) AntiFlickerMode.valueOf(saved) else AntiFlickerMode.defaultForDevice()
+        } catch (_: Exception) {
+            AntiFlickerMode.defaultForDevice()
+        }
+    }
+
+    fun setAntiFlickerMode(mode: AntiFlickerMode) {
+        antiFlickerMode = mode
+        try {
+            context.getSharedPreferences("idgaf_camera_prefs_v1", Context.MODE_PRIVATE)
+                .edit()
+                .putString("anti_flicker_mode", mode.name)
+                .apply()
+        } catch (_: Exception) {
+        }
+        if (isManualExposure && isShutter180Locked) {
+            manualShutterNs = compute180ShutterNs(targetFps)
+        }
+        pushUpdatedRepeatingRequest()
+    }
+
+    /**
+     * Snaps any candidate shutter duration (ns) to an exact flicker-free integer multiple of the AC light half-cycle:
+     * - 50Hz mains (100Hz light): 10ms (1/100s), 20ms (1/50s), 30ms (1/33.3s), 40ms (1/25s)
+     * - 60Hz mains (120Hz light): 8.33ms (1/120s), 16.67ms (1/60s), 25ms (1/40s), 33.33ms (1/30s)
+     * For bright outdoor daylight faster than 1/(2*mainsHz), passes clean fast shutter through unobstructed.
+     */
+    fun snapShutterToAntiFlickerNs(desiredNs: Long, maxAllowedNs: Long): Long {
+        val minExp = capabilities.exposureRangeNs.lower.coerceAtLeast(10_000L)
+        val maxExp = minOf(capabilities.exposureRangeNs.upper, maxAllowedNs).coerceAtLeast(minExp)
+        val clamped = desiredNs.coerceIn(minExp, maxExp)
+        val hz = antiFlickerMode.mainsHz
+        if (hz <= 0) return clamped
+
+        val halfCycleNs = 1_000_000_000L / (hz * 2L) // 10,000,000 ns (50Hz) or 8,333,333 ns (60Hz)
+        // Bright outdoor sunlight (< 0.72 * 1 half-cycle, e.g. faster than 1/140s): indoor AC lamps aren't dominant
+        if (clamped < (halfCycleNs * 72L) / 100L) {
+            return clamped
+        }
+        val maxCycles = (maxExp / halfCycleNs).coerceAtLeast(1L)
+        val idealCycles = Math.round(clamped.toDouble() / halfCycleNs.toDouble()).toLong().coerceIn(1L, maxCycles)
+        return (idealCycles * halfCycleNs).coerceIn(minExp, maxExp)
+    }
+
+    fun compute180ShutterNs(fps: Int): Long {
+        val safeFps = fps.coerceIn(1, 60)
+        val maxFrameNs = 1_000_000_000L / safeFps.toLong()
+        val raw180Ns = 1_000_000_000L / (safeFps * 2L).coerceAtLeast(16L)
+        return when (antiFlickerMode) {
+            AntiFlickerMode.HZ_50 -> {
+                // On 50Hz AC mains: 1/50s (20ms) at <=30 FPS (exact 172.8° @ 24fps, 180° @ 25fps, 216° @ 30fps) & 1/100s at 50-60 FPS!
+                val targetNs = if (safeFps > 35) 10_000_000L else 20_000_000L
+                targetNs.coerceIn(capabilities.exposureRangeNs.lower, minOf(capabilities.exposureRangeNs.upper, maxFrameNs))
+            }
+            AntiFlickerMode.HZ_60 -> {
+                // On 60Hz AC mains: 1/60s (16.67ms) at <=30 FPS & 1/120s at 50-60 FPS!
+                val targetNs = if (safeFps > 35) 8_333_333L else 16_666_667L
+                targetNs.coerceIn(capabilities.exposureRangeNs.lower, minOf(capabilities.exposureRangeNs.upper, maxFrameNs))
+            }
+            AntiFlickerMode.OFF -> {
+                raw180Ns.coerceIn(capabilities.exposureRangeNs.lower, capabilities.exposureRangeNs.upper)
+            }
+        }
     }
 
     private fun applyCinemaControls(builder: CaptureRequest.Builder, lockAutoForRecordStart: Boolean = false) {
         builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
         builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, resolvedFpsRange)
-        builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)
+        builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, antiFlickerMode.camera2Mode)
 
         // 1. Exposure (Manual ISO/Shutter + Extended Post-RAW Boost vs Locked Auto vs Auto)
         if (isManualExposure && capabilities.supportsManualExposure) {

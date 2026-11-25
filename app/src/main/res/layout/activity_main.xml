@@ -2105,19 +2105,53 @@
                     android:textSize="13sp"
                     android:textStyle="bold" />
 
+                <!-- Anti-Flicker Grid Selector (50Hz / 60Hz / OFF — Shutter Panel Only) -->
+                <TextView
+                    android:id="@+id/btnShutterAntiFlicker"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="5dp"
+                    android:background="@drawable/bg_dock_pill_active"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:paddingStart="7dp"
+                    android:paddingEnd="7dp"
+                    android:text="50Hz"
+                    android:textColor="#FF5F1F"
+                    android:textSize="9.5sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <!-- Pencil Button for Exact Custom Shutter Speed / Angle (Shutter Panel Only) -->
+                <TextView
+                    android:id="@+id/btnShutterCustom"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="5dp"
+                    android:background="@drawable/bg_hud_pill"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="✎"
+                    android:textColor="#FF5F1F"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
                 <!-- Shutter Unit Toggle (Speed 1/X vs Angle DEG) -->
                 <TextView
                     android:id="@+id/btnShutterUnit"
                     android:layout_width="wrap_content"
                     android:layout_height="26dp"
-                    android:layout_marginEnd="6dp"
+                    android:layout_marginEnd="5dp"
                     android:background="@drawable/bg_hud_pill"
                     android:gravity="center"
-                    android:paddingStart="8dp"
-                    android:paddingEnd="8dp"
+                    android:paddingStart="7dp"
+                    android:paddingEnd="7dp"
                     android:text="SPD"
                     android:textColor="#FF5F1F"
-                    android:textSize="10sp"
+                    android:textSize="9.5sp"
                     android:textStyle="bold"
                     android:visibility="gone" />
 
@@ -2126,14 +2160,14 @@
                     android:id="@+id/btnSlider180"
                     android:layout_width="wrap_content"
                     android:layout_height="26dp"
-                    android:layout_marginEnd="8dp"
+                    android:layout_marginEnd="5dp"
                     android:background="@drawable/bg_hud_pill"
                     android:gravity="center"
-                    android:paddingStart="10dp"
-                    android:paddingEnd="10dp"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
                     android:text="180°"
                     android:textColor="#FFFFFF"
-                    android:textSize="11sp"
+                    android:textSize="10sp"
                     android:textStyle="bold"
                     android:visibility="gone" />
 
@@ -2240,6 +2274,16 @@
                 android:max="100"
                 android:progressTint="#FF5F1F"
                 android:thumbTint="#FFFFFF" />
+
+            <!-- Quick 1-Tap Shutter Speed / Angle Preset Chips (Shown in SHUTTER Panel) -->
+            <LinearLayout
+                android:id="@+id/shutterPresetRow"
+                android:layout_width="match_parent"
+                android:layout_height="26dp"
+                android:layout_marginTop="6dp"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:visibility="gone" />
 
             <!-- FiLMiC-Style 2D White Balance × Tint Gradient Map (Shown only in WB Panel) -->
             <LinearLayout
@@ -2702,6 +2746,22 @@
                     android:textColor="#E8B968"
                     android:textSize="12sp"
                     android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/btnEraAntiFlicker"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_era_pill"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="50Hz"
+                    android:textColor="#E8B968"
+                    android:textSize="9sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
 
                 <TextView
                     android:id="@+id/btnEraLockExp"

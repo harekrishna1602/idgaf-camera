@@ -262,6 +262,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var eraSliderDrawer: LinearLayout
     private lateinit var txtEraSliderTitle: TextView
     private lateinit var txtEraSliderReadout: TextView
+    private lateinit var btnEraAntiFlicker: TextView
     private lateinit var btnEraLockExp: TextView
     private lateinit var btnEraSliderAuto: TextView
     private lateinit var eraAsaStockRow: LinearLayout
@@ -291,7 +292,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var era1950sPrintLevel: Int = 1 // 0=STUDIO (0.0), 1=CRITERION (0.5), 2=ARCHIVE (1.0)
     private var eraManualExposureActive: Boolean = false
     private var eraSelectedAsa: Int = 100
-    private val eraManualShutterDenoms = listOf(16, 18, 24, 30, 32, 36, 48, 50, 60, 100, 120, 180, 250, 500, 1000, 2000)
+    private val eraManualShutterDenoms = listOf(16, 18, 24, 25, 30, 33, 48, 50, 60, 100, 120, 200, 250, 500, 1000, 2000)
     @Volatile private var eraMicMonitorPaused: Boolean = false
     private var suppressEraSeek: Boolean = false
     private var saviorSnapshot: SaviorWorkbenchSnapshot? = null
@@ -386,7 +387,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var txtSliderReadout: TextView
     private lateinit var btnWbCustom: TextView
     private lateinit var btnSliderAuto: TextView
+    private lateinit var btnShutterAntiFlicker: TextView
+    private lateinit var btnShutterCustom: TextView
     private lateinit var btnShutterUnit: TextView
+    private lateinit var shutterPresetRow: LinearLayout
     private lateinit var btnSlider180: TextView
     private var shutterInAngleMode = false
     private val shutterAngles = listOf(11.25f, 22.5f, 45f, 90f, 120f, 144f, 172.8f, 180f, 270f, 360f)
@@ -411,7 +415,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var lastTelemetry: LiveTelemetry? = null
 
     // Standard cinema shutter speeds (denominators)
-    private val shutterDenoms = listOf(24, 30, 48, 50, 60, 100, 120, 180, 250, 500, 1000, 2000, 4000)
+    private val shutterDenoms = listOf(24, 25, 30, 33, 48, 50, 60, 100, 120, 200, 250, 500, 1000, 2000, 4000)
 
     // A/B Rack Focus points
     private var focusPointA: Float? = null
@@ -778,6 +782,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         eraSliderDrawer = findViewById(R.id.eraSliderDrawer)
         txtEraSliderTitle = findViewById(R.id.txtEraSliderTitle)
         txtEraSliderReadout = findViewById(R.id.txtEraSliderReadout)
+        btnEraAntiFlicker = findViewById(R.id.btnEraAntiFlicker)
         btnEraLockExp = findViewById(R.id.btnEraLockExp)
         btnEraSliderAuto = findViewById(R.id.btnEraSliderAuto)
         eraAsaStockRow = findViewById(R.id.eraAsaStockRow)
@@ -867,7 +872,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtSliderReadout = findViewById(R.id.txtSliderReadout)
         btnWbCustom = findViewById(R.id.btnWbCustom)
         btnSliderAuto = findViewById(R.id.btnSliderAuto)
+        btnShutterAntiFlicker = findViewById(R.id.btnShutterAntiFlicker)
+        btnShutterCustom = findViewById(R.id.btnShutterCustom)
         btnShutterUnit = findViewById(R.id.btnShutterUnit)
+        shutterPresetRow = findViewById(R.id.shutterPresetRow)
         btnSlider180 = findViewById(R.id.btnSlider180)
         rackFocusRow = findViewById(R.id.rackFocusRow)
         btnSetFocusA = findViewById(R.id.btnSetFocusA)
@@ -1174,23 +1182,31 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
-        // 1-Tap LOCK 180° inside ASA drawer: freezes real scene exposure at 180-deg rotary shutter (zero Android Auto-ISO glitches!)
+        btnEraAntiFlicker.setOnClickListener {
+            cycleAntiFlickerMode()
+            if (eraManualExposureActive && engine.capabilities.supportsManualExposure) {
+                val curEraFps = if (activeEraCamera == EraCameraId.MONO_1950S) 24 else eraSilentFps
+                val maxNs = 1_000_000_000L / curEraFps.coerceAtLeast(16).toLong()
+                val safeNs = engine.snapShutterToAntiFlickerNs(engine.manualShutterNs, maxNs)
+                engine.lockEraManualExposure(eraSelectedAsa, safeNs)
+                updateEraIrisUi()
+            }
+            refreshEraSliderUi()
+        }
+
+        // 1-Tap LOCK 180° inside ASA drawer: locks flicker-free cinema shutter (1/50s on 50Hz, 1/60s on 60Hz) & solves exact ASA!
         btnEraLockExp.setOnClickListener {
             if (!engine.capabilities.supportsManualExposure) {
                 showSingleToast("This lens does not support manual ASA/shutter lock")
                 return@setOnClickListener
             }
             val curEraFps = if (activeEraCamera == EraCameraId.MONO_1950S) 24 else eraSilentFps
-            val rotary180Ns = 1_000_000_000L / (curEraFps * 2L).coerceAtLeast(16L)
-            val targetIso = if (eraManualExposureActive) {
-                eraSelectedAsa
-            } else {
-                val curIso = engine.getLiveSensorIso().coerceAtLeast(50)
-                val curExp = engine.getLiveSensorShutterNs().coerceAtLeast(100_000L)
-                ((curIso.toDouble() * curExp.toDouble()) / rotary180Ns.toDouble()).roundToInt()
-                    .coerceIn(engine.capabilities.effectiveIsoRange.lower, engine.capabilities.effectiveIsoRange.upper)
-            }
-            applyEraManualStock(targetIso, rotary180Ns, announce = true)
+            val safe180Ns = engine.compute180ShutterNs(curEraFps)
+            val baseIso = if (eraManualExposureActive) engine.manualIso else engine.getLiveSensorIso().coerceAtLeast(50)
+            val baseExp = if (eraManualExposureActive) engine.manualShutterNs else engine.getLiveSensorShutterNs().coerceAtLeast(100_000L)
+            val targetIso = ((baseIso.toDouble() * baseExp.toDouble()) / safe180Ns.toDouble()).roundToInt()
+                .coerceIn(engine.capabilities.effectiveIsoRange.lower, engine.capabilities.effectiveIsoRange.upper)
+            applyEraManualStock(targetIso, safe180Ns, announce = true)
         }
 
         btnEraSliderAuto.setOnClickListener {
@@ -2152,15 +2168,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             return
         }
         val curEraFps = if (activeEraCamera == EraCameraId.MONO_1950S) 24 else eraSilentFps
+        val maxFrameNs = 1_000_000_000L / curEraFps.coerceAtLeast(16).toLong()
         val clampedIso = targetIso.coerceIn(engine.capabilities.effectiveIsoRange.lower, engine.capabilities.effectiveIsoRange.upper)
-        val chosenShutter = shutterNs ?: if (eraManualExposureActive) {
-            engine.manualShutterNs
+        val chosenShutter = if (shutterNs != null) {
+            engine.snapShutterToAntiFlickerNs(shutterNs, maxFrameNs)
         } else {
-            val curIso = engine.getLiveSensorIso().coerceAtLeast(50)
-            val curExp = engine.getLiveSensorShutterNs().coerceAtLeast(100_000L)
+            // Re-solve balanced exposure for the newly picked ASA and snap strictly to anti-flicker safe shutter (1/50s, 1/100s, 1/33s, 1/25s on 50Hz!)
+            val curIso = if (eraManualExposureActive) engine.manualIso else engine.getLiveSensorIso().coerceAtLeast(50)
+            val curExp = if (eraManualExposureActive) engine.manualShutterNs else engine.getLiveSensorShutterNs().coerceAtLeast(100_000L)
             val ideal = ((curIso.toDouble() * curExp.toDouble()) / clampedIso.toDouble()).toLong()
-            val maxSafe = 1_000_000_000L / curEraFps.coerceAtLeast(16).toLong()
-            ideal.coerceIn(engine.capabilities.exposureRangeNs.lower, minOf(maxSafe, engine.capabilities.exposureRangeNs.upper))
+            engine.snapShutterToAntiFlickerNs(ideal, maxFrameNs)
         }
         eraManualExposureActive = true
         eraSelectedAsa = clampedIso
@@ -2170,7 +2187,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         refreshEraSliderUi()
         if (announce) {
             val denom = (1_000_000_000.0 / engine.manualShutterNs.coerceAtLeast(1L).toDouble()).roundToInt().coerceAtLeast(1)
-            showSingleToast("LOCKED: ASA $clampedIso • 1/${denom}s (Zero Auto-ISO Pumping)")
+            showSingleToast("LOCKED: ASA $clampedIso • 1/${denom}s (${engine.antiFlickerMode.label})")
         }
     }
 
@@ -2237,6 +2254,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         val is1950s = (activeEraCamera == EraCameraId.MONO_1950S)
         when (activeEraPanel) {
             EraSliderPanel.CRANK -> {
+                btnEraAntiFlicker.visibility = View.GONE
                 btnEraLockExp.visibility = View.GONE
                 btnEraSliderAuto.text = "✕"
                 btnEraSliderAuto.setBackgroundResource(R.drawable.bg_era_pill)
@@ -2288,6 +2306,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 }
             }
             EraSliderPanel.BATH -> {
+                btnEraAntiFlicker.visibility = View.GONE
                 btnEraLockExp.visibility = View.GONE
                 btnEraSliderAuto.text = "✕"
                 btnEraSliderAuto.setBackgroundResource(R.drawable.bg_era_pill)
@@ -2327,6 +2346,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 }
             }
             EraSliderPanel.PRINT -> {
+                btnEraAntiFlicker.visibility = View.GONE
                 btnEraLockExp.visibility = View.GONE
                 btnEraSliderAuto.text = "✕"
                 btnEraSliderAuto.setBackgroundResource(R.drawable.bg_era_pill)
@@ -2367,6 +2387,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             EraSliderPanel.IRIS -> {
                 val canManual = engine.capabilities.supportsManualExposure
+                btnEraAntiFlicker.visibility = View.VISIBLE
+                btnEraAntiFlicker.text = engine.antiFlickerMode.label
+                btnEraAntiFlicker.setBackgroundResource(if (engine.antiFlickerMode != AntiFlickerMode.OFF) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
+                btnEraAntiFlicker.setTextColor(if (engine.antiFlickerMode != AntiFlickerMode.OFF) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
                 btnEraLockExp.visibility = if (canManual) View.VISIBLE else View.GONE
                 eraAsaStockRow.visibility = if (canManual) View.VISIBLE else View.GONE
                 eraSeekBar.visibility = View.VISIBLE
@@ -2428,6 +2452,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 }
             }
             EraSliderPanel.FOCUS -> {
+                btnEraAntiFlicker.visibility = View.GONE
                 btnEraLockExp.visibility = View.GONE
                 eraAsaStockRow.visibility = View.GONE
                 txtEraDrawerSub.visibility = View.GONE
@@ -2442,6 +2467,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 txtEraSliderReadout.text = if (engine.isManualFocus) formatFocus(engine.manualFocusDistance, maxF) else "AF (AUTO)"
             }
             EraSliderPanel.NONE -> {
+                btnEraAntiFlicker.visibility = View.GONE
                 btnEraLockExp.visibility = View.GONE
                 eraAsaStockRow.visibility = View.GONE
                 txtEraDrawerSub.visibility = View.GONE
@@ -3386,8 +3412,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.6"
-    } catch (_: Exception) { "0.7.6" }
+        info.versionName ?: "0.7.6.1"
+    } catch (_: Exception) { "0.7.6.1" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -4790,6 +4816,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             refreshSliderState()
         }
 
+        btnShutterAntiFlicker.setOnClickListener {
+            cycleAntiFlickerMode()
+            refreshSliderState()
+        }
+
+        btnShutterCustom.setOnClickListener {
+            showTapToTypeValueDialog()
+        }
+
         btnShutterUnit.setOnClickListener {
             shutterInAngleMode = !shutterInAngleMode
             btnShutterUnit.text = if (shutterInAngleMode) "ANG°" else "SPD"
@@ -4930,6 +4965,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                             txtSliderReadout.text = String.format(Locale.US, "%.0f°", ang)
                             btnSlider180.setBackgroundResource(if (kotlin.math.abs(ang - 180f) < 1f) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
                             btnSlider180.setTextColor(if (kotlin.math.abs(ang - 180f) < 1f) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                            renderShutterPresetChips(engine.manualShutterNs)
                         } else {
                             val idx = progress.coerceIn(0, shutterDenoms.lastIndex)
                             val denom = shutterDenoms[idx]
@@ -4938,6 +4974,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                             txtSliderReadout.text = "1/${denom}s"
                             btnSlider180.setBackgroundResource(R.drawable.bg_hud_pill)
                             btnSlider180.setTextColor(0xFFFFFFFF.toInt())
+                            renderShutterPresetChips(ns)
                         }
                         updateAutoButtonVisual(isManual = true)
                     }
@@ -4987,8 +5024,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         sliderDrawer.visibility = View.VISIBLE
         btnWbCustom.visibility = if (panel == ProControlPanel.WB) View.VISIBLE else View.GONE
+        btnShutterAntiFlicker.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
+        btnShutterCustom.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnShutterUnit.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnSlider180.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
+        shutterPresetRow.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         rackFocusRow.visibility = if (panel == ProControlPanel.FOCUS) View.VISIBLE else View.GONE
         proSeekBar.visibility = if (panel == ProControlPanel.WB) View.GONE else View.VISIBLE
         wbGradientPanel.visibility = if (panel == ProControlPanel.WB) View.VISIBLE else View.GONE
@@ -5034,8 +5074,17 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     proSeekBar.progress = closestIdx
                     txtSliderReadout.text = if (engine.isManualExposure) "1/${curDenom}s" else "AUTO • 1/${curDenom}s"
                 }
+                btnShutterAntiFlicker.text = engine.antiFlickerMode.label
+                if (engine.antiFlickerMode != AntiFlickerMode.OFF) {
+                    btnShutterAntiFlicker.setBackgroundResource(R.drawable.bg_dock_pill_active)
+                    btnShutterAntiFlicker.setTextColor(0xFFFF5F1F.toInt())
+                } else {
+                    btnShutterAntiFlicker.setBackgroundResource(R.drawable.bg_hud_pill)
+                    btnShutterAntiFlicker.setTextColor(0xFF8E96A4.toInt())
+                }
                 btnSlider180.setBackgroundResource(if (engine.isShutter180Locked) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
                 btnSlider180.setTextColor(if (engine.isShutter180Locked) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                renderShutterPresetChips(shownNs)
                 updateAutoButtonVisual(engine.isManualExposure)
             }
             ProControlPanel.FOCUS -> {
@@ -5065,6 +5114,82 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             ProControlPanel.NONE -> {}
         }
         suppressSeekCallback = false
+    }
+
+    private fun cycleAntiFlickerMode() {
+        val modes = AntiFlickerMode.values()
+        val next = modes[(modes.indexOf(engine.antiFlickerMode) + 1) % modes.size]
+        engine.setAntiFlickerMode(next)
+        val msg = when (next) {
+            AntiFlickerMode.HZ_50 -> "Anti-Flicker: 50Hz (India/EU — 1/50 & 1/100 safe)"
+            AntiFlickerMode.HZ_60 -> "Anti-Flicker: 60Hz (US/NTSC — 1/60 & 1/120 safe)"
+            AntiFlickerMode.OFF -> "Anti-Flicker: OFF (Pure 180° Shutter)"
+        }
+        showSingleToast(msg)
+    }
+
+    private fun renderShutterPresetChips(shownNs: Long) {
+        shutterPresetRow.removeAllViews()
+        if (shutterInAngleMode) {
+            val curAng = engine.getCurrentShutterAngle()
+            val quickAngles = listOf(45f to "45°", 90f to "90°", 144f to "144°", 172.8f to "172.8°", 180f to "180°", 270f to "270°", 360f to "360°")
+            quickAngles.forEachIndexed { idx, (ang, label) ->
+                val selected = engine.isManualExposure && kotlin.math.abs(curAng - ang) <= 2.5f
+                val chip = TextView(this).apply {
+                    text = label
+                    textSize = 8.5f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = Gravity.CENTER
+                    setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                    setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                        if (idx < quickAngles.lastIndex) marginEnd = dpToPx(3)
+                    }
+                    setOnClickListener {
+                        if (engine.isAeAfLocked) {
+                            showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                            return@setOnClickListener
+                        }
+                        engine.setManualShutterAngle(ang)
+                        refreshSliderState()
+                    }
+                }
+                shutterPresetRow.addView(chip)
+            }
+        } else {
+            val curDenom = (1_000_000_000.0 / shownNs.coerceAtLeast(1L).toDouble()).roundToInt()
+            val quickDenoms = when (engine.antiFlickerMode) {
+                AntiFlickerMode.HZ_50 -> listOf(25, 50, 100, 200, 500, 1000)
+                AntiFlickerMode.HZ_60 -> listOf(30, 60, 120, 250, 500, 1000)
+                AntiFlickerMode.OFF -> listOf(24, 48, 50, 60, 100, 250, 500)
+            }
+            quickDenoms.forEachIndexed { idx, denom ->
+                val tol = maxOf(2, denom / 15)
+                val selected = engine.isManualExposure && kotlin.math.abs(curDenom - denom) <= tol
+                val chip = TextView(this).apply {
+                    text = "1/$denom"
+                    textSize = 8.8f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = Gravity.CENTER
+                    setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                    setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                        if (idx < quickDenoms.lastIndex) marginEnd = dpToPx(3)
+                    }
+                    setOnClickListener {
+                        if (engine.isAeAfLocked) {
+                            showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                            return@setOnClickListener
+                        }
+                        engine.setManualShutterNs(1_000_000_000L / denom.toLong())
+                        refreshSliderState()
+                    }
+                }
+                shutterPresetRow.addView(chip)
+            }
+        }
     }
 
     private fun updateAutoButtonVisual(isManual: Boolean) {

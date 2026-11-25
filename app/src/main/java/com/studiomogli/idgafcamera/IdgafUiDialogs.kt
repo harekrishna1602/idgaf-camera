@@ -1,6 +1,12 @@
 package com.studiomogli.idgafcamera
 
+import android.app.Dialog
 import android.content.Context
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.view.ViewGroup
+import android.view.Window
+import android.widget.FrameLayout
 import android.graphics.Typeface
 import android.text.InputType
 import android.view.Gravity
@@ -101,7 +107,7 @@ object IdgafUiDialogs {
         cancelLabel: String? = "CANCEL",
         onCancel: (() -> Unit)? = null,
         rotationDegrees: Float = 0f
-    ): AlertDialog {
+    ): Dialog {
         val root = makeRootCard(context)
 
         root.addView(TextView(context).apply {
@@ -130,7 +136,7 @@ object IdgafUiDialogs {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        lateinit var dialog: AlertDialog
+        lateinit var dialog: Dialog
 
         if (cancelLabel != null) {
             btnRow.addView(
@@ -176,34 +182,53 @@ object IdgafUiDialogs {
         )
         root.addView(btnRow)
 
-        val finalView: View = if (kotlin.math.abs(rotationDegrees) > 1f) {
-            val dm = context.resources.displayMetrics
-            // Square container big enough to hold the rotated portrait card cleanly inside landscape screen height
-            val cardW = (dm.heightPixels * 0.76f).toInt().coerceIn(dp(context, 230), dp(context, 310))
-            val squareSide = (cardW + dp(context, 24)).coerceAtMost((dm.heightPixels * 0.92f).toInt())
-            android.widget.FrameLayout(context).apply {
-                clipChildren = false
-                clipToPadding = false
-                layoutParams = android.view.ViewGroup.LayoutParams(squareSide, squareSide)
-                root.layoutParams = android.widget.FrameLayout.LayoutParams(
-                    cardW,
-                    android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
-                    Gravity.CENTER
-                )
-                root.rotation = rotationDegrees
-                addView(root)
-            }
-        } else {
-            root
-        }
-
-        dialog = createTransparentDialog(context, finalView, cancelable = true)
-        dialog.show()
         if (kotlin.math.abs(rotationDegrees) > 1f) {
             val dm = context.resources.displayMetrics
-            val box = (dm.heightPixels * 0.92f).toInt().coerceAtLeast(dp(context, 270))
-            dialog.window?.setLayout(box, box)
+            // In landscape, rotated 90° card's width becomes vertical screen height -> keep <= 68% of landscape height!
+            val shortEdge = minOf(dm.widthPixels, dm.heightPixels)
+            val cardW = (shortEdge * 0.68f).toInt().coerceIn(dp(context, 210), dp(context, 268))
+
+            val fullOverlay = FrameLayout(context).apply {
+                setBackgroundColor(Color.argb(155, 0, 0, 0))
+                clipChildren = false
+                clipToPadding = false
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                setOnClickListener { dialog.dismiss() }
+            }
+            root.isClickable = true
+            root.layoutParams = FrameLayout.LayoutParams(
+                cardW,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+            root.rotation = rotationDegrees
+            fullOverlay.addView(root)
+
+            val fullDlg = Dialog(context).apply {
+                requestWindowFeature(Window.FEATURE_NO_TITLE)
+                setContentView(fullOverlay)
+                setCancelable(true)
+                setCanceledOnTouchOutside(true)
+            }
+            dialog = fullDlg
+            fullDlg.window?.apply {
+                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                setFlags(
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN
+                )
+            }
+            fullDlg.show()
+            return fullDlg
         }
+
+        dialog = createTransparentDialog(context, root, cancelable = true)
+        dialog.show()
         return dialog
     }
 
