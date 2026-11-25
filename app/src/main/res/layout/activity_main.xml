@@ -212,7 +212,6 @@
             android:id="@+id/btnFormatToggle"
             android:layout_width="wrap_content"
             android:layout_height="32dp"
-            android:layout_marginEnd="6dp"
             android:background="@drawable/bg_hud_pill"
             android:fontFamily="monospace"
             android:gravity="center"
@@ -222,16 +221,6 @@
             android:textColor="#FF5F1F"
             android:textSize="11sp"
             android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/btnCleanUiToggle"
-            android:layout_width="34dp"
-            android:layout_height="32dp"
-            android:background="@drawable/bg_hud_pill"
-            android:gravity="center"
-            android:text="👁"
-            android:textColor="#FFFFFF"
-            android:textSize="13sp" />
     </LinearLayout>
 
     <!-- FLOATING 2-ROW STACKED MONITORING TOOLS DRAWER (Toggled by MON pill — Zero scrolling, inline Config!) -->
@@ -709,7 +698,7 @@
             android:orientation="horizontal" />
     </LinearLayout>
 
-    <!-- FLOATING UNIFIED WORKBENCH & ERA VAULT DRAWER (Shared by SAVIOR 'ERA ▾' AND CLASSIC 'ERA ▾' / '1920s SILENT ▾'!) -->
+    <!-- FLOATING UNIFIED WORKBENCH & ERA CAMERA VAULT DRAWER (Supports distinct WORKBENCH vs ERA VAULT modes!) -->
     <LinearLayout
         android:id="@+id/workbenchEraDrawer"
         android:layout_width="368dp"
@@ -729,11 +718,12 @@
             android:orientation="horizontal">
 
             <TextView
+                android:id="@+id/txtEraDrawerTitle"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:fontFamily="monospace"
-                android:text="WORKBENCH &amp; ERA VAULT"
+                android:text="WORKBENCH"
                 android:textColor="#E8B968"
                 android:textSize="10sp"
                 android:textStyle="bold" />
@@ -750,41 +740,65 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <TextView
-            android:layout_width="wrap_content"
+        <!-- Section A: Workbench Selector (SAVIOR / ERA / PURIST) -->
+        <LinearLayout
+            android:id="@+id/workbenchSection"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="7dp"
-            android:fontFamily="monospace"
-            android:text="CAMERA WORKBENCH"
-            android:textColor="#B8A37E"
-            android:textSize="8.5sp"
-            android:textStyle="bold" />
+            android:orientation="vertical">
 
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="CAMERA WORKBENCH"
+                android:textColor="#B8A37E"
+                android:textSize="8.5sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/workbenchSelectRow"
+                android:layout_width="match_parent"
+                android:layout_height="30dp"
+                android:layout_marginTop="4dp"
+                android:gravity="center"
+                android:orientation="horizontal" />
+        </LinearLayout>
+
+        <!-- Section B: 2-Row Era Camera Vault (All 6 Eras: 1920s through 2008 DSLR!) -->
         <LinearLayout
-            android:id="@+id/workbenchSelectRow"
+            android:id="@+id/eraVaultSection"
             android:layout_width="match_parent"
-            android:layout_height="30dp"
-            android:layout_marginTop="4dp"
-            android:gravity="center"
-            android:orientation="horizontal" />
-
-        <TextView
-            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:fontFamily="monospace"
-            android:text="ERA CAMERAS (MASTER ONE ERA AT A TIME)"
-            android:textColor="#B8A37E"
-            android:textSize="8.5sp"
-            android:textStyle="bold" />
+            android:orientation="vertical">
 
-        <LinearLayout
-            android:id="@+id/eraVaultSelectRow"
-            android:layout_width="match_parent"
-            android:layout_height="30dp"
-            android:layout_marginTop="4dp"
-            android:gravity="center"
-            android:orientation="horizontal" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="ERA CAMERAS"
+                android:textColor="#B8A37E"
+                android:textSize="8.5sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/eraVaultSelectRow"
+                android:layout_width="match_parent"
+                android:layout_height="30dp"
+                android:layout_marginTop="4dp"
+                android:gravity="center"
+                android:orientation="horizontal" />
+
+            <LinearLayout
+                android:id="@+id/eraVaultSelectRow2"
+                android:layout_width="match_parent"
+                android:layout_height="30dp"
+                android:layout_marginTop="5dp"
+                android:gravity="center"
+                android:orientation="horizontal" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/txtEraVaultDesc"
@@ -793,7 +807,7 @@
             android:layout_marginTop="6dp"
             android:fontFamily="monospace"
             android:gravity="center"
-            android:text="1920s Silent 35mm — Nosferatu (1922) &amp; The General (1926) Optical R&amp;D"
+            android:text="1920s Silent 35mm — Orthochromatic Nitrate"
             android:textColor="#B8A37E"
             android:textSize="9sp" />
     </LinearLayout>
@@ -915,21 +929,18 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- SUBTLE FLOATING RESTORE EYE BUTTON (Shown ONLY when Clean-Frame Hide-UI Mode is ON!) -->
+    <!-- SUBTLE FLOATING RESTORE EYE BUTTON (Same Left-Rail Spot when Clean-Frame Hide-UI Mode is ON!) -->
     <TextView
         android:id="@+id/btnRestoreCleanUi"
-        android:layout_width="wrap_content"
-        android:layout_height="32dp"
-        android:layout_gravity="top|end"
-        android:layout_marginTop="10dp"
-        android:layout_marginEnd="16dp"
-        android:alpha="0.40"
+        android:layout_width="52dp"
+        android:layout_height="34dp"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="16dp"
+        android:alpha="0.38"
         android:background="@drawable/bg_hud_pill"
         android:elevation="11dp"
         android:fontFamily="monospace"
         android:gravity="center"
-        android:paddingStart="10dp"
-        android:paddingEnd="10dp"
         android:text="👁"
         android:textColor="#FFFFFF"
         android:textSize="13sp"
@@ -1707,15 +1718,34 @@
         android:textStyle="bold"
         android:visibility="gone" />
 
-    <!-- LEFT RAIL: DYNAMIC LENS SWITCHER -->
+    <!-- LEFT RAIL WRAPPER: DYNAMIC LENS SWITCHER + CLEAN-FRAME EYE TOGGLE (Works in SAVIOR & ERA!) -->
     <LinearLayout
-        android:id="@+id/lensRail"
+        android:id="@+id/leftRailWrapper"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="start|center_vertical"
         android:layout_marginStart="16dp"
         android:gravity="center_horizontal"
-        android:orientation="vertical" />
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/lensRail"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical" />
+
+        <TextView
+            android:id="@+id/btnCleanUiToggle"
+            android:layout_width="52dp"
+            android:layout_height="34dp"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/bg_hud_pill"
+            android:gravity="center"
+            android:text="👁"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp" />
+    </LinearLayout>
 
     <!-- FLOATING ZOOM ENGINE v2 POPOUT DRAWER (Presets, Curves, A/B Smooth Pull + Slider) -->
     <LinearLayout
@@ -2134,6 +2164,22 @@
                         android:textSize="10sp"
                         android:textStyle="bold" />
                 </LinearLayout>
+
+                <TextView
+                    android:id="@+id/btnWbCustom"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_hud_pill"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:paddingStart="9dp"
+                    android:paddingEnd="9dp"
+                    android:text="✎ K"
+                    android:textColor="#FF5F1F"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
 
                 <TextView
                     android:id="@+id/btnSliderAuto"
@@ -2557,7 +2603,6 @@
             android:id="@+id/btnEraFlipLens"
             android:layout_width="wrap_content"
             android:layout_height="30dp"
-            android:layout_marginEnd="6dp"
             android:background="@drawable/bg_era_pill"
             android:fontFamily="monospace"
             android:gravity="center"
@@ -2567,16 +2612,6 @@
             android:textColor="#E8B968"
             android:textSize="10sp"
             android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/btnEraCleanUi"
-            android:layout_width="32dp"
-            android:layout_height="30dp"
-            android:background="@drawable/bg_era_pill"
-            android:gravity="center"
-            android:text="👁"
-            android:textColor="#E8B968"
-            android:textSize="12sp" />
     </LinearLayout>
 
     <!-- ERA BOTTOM CONTROL DECK (1920s Silent 35mm — 100% Unified Inline Stacked Drawer UX!) -->

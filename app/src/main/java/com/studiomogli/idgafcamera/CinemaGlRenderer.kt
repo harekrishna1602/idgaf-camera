@@ -127,7 +127,7 @@ class CinemaGlRenderer(
                 // True 1920s Red-Blind Orthochromatic Nitrate Emulsion (deep dark reds, luminous blue skies)
                 float yOrtho = dot(rgb, vec3(0.04, 0.56, 0.40));
                 // Soft-knee optical highlight excess for true uncoated Petzval bloom & veiling glare
-                float hi = smoothstep(0.50, 0.98, yOrtho) * yOrtho;
+                float hi = smoothstep(0.66, 0.98, yOrtho) * yOrtho;
                 gl_FragColor = vec4(yOrtho, hi, yOrtho, uTrailAlpha);
             }
         """
@@ -165,6 +165,7 @@ class CinemaGlRenderer(
             #endif
 
             uniform samplerExternalOES uTexture;
+            uniform mat4 uFragStMatrix;
             uniform int uEnableScopes;
             uniform int uShowFalseColor;
             uniform int uShowPeaking;
@@ -331,9 +332,9 @@ class CinemaGlRenderer(
                 float aspect = max(uViewportAspect, 0.5);
                 float wear = clamp(uEraWear, 0.0, 1.0);
 
-                // 1. Subtle physical intermittent-claw gate weave (0.0 in PREMIERE, gentle in VAULT, genuine wobble in FOUND)
-                vec2 weaveUv = clamp(vTexCoord + uFilmTransport.xy * wear, vec2(0.002), vec2(0.998));
+                // 1. Subtle physical intermittent-claw gate weave (computed in unified RawUv space & mapped via uFragStMatrix -> 0px bloom ghosting!)
                 vec2 weaveRawUv = clamp(vRawUv + uFilmTransport.xy * wear, vec2(0.002), vec2(0.998));
+                vec2 weaveUv = clamp((uFragStMatrix * vec4(weaveRawUv, 0.0, 1.0)).xy, vec2(0.002), vec2(0.998));
                 vec2 weaveScreen = uFilmTransport.xy * wear * vec2(0.65, 0.85);
 
                 // 2. Authentic SHARP 90-Degree Rectangular 1.333:1 Silent 35mm Camera Aperture Gate (1-2px matte feather only)
@@ -364,12 +365,12 @@ class CinemaGlRenderer(
                     vec3 bloomSample = texture2D(uBloomTexture, weaveRawUv).rgb;
                     // Blend sharp sensor with temporal 512x256 optical MTF + daylight motion-blur trail:
                     // Even at center, mixing 28% of 512x256 MTF strips clinical 4K phone crispness into real ~800-line 1920s glass!
-                    float mtfAndTrail = clamp(0.28 + uMotionBlend * 0.48 + r2 * 0.42, 0.0, 0.88);
+                    float mtfAndTrail = clamp(0.24 + uMotionBlend * 0.52 + r2 * 0.36, 0.0, 0.86);
                     y = mix(ySharp, trailSample.r, mtfAndTrail);
-                    // Peripheral uncoated Petzval optical softness toward corners (reads from wide FBO .r)
-                    y = mix(y, bloomSample.r, clamp(r2 * mix(0.28, 0.46, wear), 0.0, 0.55));
-                    // True 128px-diameter uncoated Petzval highlight bloom & atmospheric veiling glare!
-                    wideBloom = bloomSample.g * mix(0.42, 0.58, wear);
+                    // Peripheral uncoated Petzval optical softness toward corners (reads from wide circular FBO .r)
+                    y = mix(y, bloomSample.r, clamp(r2 * mix(0.24, 0.42, wear), 0.0, 0.52));
+                    // True circular uncoated Petzval highlight bloom & veiling glare on speculars/windows/skies!
+                    wideBloom = bloomSample.g * mix(0.36, 0.50, wear);
                 } else {
                     // Fallback if FBO unavailable
                     vec2 dA = (uStepX + uStepY) * (1.8 + r2 * 4.0);
@@ -569,6 +570,7 @@ class CinemaGlRenderer(
     private var aTexCoordLoc: Int = -1
     private var uMvpMatrixLoc: Int = -1
     private var uStMatrixLoc: Int = -1
+    private var uFragStMatrixLoc: Int = -1
     private var uTextureLoc: Int = -1
     private var uEnableScopesLoc: Int = -1
     private var uShowFalseColorLoc: Int = -1
@@ -1290,6 +1292,7 @@ class CinemaGlRenderer(
 
         GLES20.glUniformMatrix4fv(uMvpMatrixLoc, 1, false, mvpMatrix, 0)
         GLES20.glUniformMatrix4fv(uStMatrixLoc, 1, false, stMatrix, 0)
+        GLES20.glUniformMatrix4fv(uFragStMatrixLoc, 1, false, stMatrix, 0)
 
         val scopes = scopeState
         GLES20.glUniform1i(uEnableScopesLoc, if (enableScopes) 1 else 0)
@@ -1516,6 +1519,7 @@ class CinemaGlRenderer(
             aTexCoordLoc = GLES20.glGetAttribLocation(programId, "aTexCoord")
             uMvpMatrixLoc = GLES20.glGetUniformLocation(programId, "uMvpMatrix")
             uStMatrixLoc = GLES20.glGetUniformLocation(programId, "uStMatrix")
+            uFragStMatrixLoc = GLES20.glGetUniformLocation(programId, "uFragStMatrix")
             uTextureLoc = GLES20.glGetUniformLocation(programId, "uTexture")
             uEnableScopesLoc = GLES20.glGetUniformLocation(programId, "uEnableScopes")
             uShowFalseColorLoc = GLES20.glGetUniformLocation(programId, "uShowFalseColor")
@@ -1834,10 +1838,10 @@ class CinemaGlRenderer(
                 return fid to tid
             }
 
-            // Strict Power-of-Two dimensions (512x256 & 256x128) guarantee 100% FBO completeness on every ES 2.0 GPU!
-            val trailPair = makeFbo(512, 256) ?: return
-            val bloomAPair = makeFbo(256, 128) ?: return
-            val bloomBPair = makeFbo(256, 128) ?: return
+            // Square Power-of-Two FBOs (512x512 & 256x256) eliminate aspect anisotropy on portrait-natural phone sensors!
+            val trailPair = makeFbo(512, 512) ?: return
+            val bloomAPair = makeFbo(256, 256) ?: return
+            val bloomBPair = makeFbo(256, 256) ?: return
 
             trailFboId = trailPair.first; trailTexId = trailPair.second
             bloomFboAId = bloomAPair.first; bloomTexAId = bloomAPair.second
@@ -1868,20 +1872,19 @@ class CinemaGlRenderer(
      * 3. 256x128 Vertical 9-Tap Wide Gaussian Blur (stride 2 -> +-67px vertical on 1080p -> true circular Petzval glow!)
      */
     private fun runOpticalPrePassesOnGlThread() {
-        // Offscreen Pass 1: OES Camera -> 512x256 trailFbo (Orthochromatic + Highlight Map + Temporal Trail)
+        // Offscreen Pass 1: OES Camera -> 512x512 trailFbo (Orthochromatic + Highlight Map + Daylight Rotary Trail)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, trailFboId)
-        GLES20.glViewport(0, 0, 512, 256)
+        GLES20.glViewport(0, 0, 512, 512)
+        val motionAmt = computeDaylightMotionBlend()
         val alpha: Float
-        if (trailNeedsReset) {
+        if (trailNeedsReset || motionAmt < 0.05f) {
+            // Indoors / slow shutter: disable blending completely (zero 8-bit quantization ghost tail!)
             GLES20.glDisable(GLES20.GL_BLEND)
-            GLES20.glClearColor(0f, 0f, 0f, 1f)
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             alpha = 1.0f
             trailNeedsReset = false
         } else {
-            val motionAmt = computeDaylightMotionBlend()
-            // Bright sun (motionAmt=0.55) -> alpha=0.54 (liquid rotary-shutter trail); Indoors -> alpha=0.90 (crisp)
-            alpha = (0.90f - motionAmt * 0.65f).coerceIn(0.48f, 1.0f)
+            // Bright daylight fast shutter (<1/120s): engage silky hardware rotary-shutter motion blend
+            alpha = (1.0f - motionAmt * 0.72f).coerceIn(0.55f, 1.0f)
             GLES20.glEnable(GLES20.GL_BLEND)
             GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         }
@@ -1903,15 +1906,25 @@ class CinemaGlRenderer(
         GLES20.glDisable(GLES20.GL_BLEND)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
 
-        // Offscreen Pass 2: Horizontal 9-Tap Wide Gaussian -> 256x128 bloomFboB
+        // Compute true physical aspect-compensated blur steps so Petzval glow is 100% circular on every sensor!
+        val stSwapped = kotlin.math.abs(stMatrix[1]) > kotlin.math.abs(stMatrix[0])
+        val rot0W = (if (stSwapped) videoHeight else videoWidth).coerceAtLeast(16).toFloat()
+        val rot0H = (if (stSwapped) videoWidth else videoHeight).coerceAtLeast(16).toFloat()
+        val minDim = minOf(rot0W, rot0H)
+        // Radius = 4.4% of frame short-edge (~48px radius / ~96px diameter on 1080p, perfectly isotropic!)
+        val stepPx = minDim * 0.0110f
+        val blurStepU = stepPx / rot0W
+        val blurStepV = stepPx / rot0H
+
+        // Offscreen Pass 2: U-axis 9-Tap Wide Gaussian -> 256x256 bloomFboB
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bloomFboBId)
-        GLES20.glViewport(0, 0, 256, 128)
+        GLES20.glViewport(0, 0, 256, 256)
         GLES20.glUseProgram(blurProgramId)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, trailTexId)
         GLES20.glUniform1i(blurUSrcLoc, 1)
         GLES20.glUniformMatrix4fv(blurUStLoc, 1, false, identityMat4, 0)
-        GLES20.glUniform2f(blurUDirLoc, 2.0f / 256.0f, 0.0f)
+        GLES20.glUniform2f(blurUDirLoc, blurStepU, 0.0f)
 
         GLES20.glEnableVertexAttribArray(blurAPosLoc)
         GLES20.glVertexAttribPointer(blurAPosLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
@@ -1919,11 +1932,11 @@ class CinemaGlRenderer(
         GLES20.glVertexAttribPointer(blurATexLoc, 2, GLES20.GL_FLOAT, false, 0, texCoordBuf)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-        // Offscreen Pass 3: Vertical 9-Tap Wide Gaussian -> 256x128 bloomFboA
+        // Offscreen Pass 3: V-axis 9-Tap Wide Gaussian -> 256x256 bloomFboA
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bloomFboAId)
-        GLES20.glViewport(0, 0, 256, 128)
+        GLES20.glViewport(0, 0, 256, 256)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bloomTexBId)
-        GLES20.glUniform2f(blurUDirLoc, 0.0f, 2.0f / 128.0f)
+        GLES20.glUniform2f(blurUDirLoc, 0.0f, blurStepV)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
         GLES20.glDisableVertexAttribArray(blurAPosLoc)

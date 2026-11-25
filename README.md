@@ -1,12 +1,14 @@
-# IDGAF CAMERA (`v0.7.5.1` — Unified Inline Drawer Overhaul, Combined Format Pill, 2-Row Stacked PRO/MON, Clean-Frame Eye & Cinema Input Bar)
+# IDGAF CAMERA (`v0.7.5.2` — 1920s Optical Audit Fixes, Distinct Workbench/Era Drawers, Left-Rail Clean-Frame Eye & Styled License)
 
 *A love letter to indie filmmakers — by Savior San.*
 
 Free, open Android cinema camera powered by the **Savior Cinema Engine** (native **Kotlin + Camera2 + OpenGL ES 2.0**) by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## What's Upgraded in `v0.7.5.1` (Unified Drawer & Clean-Frame UI Overhaul)
-- **Combined Format Pill (`1080P • 30`) + Inline Format Drawer:** Merged `1080P` and `30 FPS` into one clean pill on `saviorTopBar`—freeing top-bar space across all phone sizes and replacing old Android popups with a 2-row inline drawer (`480P / 720P / 1080P / 2K / 4K` + `20 / 24 / 30 / 60 / CUSTOM`).
-- **Consistent `ERA ▾` Button & Unified Workbench / Era Vault Drawer:** Same clear `ERA ▾` pill in both `SAVIOR` and `ERA` workbenches—tapping opens one unified inline drawer to pick Workbench (`SAVIOR` / `ERA` / `PURIST`) or Era Camera (`1920s SILENT` etc.) with zero blind switching and zero system popups.
-- **2-Row Stacked `PRO` & `MON` Drawers:** Replaced long horizontal scrolling trays with compact 2-row stacked drawers (`344dp`), plus expandable inline sub-panels right inside `PRO` (Time-Lapse intervals) and `MON` (Peaking Color/Sensitivity & Zebra IRE—zero hidden long-presses).
-- **Clean-Frame Hide-UI Eye (`👁`):** Added a dedicated `👁` button in both `SAVIOR` and `ERA` to hide 100% of HUD controls for uninterrupted framing (leaves only a subtle translucent corner `👁` to restore UI, with a red `● 👁` indicator while rolling).
-- **Sleek Unified Cinema Inline Input Bar (`cinemaInputDrawer`):** Replaced every clunky old Android numeric `AlertDialog` (EV, ISO, Shutter, WB, Focus, Custom ASA, Custom FPS, Time-Lapse, Focus/Zoom Pull durations) with a styled dark-charcoal monospace input drawer with `− / +` step buttons and instant keyboard/fullscreen handling.
+## What's Fixed & Upgraded in `v0.7.5.2`
+- **1920s Multi-Pass Optical Audit Fixes (`CinemaGlRenderer.kt`):**
+  - **0.000 px Gate-Weave UV Alignment:** Computes gate weave in unified `vRawUv` space and maps through `uFragStMatrix` so sharp camera texture, temporal trail FBO, and optical bloom FBO track together with zero double-vision ghosting in `VAULT` / `FOUND`.
+  - **True Circular Petzval Bloom:** Upgraded FBOs to square Power-of-Two (`512×512` & `256×256`) with aspect-compensated `uBlurDir` (`rot0W` / `rot0H`) so optical halation is circular rather than horizontally stretched on portrait-natural sensors.
+  - **Crisper Midtones + Zero Indoor Trail Ghosting:** Raised highlight bloom knee (`0.66`) so faces stay punchy while skies/windows/lamps glow, and disabled indoor temporal blending (`motionAmt < 0.05`) while retaining rotary-shutter daylight blur.
+- **ASA Double-Selection Bug Fixed & Zebra Toggle Restored:** Dynamically adapts 1920s ASA stock chips to the lens's hardware ISO floor (`ASA 100/200/400/800` when min ISO is 100) so only one chip can ever highlight; restored `btnToolZebra` click listener inside `MON`.
+- **Distinct Workbench vs Era Camera Vault Drawers (Through 2008 DSLR):** Inside Era mode, `ERA ▾` opens the Workbench Switcher (`SAVIOR | ERA | PURIST`) while `1920s SILENT ▾` opens the 2-row 6-era Camera Vault (`1920s`, `1950s`, `1970s S8/16`, `1980s VHS`, `2000s DV`, `2008 DSLR`).
+- **Left-Rail Clean-Frame Eye (`👁`) + No Auto-Keyboard Input Bar + WB `✎ K` + Styled IDGAF License:** Moved `👁` below the lens switcher on the left rail (with in-place subtle restore eye); Cinema Inline Input Bar keeps keyboard closed until you tap inside the box so `−`/`+` work cleanly; added explicit `✎ K` button next to `AUTO` in White Balance; redesigned `dialog_license.xml` to match IDGAF's dark cinema aesthetic.

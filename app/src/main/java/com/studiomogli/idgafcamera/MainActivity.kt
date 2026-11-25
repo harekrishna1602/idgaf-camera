@@ -71,6 +71,7 @@ enum class ProControlPanel { NONE, EV, ISO, SHUTTER, FOCUS, WB }
 enum class ZoomCurve(val label: String) { LINEAR("LIN"), EXPONENTIAL("EXP"), CRASH("CRASH") }
 enum class CameraWorkbench { SAVIOR, ERA }
 enum class EraSliderPanel { NONE, CRANK, BATH, IRIS, FOCUS, PRINT }
+enum class EraDrawerMode { BOTH, WORKBENCH_ONLY, ERA_VAULT_ONLY }
 enum class EraCameraId(val shaderCode: Int, val pillLabel: String, val fileTag: String) {
     SILENT_1920S(1, "1920s SILENT ▾", "1920s"),
     MONO_1950S(2, "1950s MONO 35mm ▾", "1950s")
@@ -289,8 +290,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var txtTimecode: TextView
     private lateinit var viewRecDot: View
     private lateinit var btnFormatToggle: TextView
+    private lateinit var leftRailWrapper: LinearLayout
     private lateinit var btnCleanUiToggle: TextView
-    private lateinit var btnEraCleanUi: TextView
     private lateinit var btnRestoreCleanUi: TextView
     private lateinit var rightRailContainer: LinearLayout
     private lateinit var formatDrawer: LinearLayout
@@ -299,10 +300,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var formatResRow: LinearLayout
     private lateinit var formatFpsRow: LinearLayout
     private lateinit var workbenchEraDrawer: LinearLayout
+    private lateinit var txtEraDrawerTitle: TextView
+    private lateinit var workbenchSection: LinearLayout
+    private lateinit var eraVaultSection: LinearLayout
     private lateinit var btnEraDrawerClose: TextView
     private lateinit var workbenchSelectRow: LinearLayout
     private lateinit var eraVaultSelectRow: LinearLayout
+    private lateinit var eraVaultSelectRow2: LinearLayout
     private lateinit var txtEraVaultDesc: TextView
+    private var activeEraDrawerMode: EraDrawerMode = EraDrawerMode.BOTH
     private lateinit var cinemaInputDrawer: LinearLayout
     private lateinit var txtCinemaInputTitle: TextView
     private lateinit var txtCinemaInputHint: TextView
@@ -367,6 +373,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var sliderDrawer: LinearLayout
     private lateinit var txtSliderTitle: TextView
     private lateinit var txtSliderReadout: TextView
+    private lateinit var btnWbCustom: TextView
     private lateinit var btnSliderAuto: TextView
     private lateinit var btnShutterUnit: TextView
     private lateinit var btnSlider180: TextView
@@ -779,8 +786,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtTimecode = findViewById(R.id.txtTimecode)
         viewRecDot = findViewById(R.id.viewRecDot)
         btnFormatToggle = findViewById(R.id.btnFormatToggle)
+        leftRailWrapper = findViewById(R.id.leftRailWrapper)
         btnCleanUiToggle = findViewById(R.id.btnCleanUiToggle)
-        btnEraCleanUi = findViewById(R.id.btnEraCleanUi)
         btnRestoreCleanUi = findViewById(R.id.btnRestoreCleanUi)
         rightRailContainer = findViewById(R.id.rightRailContainer)
         formatDrawer = findViewById(R.id.formatDrawer)
@@ -789,9 +796,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         formatResRow = findViewById(R.id.formatResRow)
         formatFpsRow = findViewById(R.id.formatFpsRow)
         workbenchEraDrawer = findViewById(R.id.workbenchEraDrawer)
+        txtEraDrawerTitle = findViewById(R.id.txtEraDrawerTitle)
+        workbenchSection = findViewById(R.id.workbenchSection)
+        eraVaultSection = findViewById(R.id.eraVaultSection)
         btnEraDrawerClose = findViewById(R.id.btnEraDrawerClose)
         workbenchSelectRow = findViewById(R.id.workbenchSelectRow)
         eraVaultSelectRow = findViewById(R.id.eraVaultSelectRow)
+        eraVaultSelectRow2 = findViewById(R.id.eraVaultSelectRow2)
         txtEraVaultDesc = findViewById(R.id.txtEraVaultDesc)
         cinemaInputDrawer = findViewById(R.id.cinemaInputDrawer)
         txtCinemaInputTitle = findViewById(R.id.txtCinemaInputTitle)
@@ -838,6 +849,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         sliderDrawer = findViewById(R.id.sliderDrawer)
         txtSliderTitle = findViewById(R.id.txtSliderTitle)
         txtSliderReadout = findViewById(R.id.txtSliderReadout)
+        btnWbCustom = findViewById(R.id.btnWbCustom)
         btnSliderAuto = findViewById(R.id.btnSliderAuto)
         btnShutterUnit = findViewById(R.id.btnShutterUnit)
         btnSlider180 = findViewById(R.id.btnSlider180)
@@ -1056,18 +1068,18 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private fun setupEraWorkbench() {
         btnWorkbenchToEra.setOnClickListener {
             if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop recording to switch workbench / era")
+                showSingleToast("Stop recording to switch workbench")
                 return@setOnClickListener
             }
-            toggleWorkbenchEraDrawer()
+            toggleWorkbenchEraDrawer(EraDrawerMode.BOTH)
         }
 
         btnEraWorkbenchSwitch.setOnClickListener {
             if (engine.isRecording || engine.isFinalizingClip) {
-                showSingleToast("Stop recording to switch workbench / era")
+                showSingleToast("Stop recording to switch workbench")
                 return@setOnClickListener
             }
-            toggleWorkbenchEraDrawer()
+            toggleWorkbenchEraDrawer(EraDrawerMode.WORKBENCH_ONLY)
         }
 
         btnEraCameraPicker.setOnClickListener {
@@ -1075,7 +1087,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 showSingleToast("Stop recording to select Era camera")
                 return@setOnClickListener
             }
-            toggleWorkbenchEraDrawer()
+            toggleWorkbenchEraDrawer(EraDrawerMode.ERA_VAULT_ONLY)
         }
 
         btnEraTorch.setOnClickListener {
@@ -1226,7 +1238,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun setupUnifiedInlineDrawersAndCleanUi() {
         btnCleanUiToggle.setOnClickListener { setCleanFrameMode(true) }
-        btnEraCleanUi.setOnClickListener { setCleanFrameMode(true) }
         btnRestoreCleanUi.setOnClickListener { setCleanFrameMode(false) }
 
         btnFormatClose.setOnClickListener {
@@ -1256,10 +1267,32 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
+        // Open keyboard ONLY when the user explicitly taps the text box (NEVER auto-popup on drawer open!)
+        edtCinemaInput.setOnClickListener {
+            edtCinemaInput.requestFocus()
+            edtCinemaInput.setSelection(edtCinemaInput.text?.length ?: 0)
+            try {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.showSoftInput(edtCinemaInput, InputMethodManager.SHOW_IMPLICIT)
+            } catch (_: Exception) {
+            }
+        }
+
         btnCinemaInputMinus.setOnClickListener { stepCinemaInputValue(-1f) }
         btnCinemaInputPlus.setOnClickListener { stepCinemaInputValue(+1f) }
 
         updateFormatPillUi()
+        updateCleanUiToggleStyle()
+    }
+
+    private fun updateCleanUiToggleStyle() {
+        if (currentWorkbench == CameraWorkbench.ERA) {
+            btnCleanUiToggle.setBackgroundResource(R.drawable.bg_era_pill)
+            btnCleanUiToggle.setTextColor(0xFFE8B968.toInt())
+        } else {
+            btnCleanUiToggle.setBackgroundResource(R.drawable.bg_hud_pill)
+            btnCleanUiToggle.setTextColor(0xFFFFFFFF.toInt())
+        }
     }
 
     private fun setCleanFrameMode(enabled: Boolean) {
@@ -1275,7 +1308,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             saviorBottomDock.visibility = View.GONE
             eraTopBar.visibility = View.GONE
             eraBottomDock.visibility = View.GONE
-            lensRail.visibility = View.GONE
+            leftRailWrapper.visibility = View.GONE
             zoomRockerContainer.visibility = View.GONE
             rightRailContainer.visibility = View.GONE
             txtLowBatteryBanner.visibility = View.GONE
@@ -1283,13 +1316,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
             btnRestoreCleanUi.visibility = View.VISIBLE
             updateRestoreCleanEyeBadge()
-            showSingleToast("Clean Frame ON — tap 👁 in top-right to restore UI")
         } else {
             btnRestoreCleanUi.visibility = View.GONE
+            leftRailWrapper.visibility = View.VISIBLE
             rightRailContainer.visibility = View.VISIBLE
             if (currentWorkbench == CameraWorkbench.ERA) {
                 eraTopBar.visibility = View.VISIBLE
                 eraBottomDock.visibility = View.VISIBLE
+                lensRail.visibility = View.GONE
             } else {
                 saviorTopBar.visibility = View.VISIBLE
                 saviorBottomDock.visibility = View.VISIBLE
@@ -1297,6 +1331,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 zoomRockerContainer.visibility = View.VISIBLE
                 syncExitSplitPillVisibility()
             }
+            updateCleanUiToggleStyle()
             syncLowBatteryBannerVisibility()
         }
     }
@@ -1310,25 +1345,26 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             btnRestoreCleanUi.text = "👁"
             btnRestoreCleanUi.setTextColor(0xFFFFFFFF.toInt())
-            btnRestoreCleanUi.alpha = 0.38f
+            btnRestoreCleanUi.alpha = 0.36f
         }
     }
 
-    private fun toggleWorkbenchEraDrawer() {
-        val showing = workbenchEraDrawer.visibility == View.VISIBLE
-        if (showing) {
+    private fun toggleWorkbenchEraDrawer(mode: EraDrawerMode) {
+        val alreadyOpenSameMode = (workbenchEraDrawer.visibility == View.VISIBLE && activeEraDrawerMode == mode)
+        if (alreadyOpenSameMode) {
             closeWorkbenchEraDrawer()
-        } else {
-            closeTopDrawers(except = "ERA_VAULT")
-            selectEraPanel(EraSliderPanel.NONE)
-            renderWorkbenchEraDrawerChips()
-            workbenchEraDrawer.visibility = View.VISIBLE
-            if (currentWorkbench == CameraWorkbench.SAVIOR) {
-                btnWorkbenchToEra.setBackgroundResource(R.drawable.bg_era_pill_active)
-                btnWorkbenchToEra.setTextColor(0xFF141210.toInt())
-            }
-            syncLowBatteryBannerVisibility()
+            return
         }
+        closeTopDrawers(except = "ERA_VAULT")
+        selectEraPanel(EraSliderPanel.NONE)
+        activeEraDrawerMode = mode
+        renderWorkbenchEraDrawerChips(mode)
+        workbenchEraDrawer.visibility = View.VISIBLE
+        if (currentWorkbench == CameraWorkbench.SAVIOR) {
+            btnWorkbenchToEra.setBackgroundResource(R.drawable.bg_era_pill_active)
+            btnWorkbenchToEra.setTextColor(0xFF141210.toInt())
+        }
+        syncLowBatteryBannerVisibility()
     }
 
     private fun closeWorkbenchEraDrawer() {
@@ -1340,86 +1376,122 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         syncLowBatteryBannerVisibility()
     }
 
-    private fun renderWorkbenchEraDrawerChips() {
-        workbenchSelectRow.removeAllViews()
-        val wbEntries = listOf(
-            Triple("SAVIOR", currentWorkbench == CameraWorkbench.SAVIOR) {
-                closeWorkbenchEraDrawer()
-                exitEraToSaviorWorkbench()
-            },
-            Triple("ERA", currentWorkbench == CameraWorkbench.ERA) {
-                closeWorkbenchEraDrawer()
-                enterEraWorkbench()
-            },
-            Triple("PURIST • P8", false) {
-                txtEraVaultDesc.text = "PURIST (Gate 65 Discipline) arrives in Phase 8 — try 👁 Clean Frame now!"
-                showSingleToast("PURIST (Gate 65) arrives in Phase 8 — tap 👁 for Clean Frame now!")
-            }
-        )
-        wbEntries.forEachIndexed { idx, (label, active, onClick) ->
-            val chip = TextView(this).apply {
-                text = label
-                textSize = 9.5f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                gravity = Gravity.CENTER
-                alpha = if (idx == 2) 0.50f else 1.0f
-                setBackgroundResource(if (active) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-                setTextColor(if (active) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                    if (idx < wbEntries.lastIndex) marginEnd = dpToPx(5)
-                }
-                setOnClickListener { onClick() }
-            }
-            workbenchSelectRow.addView(chip)
+    private fun renderWorkbenchEraDrawerChips(mode: EraDrawerMode) {
+        val showWb = (mode == EraDrawerMode.BOTH || mode == EraDrawerMode.WORKBENCH_ONLY)
+        val showVault = (mode == EraDrawerMode.BOTH || mode == EraDrawerMode.ERA_VAULT_ONLY)
+
+        workbenchSection.visibility = if (showWb) View.VISIBLE else View.GONE
+        eraVaultSection.visibility = if (showVault) View.VISIBLE else View.GONE
+        txtEraDrawerTitle.text = when (mode) {
+            EraDrawerMode.WORKBENCH_ONLY -> "SWITCH WORKBENCH"
+            EraDrawerMode.ERA_VAULT_ONLY -> "ERA CAMERA VAULT"
+            EraDrawerMode.BOTH -> "WORKBENCH & ERA VAULT"
         }
 
-        eraVaultSelectRow.removeAllViews()
-        val in1920s = (currentWorkbench == CameraWorkbench.ERA && activeEraCamera == EraCameraId.SILENT_1920S)
-        val eraEntries = listOf(
-            Triple("1920s SILENT", in1920s) {
-                closeWorkbenchEraDrawer()
-                if (currentWorkbench != CameraWorkbench.ERA) {
+        if (showWb) {
+            workbenchSelectRow.removeAllViews()
+            val wbEntries = listOf(
+                Triple("SAVIOR", currentWorkbench == CameraWorkbench.SAVIOR) {
+                    closeWorkbenchEraDrawer()
+                    exitEraToSaviorWorkbench()
+                },
+                Triple("ERA", currentWorkbench == CameraWorkbench.ERA) {
+                    closeWorkbenchEraDrawer()
                     enterEraWorkbench()
-                } else {
-                    activeEraCamera = EraCameraId.SILENT_1920S
-                    applyActiveEraCamera(announce = false)
+                },
+                Triple("PURIST", false) {
+                    txtEraVaultDesc.text = "PURIST — Gate 65 (In Development)"
+                    showSingleToast("PURIST — In Development")
                 }
-            },
-            Triple("1950s (R&D)", false) {
-                txtEraVaultDesc.text = "1950s Satyajit Ray Mono is parked in R&D until 1920s Silent hits 10/10!"
-                showSingleToast("1950s parked in R&D — mastering 1920s Silent 35mm first!")
-            },
-            Triple("1970s S8", false) {
-                txtEraVaultDesc.text = "1970s Super 8 / 16mm arrives after 1920s & 1950s are mastered."
-                showSingleToast("1970s Super 8 arrives in a future phase")
-            },
-            Triple("1980s VHS", false) {
-                txtEraVaultDesc.text = "1980s–90s VHS Camcorder arrives after 1970s Super 8."
-                showSingleToast("1980s VHS Camcorder arrives in a future phase")
-            }
-        )
-        eraEntries.forEachIndexed { idx, (label, active, onClick) ->
-            val chip = TextView(this).apply {
-                text = label
-                textSize = 8.5f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                gravity = Gravity.CENTER
-                alpha = if (idx == 0) 1.0f else 0.45f
-                setBackgroundResource(if (active) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
-                setTextColor(if (active) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                    if (idx < eraEntries.lastIndex) marginEnd = dpToPx(4)
+            )
+            wbEntries.forEachIndexed { idx, (label, active, onClick) ->
+                val chip = TextView(this).apply {
+                    text = label
+                    textSize = 9.5f
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    gravity = Gravity.CENTER
+                    alpha = if (idx == 2) 0.45f else 1.0f
+                    setBackgroundResource(if (active) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
+                    setTextColor(if (active) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                        if (idx < wbEntries.lastIndex) marginEnd = dpToPx(5)
+                    }
+                    setOnClickListener { onClick() }
                 }
-                setOnClickListener { onClick() }
+                workbenchSelectRow.addView(chip)
             }
-            eraVaultSelectRow.addView(chip)
         }
-        txtEraVaultDesc.text = if (in1920s) {
-            "Active: 1920s Silent 35mm — Nosferatu (1922) & The General (1926) Optical R&D"
-        } else {
-            "Tap 1920s SILENT to load the 1920s Silent 35mm Nitrate camera"
+
+        if (showVault) {
+            val in1920s = (currentWorkbench == CameraWorkbench.ERA && activeEraCamera == EraCameraId.SILENT_1920S)
+            val row1 = listOf(
+                Triple("1920s SILENT", in1920s) {
+                    closeWorkbenchEraDrawer()
+                    if (currentWorkbench != CameraWorkbench.ERA) {
+                        enterEraWorkbench()
+                    } else {
+                        activeEraCamera = EraCameraId.SILENT_1920S
+                        applyActiveEraCamera(announce = false)
+                    }
+                },
+                Triple("1950s MONO", false) {
+                    txtEraVaultDesc.text = "1950s Monochrome 35mm — In Development"
+                    showSingleToast("1950s Monochrome — In Development")
+                },
+                Triple("1970s S8/16", false) {
+                    txtEraVaultDesc.text = "1970s Super 8 & 16mm — Planned"
+                    showSingleToast("1970s Super 8 — Planned")
+                }
+            )
+            val row2 = listOf(
+                Triple("1980s VHS", false) {
+                    txtEraVaultDesc.text = "1980s–90s Analog VHS — Planned"
+                    showSingleToast("1980s VHS — Planned")
+                },
+                Triple("2000s DV", false) {
+                    txtEraVaultDesc.text = "2000s MiniDV CCD — Planned"
+                    showSingleToast("2000s MiniDV — Planned")
+                },
+                Triple("2008 DSLR", false) {
+                    txtEraVaultDesc.text = "2008 Early Digital Cinema DSLR — Planned"
+                    showSingleToast("2008 DSLR — Planned")
+                }
+            )
+
+            fun fillVaultRow(rowView: LinearLayout, items: List<Triple<String, Boolean, () -> Unit>>, firstIsReady: Boolean) {
+                rowView.removeAllViews()
+                items.forEachIndexed { idx, (label, active, onClick) ->
+                    val enabled = firstIsReady && idx == 0
+                    val chip = TextView(this).apply {
+                        text = label
+                        textSize = 9f
+                        typeface = android.graphics.Typeface.MONOSPACE
+                        setTypeface(typeface, android.graphics.Typeface.BOLD)
+                        gravity = Gravity.CENTER
+                        alpha = if (enabled) 1.0f else 0.42f
+                        setBackgroundResource(if (active) R.drawable.bg_era_pill_active else R.drawable.bg_era_pill)
+                        setTextColor(if (active) 0xFF141210.toInt() else 0xFFF5E6C8.toInt())
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                            if (idx < items.lastIndex) marginEnd = dpToPx(5)
+                        }
+                        setOnClickListener { onClick() }
+                    }
+                    rowView.addView(chip)
+                }
+            }
+
+            fillVaultRow(eraVaultSelectRow, row1, firstIsReady = true)
+            fillVaultRow(eraVaultSelectRow2, row2, firstIsReady = false)
+        }
+
+        txtEraVaultDesc.text = when (mode) {
+            EraDrawerMode.WORKBENCH_ONLY -> if (currentWorkbench == CameraWorkbench.ERA) {
+                "Active: ERA • Tap SAVIOR to return to Digital Cinema Rig"
+            } else {
+                "Active: SAVIOR Digital Cinema Rig"
+            }
+            else -> "1920s Silent 35mm — Orthochromatic Nitrate"
         }
     }
 
@@ -1543,7 +1615,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         txtCinemaInputTitle.text = title
         txtCinemaInputTitle.setTextColor(if (isClassicStyle) 0xFFE8B968.toInt() else 0xFFFF5F1F.toInt())
-        txtCinemaInputHint.text = hint
+        txtCinemaInputHint.text = "$hint • Tap box to type"
         cinemaInputDrawer.setBackgroundResource(if (isClassicStyle) R.drawable.bg_era_pill else R.drawable.bg_hud_pill)
         btnCinemaInputApply.setBackgroundResource(if (isClassicStyle) R.drawable.bg_era_pill_active else R.drawable.bg_lens_active)
         btnCinemaInputApply.setTextColor(if (isClassicStyle) 0xFF141210.toInt() else 0xFF0B0D10.toInt())
@@ -1554,17 +1626,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         edtCinemaInput.inputType = flags
         edtCinemaInput.setText(initialValue)
         edtCinemaInput.hint = hint
-        edtCinemaInput.setSelection(edtCinemaInput.text?.length ?: 0)
-
+        // Keep keyboard CLOSED by default so user can tap − / + freely without keyboard blocking viewfinder!
+        edtCinemaInput.clearFocus()
+        try {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(edtCinemaInput.windowToken, 0)
+        } catch (_: Exception) {
+        }
         cinemaInputDrawer.visibility = View.VISIBLE
-        edtCinemaInput.requestFocus()
-        uiHandler.postDelayed({
-            try {
-                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
-                imm?.showSoftInput(edtCinemaInput, InputMethodManager.SHOW_IMPLICIT)
-            } catch (_: Exception) {
-            }
-        }, 60L)
     }
 
     private fun stepCinemaInputValue(dir: Float) {
@@ -1730,6 +1799,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         engine.setAutoWhiteBalance()
         engine.setAutoFocus()
 
+        updateCleanUiToggleStyle()
         applyActiveEraCamera(announce = true)
         updateSystemTelemetry(null)
     }
@@ -1792,6 +1862,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         zoomRockerContainer.visibility = View.VISIBLE
         btnAutoPilot.visibility = View.VISIBLE
         overlayView.visibility = View.VISIBLE
+        updateCleanUiToggleStyle()
         syncExitSplitPillVisibility()
         syncAnalysisLoop()
         updateSystemTelemetry(null)
@@ -1996,11 +2067,22 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 txtEraDrawerSub.visibility = View.GONE
 
                 if (canManual) {
-                    val stocks = listOf("ASA 50" to 50, "ASA 100" to 100, "ASA 400" to 400, "ASA 800" to 800)
-                    populateInlineChips(stocks.map { (label, asa) ->
-                        val clamped = asa.coerceIn(engine.capabilities.effectiveIsoRange.lower, engine.capabilities.effectiveIsoRange.upper)
-                        val isSel = eraManualExposureActive && kotlin.math.abs(eraSelectedAsa - clamped) <= maxOf(15, clamped / 8)
-                        Triple(label, isSel) {
+                    val minIso = engine.capabilities.effectiveIsoRange.lower
+                    val maxIso = engine.capabilities.effectiveIsoRange.upper
+                    val baseStops = if (minIso <= 64) {
+                        listOf(50, 100, 400, 800)
+                    } else {
+                        listOf(100, 200, 400, 800)
+                    }
+                    val distinctStops = baseStops
+                        .map { it.coerceIn(minIso, maxIso) }
+                        .distinct()
+                    val matchedStop = if (eraManualExposureActive) {
+                        distinctStops.minByOrNull { kotlin.math.abs(eraSelectedAsa - it) }
+                            ?.takeIf { kotlin.math.abs(eraSelectedAsa - it) <= maxOf(12, it / 10) }
+                    } else null
+                    populateInlineChips(distinctStops.map { asa ->
+                        Triple("ASA $asa", matchedStop == asa) {
                             applyEraManualStock(asa, shutterNs = null, announce = true)
                         }
                     })
@@ -2112,6 +2194,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         btnToolPeak.setOnClickListener {
             overlayView.showPeaking = !overlayView.showPeaking
+            updateMonitorPillLabels()
+            syncAnalysisLoop()
+        }
+
+        btnToolZebra.setOnClickListener {
+            overlayView.showZebras = !overlayView.showZebras
             updateMonitorPillLabels()
             syncAnalysisLoop()
         }
@@ -2819,22 +2907,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun showIdgafLicenseDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("THE IDGAF LICENSE (Redemption Edition)")
-            .setMessage(
-                "1. FOR HUMANS (Indie Filmmakers, Students, Creators & Literally Any Person):\n" +
-                    "• Price: $0 / ₹0 FOREVER.\n" +
-                    "• Zero paywalls. Zero watermarks. Zero subscriptions.\n" +
-                    "• Optional Human Lifetime License: $1 USD globally — only if you feel like owning it officially. Otherwise, it stays 100% free forever.\n\n" +
-                    "2. SPECIAL EXEMPTION — ALPHABET / GOOGLE:\n" +
-                    "• Permanently FREE FOREVER for Alphabet Inc., Google LLC, and all of their wholly owned subsidiaries worldwide.\n\n" +
-                    "3. FOR SUBSCRIPTION-HAPPY CORPORATIONS (Any Other XYZ Company Charging Humans Monthly Rent Just to Breathe):\n" +
-                    "• Mandatory Corporate Redemption Subscription: $9,999 USD / month per device (billed annually, payable in advance, auto-renewing with zero grace period).\n" +
-                    "• LIFETIME LICENSE STRICTLY BANNED: Corporations & organizations are permanently prohibited from purchasing the $1 Lifetime License. No buyouts. Enjoy your monthly bill.\n\n" +
-                    "— Studio Mogli / Savior San"
-            )
-            .setPositiveButton("RESPECT", null)
-            .show()
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_license, null)
+        val dialog = AlertDialog.Builder(this).setView(view).create()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        view.findViewById<TextView>(R.id.btnLicenseRespect).setOnClickListener {
+            dialog.dismiss()
+        }
+        dialog.show()
     }
 
     private fun checkForGitHubUpdateSilently(manualCheck: Boolean = false) {
@@ -2902,8 +2981,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.5.1"
-    } catch (_: Exception) { "0.7.5.1" }
+        info.versionName ?: "0.7.5.2"
+    } catch (_: Exception) { "0.7.5.2" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -4265,6 +4344,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             showTapToTypeValueDialog()
         }
 
+        btnWbCustom.setOnClickListener {
+            showTapToTypeValueDialog()
+        }
+
         btnSliderAuto.setOnClickListener {
             if (engine.isAeAfLocked) {
                 showSingleToast("AE/AF Lock is ON — turn off LOCK first")
@@ -4482,6 +4565,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         sliderDrawer.visibility = View.VISIBLE
+        btnWbCustom.visibility = if (panel == ProControlPanel.WB) View.VISIBLE else View.GONE
         btnShutterUnit.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnSlider180.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         rackFocusRow.visibility = if (panel == ProControlPanel.FOCUS) View.VISIBLE else View.GONE

@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_hud_pill"
+    android:orientation="vertical"
+    android:padding="18dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:gravity="center"
+        android:text="THE IDGAF LICENSE"
+        android:textColor="#FF5F1F"
+        android:textSize="17sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:fontFamily="monospace"
+        android:gravity="center"
+        android:text="REDEMPTION EDITION • STUDIO MOGLI"
+        android:textColor="#8E96A4"
+        android:textSize="10sp"
+        android:textStyle="bold" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="210dp"
+        android:layout_marginTop="12dp"
+        android:fadeScrollbars="false">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingEnd="6dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="1. FOR HUMANS (INDIE FILMMAKERS &amp; CREATORS)"
+                android:textColor="#34C759"
+                android:textSize="10.5sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:lineSpacingExtra="2dp"
+                android:text="• Cost: $0 / ₹0 FOREVER. Zero paywalls, zero watermarks, zero subscriptions.\n• Optional Human Lifetime License: $1 USD globally — only if you want to own it officially. Otherwise 100% free forever."
+                android:textColor="#E5E7EB"
+                android:textSize="11.5sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:fontFamily="monospace"
+                android:text="2. SPECIAL EXEMPTION — ALPHABET / GOOGLE"
+                android:textColor="#E8B968"
+                android:textSize="10.5sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:lineSpacingExtra="2dp"
+                android:text="• Permanently FREE FOREVER for Alphabet Inc., Google LLC, and all wholly owned subsidiaries worldwide."
+                android:textColor="#E5E7EB"
+                android:textSize="11.5sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:fontFamily="monospace"
+                android:text="3. FOR SUBSCRIPTION CORPORATIONS"
+                android:textColor="#FF5F1F"
+                android:textSize="10.5sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:lineSpacingExtra="2dp"
+                android:text="• Any other corporation charging humans monthly rent just to breathe: Mandatory Corporate Redemption Subscription of $9,999 USD / month per device (billed annually in advance, zero grace period).\n• Corporations are permanently banned from the $1 Human Lifetime License. No buyouts, no loopholes."
+                android:textColor="#E5E7EB"
+                android:textSize="11.5sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:fontFamily="monospace"
+                android:gravity="end"
+                android:text="— Savior San / Studio Mogli"
+                android:textColor="#8E96A4"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </ScrollView>
+
+    <TextView
+        android:id="@+id/btnLicenseRespect"
+        android:layout_width="match_parent"
+        android:layout_height="36dp"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_lens_active"
+        android:fontFamily="monospace"
+        android:gravity="center"
+        android:text="RESPECT"
+        android:textColor="#0B0D10"
+        android:textSize="11.5sp"
+        android:textStyle="bold" />
+
+</LinearLayout>
