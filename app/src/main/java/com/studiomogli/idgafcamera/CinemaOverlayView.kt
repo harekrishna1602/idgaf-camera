@@ -83,6 +83,12 @@ class CinemaOverlayView @JvmOverloads constructor(
             postInvalidate()
         }
 
+    @Volatile var displayRotation: Int = android.view.Surface.ROTATION_90
+        set(value) {
+            field = value
+            if (recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT) postInvalidate()
+        }
+
     // Stored here for unified UI & Preset state; rendered on GPU at 60 FPS by CinemaGlRenderer!
     @Volatile var showPeaking: Boolean = false
     @Volatile var peakingColor: PeakingColor = PeakingColor.GREEN
@@ -387,22 +393,37 @@ class CinemaOverlayView @JvmOverloads constructor(
             }
         }
 
-        // Subtle live badge when Vertical 9:16 Recording Mode is active
-        if (recordAspectMode != RecordAspectMode.WIDE_16_9) {
-            val tag = if (recordAspectMode == RecordAspectMode.VERT_9_16_CROP) {
-                "9:16 CROP REC"
-            } else {
-                "9:16 PORTRAIT • HOLD UPRIGHT"
-            }
+        // Subtle live badge when Vertical 9:16 Recording Mode is active (clear of top low-battery banner!)
+        if (recordAspectMode == RecordAspectMode.VERT_9_16_CROP) {
+            val tag = "9:16 CROP REC"
             splitTextPaint.textSize = 8.5f * dp
             val tw = splitTextPaint.measureText(tag) + 16f * dp
             val th = 18f * dp
-            val topY = 56f * dp
-            pillRect.set((w - tw) / 2f, topY, (w + tw) / 2f, topY + th)
+            val botY = if (showFalseColor) (h - 98f * dp) else (h - 76f * dp)
+            pillRect.set((w - tw) / 2f, botY, (w + tw) / 2f, botY + th)
             canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, histBgPaint)
             canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, frameBorderPaint)
             splitTextPaint.color = Color.parseColor("#FF5F1F")
-            canvas.drawText(tag, w / 2f, topY + 12.5f * dp, splitTextPaint)
+            canvas.drawText(tag, w / 2f, botY + 12.5f * dp, splitTextPaint)
+        } else if (recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT) {
+            // Rotated 90° so it sits upright at the TOP-CENTER when the user holds the phone vertically!
+            val tag = "9:16 PORTRAIT • UPRIGHT"
+            splitTextPaint.textSize = 8.5f * dp
+            val tw = splitTextPaint.measureText(tag) + 16f * dp
+            val th = 18f * dp
+            val isRev = (displayRotation == android.view.Surface.ROTATION_270)
+            val rotDeg = if (isRev) 90f else -90f
+            val anchorX = if (isRev) (w - 168f * dp) else (84f * dp)
+            val anchorY = h * 0.50f
+            canvas.save()
+            canvas.translate(anchorX, anchorY)
+            canvas.rotate(rotDeg)
+            pillRect.set(-tw / 2f, -th / 2f, tw / 2f, th / 2f)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, histBgPaint)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, frameBorderPaint)
+            splitTextPaint.color = Color.parseColor("#FF5F1F")
+            canvas.drawText(tag, 0f, 3.2f * dp, splitTextPaint)
+            canvas.restore()
         }
 
         // 2. Cinema Composition Grids (3x3, Golden φ, Diagonals, Broadcast Safe 90%/80%, 4x4) + Center Crosshair

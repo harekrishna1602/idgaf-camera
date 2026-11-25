@@ -110,8 +110,8 @@ class CinemaGlRenderer(
             }
         """
 
-        // Offscreen Pass 1 Fragment Shader: True 1920s Red-Blind Orthochromatic extraction + Soft-Knee Highlight Bloom map
-        // Rendered into 512x256 trailFbo with hardware GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA temporal motion-blur blending!
+        // Offscreen Pass 1 Fragment Shader: Era-Adaptive Spectral Extraction (1920s Ortho OR 1950s Panchromatic + Wratten Glass Filters)
+        // Rendered into 512x512 trailFbo with hardware GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA temporal motion-blur blending!
         private const val ORTHO_TRAIL_FRAG_SHADER = """
             #extension GL_OES_EGL_image_external : require
             #ifdef GL_FRAGMENT_PRECISION_HIGH
@@ -121,14 +121,15 @@ class CinemaGlRenderer(
             #endif
             uniform samplerExternalOES uTexture;
             uniform float uTrailAlpha;
+            uniform vec3 uEraWeights;
+            uniform float uBloomKnee;
             varying vec2 vTexCoord;
             void main() {
                 vec3 rgb = texture2D(uTexture, vTexCoord).rgb;
-                // True 1920s Red-Blind Orthochromatic Nitrate Emulsion (deep dark reds, luminous blue skies)
-                float yOrtho = dot(rgb, vec3(0.04, 0.56, 0.40));
-                // Soft-knee optical highlight excess for true uncoated Petzval bloom & veiling glare
-                float hi = smoothstep(0.66, 0.98, yOrtho) * yOrtho;
-                gl_FragColor = vec4(yOrtho, hi, yOrtho, uTrailAlpha);
+                float ySpectral = clamp(dot(rgb, uEraWeights), 0.0, 1.0);
+                // Soft-knee optical highlight excess (1920s Petzval knee=0.66; 1950s Cooke Speed Panchro specular halation knee=0.78)
+                float hi = smoothstep(uBloomKnee, 0.99, ySpectral) * ySpectral;
+                gl_FragColor = vec4(ySpectral, hi, ySpectral, uTrailAlpha);
             }
         """
 
@@ -208,6 +209,7 @@ class CinemaGlRenderer(
             uniform vec4 uDefectA;       // Event-driven single-frame focal-plane speck/hair A: .xy=pos, .z=rad, .w=polarity+angle (x<-5 = inactive)
             uniform vec4 uDefectB;       // Event-driven single-frame focal-plane speck/hair B: .xy=pos, .z=rad, .w=polarity+angle (x<-5 = inactive)
             uniform float uViewportAspect;
+            uniform float uEraGateAspect;
 
             varying vec2 vTexCoord;
             varying vec2 vRawUv;
@@ -425,6 +427,136 @@ class CinemaGlRenderer(
                 return stockColor * gateMask;
             }
 
+            // Spectral RGB -> Panchromatic Silver-Halide weights for 1950s Eastman Plus-X / Double-X + Optical Wratten Glass Filters
+            vec3 get1950sPanchromaticWeights(int filterCode) {
+                if (filterCode == 1) return vec3(0.40, 0.54, 0.06); // Y8: Wratten #8 Yellow (Subrata Mitra / Pather Panchali outdoor standard)
+                if (filterCode == 2) return vec3(0.62, 0.36, 0.02); // O21: Wratten #21 Orange (Kurosawa dramatic skies & sculpted skin)
+                if (filterCode == 3) return vec3(0.84, 0.15, 0.01); // R25: Wratten #25A Red (Bergman / Film Noir gothic dark skies)
+                if (filterCode == 4) return vec3(0.14, 0.78, 0.08); // G11: Wratten #11 Green (Classic 1950s studio portrait & lush foliage)
+                return vec3(0.28, 0.58, 0.14);                      // CLEAR: Authentic Eastman 5231 Plus-X / 5222 Double-X Panchromatic
+            }
+
+            // Era 2 (1950s Monochrome 35mm — Satyajit Ray / Kurosawa / Bergman / Mitchell BNC + Cooke Speed Panchro):
+            // 1. Sharp 90-degree Cinema Gate: 1.375:1 Academy OR 1.85:1 1950s Widescreen Flat (handles pillarbox & letterbox cleanly)
+            // 2. True Panchromatic Silver-Halide + 5 Real Optical Wratten Glass Contrast Filters (CLEAR / Y8 / O21 / R25 / G11)
+            // 3. Single-Coated Cooke Speed Panchro Optics: crisp resolving center, gentle corner micro-softness, tight specular halation
+            // 4. Zone III-VII Silver-Gelatin Tone Curve: deep velvety D-max blacks, rich 3D midtones, silver highlights (NO fake sepia!)
+            // 5. Fine Tri-Acetate 35mm Safety Film Grain (high-freq G-channel dominant) + Pin-Registered STUDIO / CRITERION / ARCHIVE print
+            vec3 applyEra1950sMono(vec3 rawRgb) {
+                float aspect = max(uViewportAspect, 0.5);
+                float gateAspect = max(uEraGateAspect, 1.0);
+                float wear = clamp(uEraWear, 0.0, 1.0);
+
+                // 1. Mitchell BNC pin-registered movement: 0 weave in STUDIO, whisper-subtle in CRITERION/ARCHIVE
+                float weaveScale = wear * 0.42;
+                vec2 weaveRawUv = clamp(vRawUv + uFilmTransport.xy * weaveScale, vec2(0.002), vec2(0.998));
+                vec2 weaveUv = clamp((uFragStMatrix * vec4(weaveRawUv, 0.0, 1.0)).xy, vec2(0.002), vec2(0.998));
+                vec2 weaveScreen = uFilmTransport.xy * weaveScale * vec2(0.55, 0.75);
+
+                // 2. Authentic 1950s Cinema Aperture Gate (1.375:1 Academy OR 1.85:1 Widescreen Flat)
+                vec2 gatePos = vec2((vScreenPos.x + weaveScreen.x) * aspect, vScreenPos.y + weaveScreen.y);
+                float gateHalfH = (gateAspect > aspect) ? ((aspect * 0.992) / gateAspect) : 0.992;
+                float gateHalfW = gateAspect * gateHalfH;
+                float cornerR = 0.006;
+                vec2 q = abs(gatePos) - vec2(gateHalfW - cornerR, gateHalfH - cornerR);
+                float sdf = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - cornerR;
+                float gateMask = 1.0 - smoothstep(-0.004, 0.003, sdf);
+                if (gateMask <= 0.001) {
+                    return vec3(0.0);
+                }
+
+                vec2 gateUv = vec2(gatePos.x / gateHalfW, gatePos.y / gateHalfH);
+                float rDist = length(gateUv) * 0.7071;
+                float r2 = rDist * rDist;
+
+                // 3. True Panchromatic Silver-Halide + Real Optical Wratten Glass Filter
+                vec3 panW = get1950sPanchromaticWeights(uEraFilter);
+                vec3 c0 = (wear > 0.1) ? texture2D(uTexture, weaveUv).rgb : rawRgb;
+                float ySharp = clamp(dot(c0, panW), 0.0, 1.0);
+
+                float y;
+                float silverHalation = 0.0;
+                if (uHasOpticalFbo == 1) {
+                    vec3 trailSample = texture2D(uTrailTexture, weaveRawUv).rgb;
+                    vec3 bloomSample = texture2D(uBloomTexture, weaveRawUv).rgb;
+                    // Cooke Speed Panchro glass: MUCH sharper center than 1920s Petzval (only 12% center MTF smoothing),
+                    // while engaging silky 180-deg rotary motion trail in bright daylight + delicate edge softening
+                    float mtfAndTrail = clamp(0.11 + uMotionBlend * 0.44 + r2 * 0.16, 0.0, 0.68);
+                    y = mix(ySharp, trailSample.r, mtfAndTrail);
+                    // Gentle Cooke Speed Panchro wide-open edge character (zero corner mush!)
+                    y = mix(y, bloomSample.r, clamp(r2 * mix(0.08, 0.16, wear), 0.0, 0.22));
+                    // Tight single-coated silver-halide specular halation on bright highlights, lamps & sunlit rims
+                    silverHalation = bloomSample.g * mix(0.24, 0.34, wear);
+                } else {
+                    y = ySharp;
+                    silverHalation = max(ySharp - 0.78, 0.0) * 0.22;
+                }
+                y = clamp(y + silverHalation, 0.0, 1.0);
+
+                // 4. Crystal-Sync Motor Exposure (0 flicker in STUDIO/CRITERION, tiny tungsten carbon-arc shimmer in ARCHIVE)
+                y = clamp(y * (1.0 + uFilmTransport.z), 0.0, 1.0);
+
+                // 5. Fine Tri-Acetate 1950s Safety Film Grain (high-frequency G-channel dominant -> crisp 35mm Plus-X/Double-X!)
+                vec2 uvG1 = gatePos * 3.65 + uFilmSeed.xy;
+                vec2 uvG2 = rot37(gatePos) * 4.90 + uFilmSeed.zw;
+                vec4 gTap1 = texture2D(uLutTexture, uvG1);
+                vec4 gTap2 = texture2D(uLutTexture, uvG2);
+                float fineGrain = ((gTap1.g - 0.5) * 0.56 + (gTap2.g - 0.5) * 0.30) + ((gTap1.r - 0.5) * 0.14);
+
+                float grainAmp = mix(0.072, 0.132, wear) * uEraGrainMul;
+                // Silver-halide grain concentrates naturally in Zone III-VII midtones, stays velvety clean in deep blacks & bright speculars
+                float grainEnv = 0.18 + 0.82 * clamp(4.0 * y * (1.0 - y), 0.0, 1.0);
+                y = clamp(y + fineGrain * grainAmp * grainEnv, 0.0, 1.0);
+
+                // 6. Sparse Archive Print Defects (STUDIO = 100% spotless; CRITERION = ~94% spotless; ARCHIVE = subtle theatre reel patina)
+                if (wear > 0.15) {
+                    float dA = evalOrganicDefect(gatePos, uDefectA, gTap1.g - 0.5) * 0.72;
+                    float dB = evalOrganicDefect(gatePos, uDefectB, gTap2.g - 0.5) * 0.65;
+                    y = clamp(y + dA + dB, 0.0, 1.0);
+
+                    if (uFilmTransport.w > -1.4) {
+                        float sx = uFilmTransport.w + sin(gatePos.y * 1.4 + uFilmSeed.x * 6.28) * 0.0010;
+                        float dx = abs(vScreenPos.x - sx);
+                        float scratchMask = (1.0 - smoothstep(0.0, 0.00055, dx)) * clamp(wear * 0.85, 0.0, 1.0);
+                        y = clamp(y - scratchMask * 0.26, 0.0, 1.0);
+                    }
+                }
+
+                // 7. Subtle Cooke Speed Panchro optical falloff (far cleaner & more open than 1920s Petzval barrel!)
+                float vigStrength = mix(0.14, 0.28, wear);
+                float vig = 1.0 - vigStrength * smoothstep(0.52, 1.18, rDist);
+                y *= clamp(vig, 0.0, 1.0);
+
+                // 8. True 1950s Silver-Gelatin Film S-Curve (deep D-max blacks, luminous Zone III-VII skin/fabric separation, soft silver shoulder!)
+                // Midtone presence boost + crisp contrast without crushing shadow texture
+                float yLog = pow(clamp(y, 0.0, 1.0), 0.96);
+                float pivot = 0.44;
+                float con = mix(1.30, 1.22, wear);
+                float sCurve = (yLog < pivot)
+                    ? pivot * pow(clamp(yLog / pivot, 0.0, 1.0), con)
+                    : 1.0 - (1.0 - pivot) * pow(clamp((1.0 - yLog) / (1.0 - pivot), 0.0, 1.0), con);
+                // Smooth silver-halide highlight shoulder roll-off
+                sCurve = clamp((sCurve / (1.0 + 0.10 * sCurve * sCurve)) * 1.10, 0.0, 1.0);
+                float toe = mix(0.006, 0.020, wear);
+                float shoulder = mix(0.992, 0.958, wear);
+                float yOut = clamp(toe + sCurve * (shoulder - toe), 0.0, 1.0);
+
+                // Authentic museum Silver-Gelatin fiber paper tone (crisp cool-neutral D-max shadows + whisper-warm baryta silver highlights — NEVER sepia!)
+                float shdW = (1.0 - yOut) * (1.0 - yOut);
+                float hilW = yOut * yOut;
+                vec3 paperTint = vec3(
+                    yOut + hilW * 0.011 - shdW * 0.005,
+                    yOut + hilW * 0.005,
+                    yOut - hilW * 0.012 + shdW * 0.008
+                );
+                // Ultra-faint warm baryta aging only in ARCHIVE print
+                if (wear > 0.65) {
+                    float a = (wear - 0.65) / 0.35;
+                    paperTint *= vec3(1.0 + 0.025 * a, 1.0, 1.0 - 0.045 * a);
+                }
+                return clamp(paperTint, 0.0, 1.0) * gateMask;
+            }
+
             vec3 applyFalseColor(float y) {
                 if (y <= 0.05) return vec3(0.545, 0.361, 0.965);        // 0-5% IRE: Purple (Crushed Black)
                 if (y <= 0.15) return vec3(0.145, 0.388, 0.922);        // 5-15% IRE: Blue (Deep Shadows)
@@ -439,6 +571,10 @@ class CinemaGlRenderer(
                 vec3 rawColor = texture2D(uTexture, vTexCoord).rgb;
                 if (uEraMode == 1) {
                     gl_FragColor = vec4(applyEra1920sSilent(rawColor), 1.0);
+                    return;
+                }
+                if (uEraMode == 2) {
+                    gl_FragColor = vec4(applyEra1950sMono(rawColor), 1.0);
                     return;
                 }
 
@@ -606,6 +742,7 @@ class CinemaGlRenderer(
     private var uDefectALoc: Int = -1
     private var uDefectBLoc: Int = -1
     private var uViewportAspectLoc: Int = -1
+    private var uEraGateAspectLoc: Int = -1
 
     // Phase 7.5 Offscreen Multi-Pass Optical Bloom + Temporal Motion-Blur FBO resources
     private var trailProgramId: Int = 0
@@ -614,6 +751,8 @@ class CinemaGlRenderer(
     private var trailUStLoc: Int = -1
     private var trailUTexLoc: Int = -1
     private var trailUAlphaLoc: Int = -1
+    private var trailUWeightsLoc: Int = -1
+    private var trailUKneeLoc: Int = -1
 
     private var blurProgramId: Int = 0
     private var blurAPosLoc: Int = -1
@@ -666,6 +805,7 @@ class CinemaGlRenderer(
     @Volatile var eraFps: Float = 16.0f
     @Volatile var eraFilterCode: Int = 0
     @Volatile var eraGrainMultiplier: Float = 1.0f
+    @Volatile var eraGateAspect: Float = 1.3333f
 
     // 64-bit CPU Film-Transport Engine (updates once per film frame tick — ZERO repetition, ZERO GPU hash loops!)
     private var lastFilmTick: Long = -1L
@@ -1397,7 +1537,7 @@ class CinemaGlRenderer(
         GLES20.glUniform1i(uEraModeLoc, eraModeCode)
         GLES20.glUniform1f(uEraWearLoc, eraWearLevel.coerceIn(0f, 1f))
         GLES20.glUniform1f(uEraFpsLoc, eraFps.coerceIn(1f, 60f))
-        val useOptFbo = (eraModeCode == 1 && opticalFbosReady)
+        val useOptFbo = ((eraModeCode == 1 || eraModeCode == 2) && opticalFbosReady)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (useOptFbo) bloomTexAId else dummyLutTextureId)
         GLES20.glUniform1i(uBloomTextureLoc, 2)
@@ -1415,6 +1555,7 @@ class CinemaGlRenderer(
         GLES20.glUniform4f(uDefectALoc, defectAx, defectAy, defectAr, defectAw)
         GLES20.glUniform4f(uDefectBLoc, defectBx, defectBy, defectBr, defectBw)
         GLES20.glUniform1f(uViewportAspectLoc, viewportAspect.coerceIn(0.4f, 4.0f))
+        GLES20.glUniform1f(uEraGateAspectLoc, eraGateAspect.coerceIn(1.0f, 2.6f))
 
         GLES20.glEnableVertexAttribArray(aPositionLoc)
         GLES20.glVertexAttribPointer(aPositionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
@@ -1596,6 +1737,7 @@ class CinemaGlRenderer(
             uDefectALoc = GLES20.glGetUniformLocation(programId, "uDefectA")
             uDefectBLoc = GLES20.glGetUniformLocation(programId, "uDefectB")
             uViewportAspectLoc = GLES20.glGetUniformLocation(programId, "uViewportAspect")
+            uEraGateAspectLoc = GLES20.glGetUniformLocation(programId, "uEraGateAspect")
             if (desiredLutData != null) {
                 lutUploadDirty = true
             }
@@ -1771,30 +1913,42 @@ class CinemaGlRenderer(
             filmWeaveY = 0f
         }
 
-        // 3. Slow Organic Hand-Crank Exposure Breathing (smoothly low-pass filtered, NOT harsh per-frame strobe!)
-        filmBreathPhase += 0.28 + nextFilmRand01() * 0.14
-        val crankSine = kotlin.math.sin(filmBreathPhase).toFloat() * 0.018f
-        val crankJitter = (nextFilmRand01() - 0.5f) * 0.032f
-        val breathAmp = when {
-            wear < 0.15f -> 0.45f  // PREMIERE: tiny ±1.2% hand-crank life
-            wear < 0.75f -> 1.00f  // VAULT: authentic ±3.2% breathing
-            else -> 1.65f          // FOUND: ±5.2% aged projector/crank breathing
+        // 3. Exposure Transport: Hand-Crank breathing in 1920s vs Crystal-Sync Mitchell BNC motor in 1950s!
+        if (eraModeCode == 2) {
+            // 1950s motor-driven sync sound: 0 flicker in STUDIO/CRITERION, tiny ±0.6% carbon-arc lamp shimmer in ARCHIVE
+            if (wear >= 0.75f) {
+                filmBreathPhase += 0.22
+                val arc = (kotlin.math.sin(filmBreathPhase).toFloat() * 0.004f) + ((nextFilmRand01() - 0.5f) * 0.006f)
+                filmFlicker = filmFlicker * 0.70f + arc * 0.30f
+            } else {
+                filmFlicker = 0.0f
+            }
+        } else {
+            filmBreathPhase += 0.28 + nextFilmRand01() * 0.14
+            val crankSine = kotlin.math.sin(filmBreathPhase).toFloat() * 0.018f
+            val crankJitter = (nextFilmRand01() - 0.5f) * 0.032f
+            val breathAmp = when {
+                wear < 0.15f -> 0.45f  // PREMIERE: tiny ±1.2% hand-crank life
+                wear < 0.75f -> 1.00f  // VAULT: authentic ±3.2% breathing
+                else -> 1.65f          // FOUND: ±5.2% aged projector/crank breathing
+            }
+            val targetFlicker = (crankSine + crankJitter) * breathAmp
+            filmFlicker = filmFlicker * 0.55f + targetFlicker * 0.45f
         }
-        val targetFlicker = (crankSine + crankJitter) * breathAmp
-        filmFlicker = filmFlicker * 0.55f + targetFlicker * 0.45f
 
-        // 4. Sparse Event-Driven Physical Film Defects (ZERO tiled dots! ~100% spotless in PREMIERE, ~76% in VAULT, ~48% in FOUND!)
+        // 4. Sparse Event-Driven Physical Film Defects (ZERO tiled dots!)
         defectAx = -9.0f
         defectBx = -9.0f
         if (wear < 0.15f) {
-            // PREMIERE: spotless 1926 brand-new lab print
+            // PREMIERE (1920s) / STUDIO (1950s): 100% spotless fresh lab release print
             filmScratchLife = 0
             filmScratchX = -2.0f
         } else {
-            val isFound = wear >= 0.75f
-            val pDustA = if (isFound) 0.34f else 0.16f
-            val pDustB = if (isFound) 0.16f else 0.04f
-            val pScratch = if (isFound) 0.0090f else 0.0035f
+            val isHeavy = wear >= 0.75f
+            val is1950s = (eraModeCode == 2)
+            val pDustA = if (is1950s) (if (isHeavy) 0.18f else 0.06f) else (if (isHeavy) 0.34f else 0.16f)
+            val pDustB = if (is1950s) (if (isHeavy) 0.06f else 0.01f) else (if (isHeavy) 0.16f else 0.04f)
+            val pScratch = if (is1950s) (if (isHeavy) 0.0042f else 0.0f) else (if (isHeavy) 0.0090f else 0.0035f)
 
             if (nextFilmRand01() < pDustA) {
                 defectAx = (nextFilmRand01() * 2.40f) - 1.20f
@@ -1846,6 +2000,8 @@ class CinemaGlRenderer(
             trailUStLoc = GLES20.glGetUniformLocation(trailProgramId, "uStMatrix")
             trailUTexLoc = GLES20.glGetUniformLocation(trailProgramId, "uTexture")
             trailUAlphaLoc = GLES20.glGetUniformLocation(trailProgramId, "uTrailAlpha")
+            trailUWeightsLoc = GLES20.glGetUniformLocation(trailProgramId, "uEraWeights")
+            trailUKneeLoc = GLES20.glGetUniformLocation(trailProgramId, "uBloomKnee")
 
             blurAPosLoc = GLES20.glGetAttribLocation(blurProgramId, "aPosition")
             blurATexLoc = GLES20.glGetAttribLocation(blurProgramId, "aTexCoord")
@@ -1936,6 +2092,19 @@ class CinemaGlRenderer(
         GLES20.glUniform1i(trailUTexLoc, 0)
         GLES20.glUniformMatrix4fv(trailUStLoc, 1, false, stMatrix, 0)
         GLES20.glUniform1f(trailUAlphaLoc, alpha)
+        if (eraModeCode == 2) {
+            when (eraFilterCode) {
+                1 -> GLES20.glUniform3f(trailUWeightsLoc, 0.40f, 0.54f, 0.06f) // Y8 Yellow
+                2 -> GLES20.glUniform3f(trailUWeightsLoc, 0.62f, 0.36f, 0.02f) // O21 Orange
+                3 -> GLES20.glUniform3f(trailUWeightsLoc, 0.84f, 0.15f, 0.01f) // R25 Red
+                4 -> GLES20.glUniform3f(trailUWeightsLoc, 0.14f, 0.78f, 0.08f) // G11 Green
+                else -> GLES20.glUniform3f(trailUWeightsLoc, 0.28f, 0.58f, 0.14f) // CLEAR Panchromatic
+            }
+            GLES20.glUniform1f(trailUKneeLoc, 0.78f)
+        } else {
+            GLES20.glUniform3f(trailUWeightsLoc, 0.04f, 0.56f, 0.40f) // 1920s Red-Blind Orthochromatic
+            GLES20.glUniform1f(trailUKneeLoc, 0.66f)
+        }
 
         GLES20.glEnableVertexAttribArray(trailAPosLoc)
         GLES20.glVertexAttribPointer(trailAPosLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
@@ -1952,8 +2121,8 @@ class CinemaGlRenderer(
         val rot0W = (if (stSwapped) videoHeight else videoWidth).coerceAtLeast(16).toFloat()
         val rot0H = (if (stSwapped) videoWidth else videoHeight).coerceAtLeast(16).toFloat()
         val minDim = minOf(rot0W, rot0H)
-        // Radius = 4.4% of frame short-edge (~48px radius / ~96px diameter on 1080p, perfectly isotropic!)
-        val stepPx = minDim * 0.0110f
+        // 1920s Uncoated Petzval = wide 4.4% short-edge bloom; 1950s Single-Coated Cooke Speed Panchro = tight 2.2% silver halation!
+        val stepPx = minDim * (if (eraModeCode == 2) 0.0055f else 0.0110f)
         val blurStepU = stepPx / rot0W
         val blurStepV = stepPx / rot0H
 

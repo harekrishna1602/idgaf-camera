@@ -546,6 +546,33 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
+        <!-- Inline Expandable Self-Timer Sub-Panel (OFF | 3s | 5s | 10s | CUSTOM) -->
+        <LinearLayout
+            android:id="@+id/proTimerSubPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="SELF-TIMER DELAY (SECONDS)"
+                android:textColor="#8E96A4"
+                android:textSize="8.5sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/proTimerRow"
+                android:layout_width="match_parent"
+                android:layout_height="26dp"
+                android:layout_marginTop="4dp"
+                android:gravity="center"
+                android:orientation="horizontal" />
+        </LinearLayout>
+
         <!-- Inline Expandable Time-Lapse Interval Chips (Expands inside PRO when TL tapped!) -->
         <LinearLayout
             android:id="@+id/proTimelapseSubPanel"
@@ -2779,7 +2806,7 @@
                     android:textStyle="bold" />
             </LinearLayout>
 
-            <!-- 2. 1920s Chemical Lab Tint Bath (SILVER / AMBER / NIGHT / SEPIA / ROSE) -->
+            <!-- 2. 1920s Lab Tint Bath OR 1950s Optical Wratten Glass Filter -->
             <LinearLayout
                 android:id="@+id/pillEraTurret"
                 android:layout_width="0dp"
@@ -2791,6 +2818,7 @@
                 android:orientation="vertical">
 
                 <TextView
+                    android:id="@+id/txtEraSlot2Label"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:fontFamily="monospace"

@@ -99,7 +99,8 @@ object IdgafUiDialogs {
         dismissOnSecondary: Boolean = true,
         onSecondary: (() -> Unit)? = null,
         cancelLabel: String? = "CANCEL",
-        onCancel: (() -> Unit)? = null
+        onCancel: (() -> Unit)? = null,
+        rotationDegrees: Float = 0f
     ): AlertDialog {
         val root = makeRootCard(context)
 
@@ -175,8 +176,34 @@ object IdgafUiDialogs {
         )
         root.addView(btnRow)
 
-        dialog = createTransparentDialog(context, root, cancelable = true)
+        val finalView: View = if (kotlin.math.abs(rotationDegrees) > 1f) {
+            val dm = context.resources.displayMetrics
+            // Square container big enough to hold the rotated portrait card cleanly inside landscape screen height
+            val cardW = (dm.heightPixels * 0.76f).toInt().coerceIn(dp(context, 230), dp(context, 310))
+            val squareSide = (cardW + dp(context, 24)).coerceAtMost((dm.heightPixels * 0.92f).toInt())
+            android.widget.FrameLayout(context).apply {
+                clipChildren = false
+                clipToPadding = false
+                layoutParams = android.view.ViewGroup.LayoutParams(squareSide, squareSide)
+                root.layoutParams = android.widget.FrameLayout.LayoutParams(
+                    cardW,
+                    android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+                root.rotation = rotationDegrees
+                addView(root)
+            }
+        } else {
+            root
+        }
+
+        dialog = createTransparentDialog(context, finalView, cancelable = true)
         dialog.show()
+        if (kotlin.math.abs(rotationDegrees) > 1f) {
+            val dm = context.resources.displayMetrics
+            val box = (dm.heightPixels * 0.92f).toInt().coerceAtLeast(dp(context, 270))
+            dialog.window?.setLayout(box, box)
+        }
         return dialog
     }
 

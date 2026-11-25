@@ -185,6 +185,8 @@ class CinemaCameraEngine(
         private set
     @Volatile var eraGrainMultiplier: Float = 1.0f
         private set
+    @Volatile var eraGateAspect: Float = 1.3333f
+        private set
     @Volatile var toneProfile: ToneProfile = ToneProfile.STANDARD
         private set
     @Volatile var isRecording: Boolean = false
@@ -361,6 +363,7 @@ class CinemaCameraEngine(
         glRenderer?.eraFps = eraFps
         glRenderer?.eraFilterCode = eraFilterCode
         glRenderer?.eraGrainMultiplier = eraGrainMultiplier
+        glRenderer?.eraGateAspect = eraGateAspect
         glRenderer?.mirrorFrontExport = mirrorFrontExport
         cleanupOrphanEraCacheFiles()
         glRenderer?.setCubeLut(activeCubeLut)
@@ -415,7 +418,8 @@ class CinemaCameraEngine(
         wearLevel: Float,
         fps: Float,
         filterCode: Int = eraFilterCode,
-        grainMul: Float = eraGrainMultiplier
+        grainMul: Float = eraGrainMultiplier,
+        gateAspect: Float = eraGateAspect
     ) {
         val wasClassic = (eraModeCode > 0)
         val isClassic = (modeCode > 0)
@@ -424,11 +428,13 @@ class CinemaCameraEngine(
         eraFps = fps.coerceIn(1f, 60f)
         eraFilterCode = filterCode.coerceIn(0, 4)
         eraGrainMultiplier = grainMul.coerceIn(0.45f, 2.2f)
+        eraGateAspect = gateAspect.coerceIn(1.0f, 2.6f)
         glRenderer?.eraModeCode = eraModeCode
         glRenderer?.eraWearLevel = eraWearLevel
         glRenderer?.eraFps = eraFps
         glRenderer?.eraFilterCode = eraFilterCode
         glRenderer?.eraGrainMultiplier = eraGrainMultiplier
+        glRenderer?.eraGateAspect = eraGateAspect
         // Toggle Camera2 hardware ISP de-sharpening (EDGE_MODE_OFF) & EIS off immediately on SAVIOR <-> CLASSIC transition!
         if (wasClassic != isClassic) {
             pushUpdatedRepeatingRequest()
