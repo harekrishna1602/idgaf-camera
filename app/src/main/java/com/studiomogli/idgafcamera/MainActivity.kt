@@ -101,7 +101,9 @@ data class SaviorWorkbenchSnapshot(
     val zoomRatio: Float,
     val splitCompareActive: Boolean,
     val splitCompareFraction: Float,
-    val recordAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9
+    val recordAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9,
+    val aspectGuide: AspectGuide = AspectGuide.OFF,
+    val frameCropRecEnabled: Boolean = false
 )
 
 class MainActivity : AppCompatActivity(), CinemaEngineListener {
@@ -237,7 +239,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var monPeakSensRow: LinearLayout
     private lateinit var monZebraLevelRow: LinearLayout
     private lateinit var btnToolGrid: TextView
-    private lateinit var btnToolFrame: TextView
     private lateinit var btnToolPeak: TextView
     private lateinit var btnToolZebra: TextView
     private lateinit var btnToolFalseColor: TextView
@@ -249,13 +250,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var viewOutMonDot: View
     private lateinit var txtOutMonBadge: TextView
     private lateinit var btnOutMonClose: TextView
+    private lateinit var btnOutMonResize: TextView
     private lateinit var outputMonitorTextureView: TextureView
     private var isOutputMonitorEnabled: Boolean = false
+    private var outputMonitorScale: Float = 1.0f
     private var outMonLastDragX: Float = 0f
     private var outMonLastDragY: Float = 0f
+    private var outMonResizeLastX: Float = 0f
+    private var outMonResizeLastY: Float = 0f
     private var sensorManager: SensorManager? = null
     private var smoothedRoll = 0f
-    private var frameGuideIdx = 0
 
     // SAVIOR Core + Drop-In Era Plug-In Mount (ZERO hardcoded Era code in SAVIOR core!)
     private lateinit var saviorTopBar: LinearLayout
@@ -282,6 +286,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var formatResRow: LinearLayout
     private lateinit var formatFpsRow: LinearLayout
     private lateinit var formatBitrateRow: LinearLayout
+    private lateinit var formatFrameRatioRow: LinearLayout
     private lateinit var formatCodecAspectRow: LinearLayout
     private lateinit var workbenchEraDrawer: LinearLayout
     private lateinit var txtEraDrawerTitle: TextView
@@ -428,6 +433,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 lastDisplayRotation = curRot
                 overlayView.displayRotation = curRot
                 engine.setDisplayRotation(curRot)
+                syncOutputMonitorUi()
             }
         }
     }
@@ -723,7 +729,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         monPeakSensRow = findViewById(R.id.monPeakSensRow)
         monZebraLevelRow = findViewById(R.id.monZebraLevelRow)
         btnToolGrid = findViewById(R.id.btnToolGrid)
-        btnToolFrame = findViewById(R.id.btnToolFrame)
         btnToolPeak = findViewById(R.id.btnToolPeak)
         btnToolZebra = findViewById(R.id.btnToolZebra)
         btnToolFalseColor = findViewById(R.id.btnToolFalseColor)
@@ -735,6 +740,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         viewOutMonDot = findViewById(R.id.viewOutMonDot)
         txtOutMonBadge = findViewById(R.id.txtOutMonBadge)
         btnOutMonClose = findViewById(R.id.btnOutMonClose)
+        btnOutMonResize = findViewById(R.id.btnOutMonResize)
         outputMonitorTextureView = findViewById(R.id.outputMonitorTextureView)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
@@ -760,6 +766,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         formatResRow = findViewById(R.id.formatResRow)
         formatFpsRow = findViewById(R.id.formatFpsRow)
         formatBitrateRow = findViewById(R.id.formatBitrateRow)
+        formatFrameRatioRow = findViewById(R.id.formatFrameRatioRow)
         formatCodecAspectRow = findViewById(R.id.formatCodecAspectRow)
         workbenchEraDrawer = findViewById(R.id.workbenchEraDrawer)
         txtEraDrawerTitle = findViewById(R.id.txtEraDrawerTitle)
@@ -1326,13 +1333,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         showSingleToast("Era Cameras — Coming Soon")
                     }
                 },
-                Triple("PURIST", currentWorkbench == CameraWorkbench.ERA && activeEraPlugin?.category == EraWorkbenchCategory.PURIST) {
+                Triple("CLASSIFIED", currentWorkbench == CameraWorkbench.ERA && activeEraPlugin?.category == EraWorkbenchCategory.PURIST) {
                     if (puristPlugin != null) {
                         closeWorkbenchEraDrawer()
                         enterEraPlugin(puristPlugin)
                     } else {
-                        txtEraVaultDesc.text = "PURIST — 65mm / 1.43:1 Celluloid Workflow (Coming Soon)"
-                        showSingleToast("PURIST 65mm — Coming Soon")
+                        txtEraVaultDesc.text = "CLASSIFIED — Locked Future Workflow"
+                        showSingleToast("CLASSIFIED — Locked")
                     }
                 }
             )
@@ -1432,10 +1439,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun updateFormatPillUi() {
-        val aspect = engine.recordAspectMode
-        btnFormatToggle.text = when (aspect) {
-            RecordAspectMode.WIDE_16_9 -> "${currentResolution.label} • $currentFps"
-            else -> "${aspect.shortBadge} • $currentFps"
+        val isPort = (engine.recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT)
+        val hasCropRec = !isPort && engine.frameCropRecEnabled &&
+            overlayView.aspectGuide != AspectGuide.OFF && overlayView.aspectGuide != AspectGuide.WIDE_169
+        btnFormatToggle.text = when {
+            isPort -> "9:16P • $currentFps"
+            hasCropRec -> "${overlayView.aspectGuide.label} • $currentFps"
+            else -> "${currentResolution.label} • $currentFps"
         }
         val open = formatDrawer.visibility == View.VISIBLE
         if (open) {
@@ -1444,7 +1454,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             btnFormatToggle.setBackgroundResource(R.drawable.bg_hud_pill)
             btnFormatToggle.setTextColor(0xFFFF5F1F.toInt())
         }
-        val aspectShort = if (aspect == RecordAspectMode.WIDE_16_9) "16:9" else aspect.shortBadge
+        val aspectShort = when {
+            isPort -> "9:16P"
+            hasCropRec -> "${overlayView.aspectGuide.label} CROP"
+            overlayView.aspectGuide != AspectGuide.OFF -> "${overlayView.aspectGuide.label} GUIDE"
+            else -> "16:9"
+        }
         txtFormatSummary.text = "${currentResolution.label} • $currentFps FPS • ${engine.targetBitrateMbps}M • $aspectShort"
     }
 
@@ -1547,7 +1562,41 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             formatBitrateRow.addView(chip)
         }
 
-        // Row 4: Codec (H.264 / HEVC) + Recording Orientation (16:9 WIDE | 9:16 CROP | 9:16 PORT)
+        // Row 4: Frame Ratio Selector (16:9 | 2.39:1 | 1.85:1 | 4:3 | 1:1 | 9:16)
+        formatFrameRatioRow.removeAllViews()
+        val isPort = (engine.recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT)
+        val ratioChoices = listOf(
+            AspectGuide.OFF to "16:9",
+            AspectGuide.SCOPE_239 to "2.39:1",
+            AspectGuide.FLAT_185 to "1.85:1",
+            AspectGuide.CLASSIC_43 to "4:3",
+            AspectGuide.SQUARE_11 to "1:1",
+            AspectGuide.VERT_916 to "9:16"
+        )
+        ratioChoices.forEachIndexed { idx, (guide, lbl) ->
+            val selected = !isPort && (
+                overlayView.aspectGuide == guide ||
+                    (guide == AspectGuide.OFF && overlayView.aspectGuide == AspectGuide.WIDE_169)
+                )
+            val chip = TextView(this).apply {
+                text = lbl
+                textSize = 8.4f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    if (idx < ratioChoices.lastIndex) marginEnd = dpToPx(3)
+                }
+                setOnClickListener {
+                    selectFrameRatio(guide)
+                }
+            }
+            formatFrameRatioRow.addView(chip)
+        }
+
+        // Row 5: Codec (H.264 / HEVC) + Frame Crop Toggle (GUIDE / CROP REC) + Full-Res 9:16 PORT
         formatCodecAspectRow.removeAllViews()
         val codecChip = TextView(this).apply {
             text = engine.targetCodec.label
@@ -1558,8 +1607,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val isHevc = engine.targetCodec == CinemaCodec.HEVC
             setBackgroundResource(if (isHevc) R.drawable.bg_dock_pill_active else R.drawable.bg_hud_pill)
             setTextColor(if (isHevc) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.95f).apply {
-                marginEnd = dpToPx(6)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f).apply {
+                marginEnd = dpToPx(5)
             }
             setOnClickListener {
                 engine.targetCodec = if (engine.targetCodec == CinemaCodec.H264) CinemaCodec.HEVC else CinemaCodec.H264
@@ -1569,32 +1618,98 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         formatCodecAspectRow.addView(codecChip)
 
-        val aspectModes = listOf(
-            RecordAspectMode.WIDE_16_9 to "16:9",
-            RecordAspectMode.VERT_9_16_CROP to "9:16 CROP",
-            RecordAspectMode.VERT_9_16_PORTRAIT to "9:16 PORT"
-        )
-        aspectModes.forEachIndexed { idx, (mode, label) ->
-            val selected = (engine.recordAspectMode == mode)
-            val chip = TextView(this).apply {
-                text = label
-                textSize = 8.8f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                gravity = Gravity.CENTER
-                setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
-                setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, if (idx == 0) 0.85f else 1.15f).apply {
-                    if (idx < aspectModes.lastIndex) marginEnd = dpToPx(4)
-                }
-                setOnClickListener {
-                    setRecordAspectMode(mode, showNotice = true)
-                }
+        val canCrop = !isPort && overlayView.aspectGuide != AspectGuide.OFF && overlayView.aspectGuide != AspectGuide.WIDE_169
+        val cropActive = canCrop && engine.frameCropRecEnabled
+        val cropChip = TextView(this).apply {
+            text = if (cropActive) "CROP: REC" else "GUIDE ONLY"
+            textSize = 8.8f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            alpha = if (canCrop) 1.0f else 0.40f
+            setBackgroundResource(if (cropActive) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+            setTextColor(if (cropActive) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.25f).apply {
+                marginEnd = dpToPx(5)
             }
-            formatCodecAspectRow.addView(chip)
+            setOnClickListener {
+                if (!canCrop) {
+                    showSingleToast("Pick a frame ratio (2.39:1, 1.85:1, 4:3, 1:1 or 9:16) to enable CROP REC")
+                    return@setOnClickListener
+                }
+                setFrameCropRecEnabled(!engine.frameCropRecEnabled, announce = true)
+            }
         }
+        formatCodecAspectRow.addView(cropChip)
+
+        val portChip = TextView(this).apply {
+            text = "9:16 PORT"
+            textSize = 8.8f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setBackgroundResource(if (isPort) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+            setTextColor(if (isPort) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.15f)
+            setOnClickListener {
+                val nextMode = if (isPort) RecordAspectMode.WIDE_16_9 else RecordAspectMode.VERT_9_16_PORTRAIT
+                setRecordAspectMode(nextMode, showNotice = true)
+            }
+        }
+        formatCodecAspectRow.addView(portChip)
 
         updateFormatPillUi()
+    }
+
+    private fun selectFrameRatio(guide: AspectGuide) {
+        if (engine.isRecording) {
+            showSingleToast("Stop recording to change frame ratio")
+            return
+        }
+        if (engine.recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT) {
+            engine.recordAspectMode = RecordAspectMode.WIDE_16_9
+            overlayView.recordAspectMode = RecordAspectMode.WIDE_16_9
+        }
+        overlayView.aspectGuide = guide
+        engine.activeFrameGuide = guide
+        if (guide == AspectGuide.OFF || guide == AspectGuide.WIDE_169) {
+            engine.frameCropRecEnabled = false
+            overlayView.frameCropRecEnabled = false
+        }
+        syncOutputMonitorUi()
+        if (formatDrawer.visibility == View.VISIBLE) {
+            renderFormatDrawerChips()
+        } else {
+            updateFormatPillUi()
+        }
+        val msg = when {
+            guide == AspectGuide.OFF -> "Frame: Full 16:9 Wide"
+            engine.frameCropRecEnabled -> "Frame Crop Rec: ${guide.label} (Exact MP4 Crop)"
+            else -> "Frame Guide: ${guide.label} (Tap GUIDE ONLY → CROP: REC to crop MP4)"
+        }
+        showSingleToast(msg)
+    }
+
+    private fun setFrameCropRecEnabled(enabled: Boolean, announce: Boolean) {
+        if (engine.isRecording) {
+            showSingleToast("Stop recording to toggle Frame Crop")
+            return
+        }
+        engine.frameCropRecEnabled = enabled
+        overlayView.frameCropRecEnabled = enabled
+        syncOutputMonitorUi()
+        if (formatDrawer.visibility == View.VISIBLE) {
+            renderFormatDrawerChips()
+        } else {
+            updateFormatPillUi()
+        }
+        if (announce) {
+            val g = overlayView.aspectGuide
+            showSingleToast(
+                if (enabled) "FRAME CROP ON — Recording exact ${g.label} MP4 (no post crop needed!)"
+                else "FRAME CROP OFF — ${g.label} guide overlay only (records full 16:9)"
+            )
+        }
     }
 
     private fun setRecordAspectMode(mode: RecordAspectMode, showNotice: Boolean) {
@@ -1614,18 +1729,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         if (showNotice && changed) {
             when (mode) {
-                RecordAspectMode.VERT_9_16_CROP -> {
-                    formatDrawer.visibility = View.GONE
-                    updateFormatPillUi()
-                    IdgafUiDialogs.showActionDialog(
-                        context = this,
-                        title = "9:16 VERTICAL CROP MODE",
-                        message = "UI stays horizontal. Frame your shot inside the vertical 9:16 center box — your video will be cropped and saved vertically in 9:16 format.",
-                        primaryLabel = "GOT IT",
-                        onPrimary = {},
-                        cancelLabel = null
-                    )
-                }
                 RecordAspectMode.VERT_9_16_PORTRAIT -> {
                     formatDrawer.visibility = View.GONE
                     updateFormatPillUi()
@@ -1641,7 +1744,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     )
                 }
                 RecordAspectMode.WIDE_16_9 -> {
-                    showSingleToast("Recording Format: 16:9 Wide")
+                    showSingleToast("Recording Format: Landscape")
                 }
             }
         }
@@ -1765,7 +1868,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 zoomRatio = engine.currentZoomRatio,
                 splitCompareActive = isSplitCompareActive,
                 splitCompareFraction = splitCompareFraction,
-                recordAspectMode = engine.recordAspectMode
+                recordAspectMode = engine.recordAspectMode,
+                aspectGuide = overlayView.aspectGuide,
+                frameCropRecEnabled = engine.frameCropRecEnabled
             )
         } else {
             activeEraPlugin?.onExit(eraHostBridge)
@@ -1842,6 +1947,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.timelapseIntervalMs = snap.timelapseIntervalMs
             engine.recordAspectMode = snap.recordAspectMode
             overlayView.recordAspectMode = snap.recordAspectMode
+            overlayView.aspectGuide = snap.aspectGuide
+            engine.activeFrameGuide = snap.aspectGuide
+            engine.frameCropRecEnabled = snap.frameCropRecEnabled
+            overlayView.frameCropRecEnabled = snap.frameCropRecEnabled
             currentFps = snap.fps
             if (engine.targetResolution != snap.resolution) {
                 engine.updateSettings(snap.resolution, snap.fps)
@@ -1909,15 +2018,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             overlayView.gridMode = m
             btnToolGrid.text = m.label
             styleToolPill(btnToolGrid, m != GridMode.OFF)
-        }
-
-        btnToolFrame.setOnClickListener {
-            val guides = AspectGuide.values()
-            frameGuideIdx = (frameGuideIdx + 1) % guides.size
-            val g = guides[frameGuideIdx]
-            overlayView.aspectGuide = g
-            btnToolFrame.text = "FRAME: ${g.label}"
-            styleToolPill(btnToolFrame, g != AspectGuide.OFF)
         }
 
         btnToolPeak.setOnClickListener {
@@ -1988,10 +2088,39 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     val dy = event.rawY - outMonLastDragY
                     outMonLastDragX = event.rawX
                     outMonLastDragY = event.rawY
-                    val maxX = (parentView.width - v.width).coerceAtLeast(0).toFloat()
-                    val maxY = (parentView.height - v.height).coerceAtLeast(0).toFloat()
-                    v.x = (v.x + dx).coerceIn(0f, maxX)
-                    v.y = (v.y + dy).coerceIn(0f, maxY)
+                    v.x = v.x + dx
+                    v.y = v.y + dy
+                    clampOutputMonitorToParent(v, parentView)
+                    true
+                }
+                else -> true
+            }
+        }
+
+        btnOutMonResize.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    outMonResizeLastX = event.rawX
+                    outMonResizeLastY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - outMonResizeLastX
+                    val dy = event.rawY - outMonResizeLastY
+                    outMonResizeLastX = event.rawX
+                    outMonResizeLastY = event.rawY
+                    val rot = outputMonitorCard.rotation
+                    val localGrowPx = when {
+                        rot < -45f -> (dx - dy) * 0.5f   // -90 deg (Portrait upright on ROTATION_90)
+                        rot > 45f -> (dy - dx) * 0.5f    // +90 deg (Portrait upright on ROTATION_270)
+                        else -> (dx + dy) * 0.5f         // 0 deg (Normal landscape)
+                    }
+                    val stepScale = localGrowPx / dpToPx(150).coerceAtLeast(1).toFloat()
+                    val nextScale = (outputMonitorScale + stepScale).coerceIn(0.75f, 1.85f)
+                    if (kotlin.math.abs(nextScale - outputMonitorScale) >= 0.01f) {
+                        outputMonitorScale = nextScale
+                        syncOutputMonitorUi()
+                    }
                     true
                 }
                 else -> true
@@ -2004,6 +2133,23 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             styleToolPill(btnToolMonConfig, !showing)
             if (!showing) renderMonConfigInlineChips()
         }
+    }
+
+    private fun clampOutputMonitorToParent(card: View, parentView: View) {
+        val pw = parentView.width.toFloat()
+        val ph = parentView.height.toFloat()
+        val cw = card.width.toFloat()
+        val ch = card.height.toFloat()
+        if (pw <= 0f || ph <= 0f || cw <= 0f || ch <= 0f) return
+        val rotated = kotlin.math.abs(card.rotation) > 45f
+        val halfVisW = if (rotated) ch * 0.5f else cw * 0.5f
+        val halfVisH = if (rotated) cw * 0.5f else ch * 0.5f
+        val minX = halfVisW - cw * 0.5f
+        val maxX = (pw - halfVisW - cw * 0.5f).coerceAtLeast(minX)
+        val minY = halfVisH - ch * 0.5f
+        val maxY = (ph - halfVisH - ch * 0.5f).coerceAtLeast(minY)
+        card.x = card.x.coerceIn(minX, maxX)
+        card.y = card.y.coerceIn(minY, maxY)
     }
 
     private fun setOutputMonitorEnabled(enabled: Boolean, announce: Boolean) {
@@ -2025,7 +2171,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 }
             }
             if (announce) {
-                showSingleToast("Live Output Monitor ON — drag anywhere (Clean Program Feed)")
+                showSingleToast("Live Output Monitor ON — drag to move, ⤡ corner to resize")
             }
         } else {
             engine.detachOutputMonitorSurface()
@@ -2051,10 +2197,25 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         engine.syncOutputMonitorParams()
         if (!isOutputMonitorEnabled) return
 
-        val effAspect = if (currentWorkbench == CameraWorkbench.ERA) RecordAspectMode.WIDE_16_9 else engine.recordAspectMode
-        val isVert = (effAspect != RecordAspectMode.WIDE_16_9)
-        val wantW = dpToPx(if (isVert) 82 else 168)
-        val wantH = dpToPx(if (isVert) 146 else 95)
+        val isEra = (currentWorkbench == CameraWorkbench.ERA)
+        val isPort = (!isEra && engine.recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT)
+        val activeCropGuide = if (!isEra && !isPort && engine.frameCropRecEnabled &&
+            overlayView.aspectGuide != AspectGuide.OFF && overlayView.aspectGuide != AspectGuide.WIDE_169
+        ) overlayView.aspectGuide else null
+
+        val (baseWdp, baseHdp) = when {
+            isPort -> 82 to 146
+            activeCropGuide == AspectGuide.SCOPE_239 -> 186 to 78
+            activeCropGuide == AspectGuide.FLAT_185 -> 172 to 93
+            activeCropGuide == AspectGuide.CLASSIC_43 -> 140 to 105
+            activeCropGuide == AspectGuide.SQUARE_11 -> 116 to 116
+            activeCropGuide == AspectGuide.VERT_916 -> 82 to 146
+            else -> 168 to 95
+        }
+
+        val scale = outputMonitorScale.coerceIn(0.75f, 1.85f)
+        val wantW = dpToPx((baseWdp * scale).roundToInt())
+        val wantH = dpToPx((baseHdp * scale).roundToInt())
         val lp = outputMonitorTextureView.layoutParams
         if (lp.width != wantW || lp.height != wantH) {
             lp.width = wantW
@@ -2062,12 +2223,24 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             outputMonitorTextureView.layoutParams = lp
         }
 
-        val isTl = engine.isTimelapseEnabled() && currentWorkbench == CameraWorkbench.SAVIOR
+        val wantRot = if (isPort) {
+            if (getCurrentDisplayRotation() == Surface.ROTATION_270) 90f else -90f
+        } else {
+            0f
+        }
+        if (outputMonitorCard.rotation != wantRot) {
+            outputMonitorCard.rotation = wantRot
+        }
+        outputMonitorCard.post {
+            (outputMonitorCard.parent as? View)?.let { p -> clampOutputMonitorToParent(outputMonitorCard, p) }
+        }
+
+        val isTl = engine.isTimelapseEnabled() && !isEra
         val isRec = engine.isRecording
-        val aspectLbl = when (effAspect) {
-            RecordAspectMode.WIDE_16_9 -> "16:9"
-            RecordAspectMode.VERT_9_16_CROP -> "9:16"
-            RecordAspectMode.VERT_9_16_PORTRAIT -> "9:16P"
+        val aspectLbl = when {
+            isPort -> "9:16P"
+            activeCropGuide != null -> activeCropGuide.label
+            else -> "16:9"
         }
 
         txtOutMonBadge.text = when {
@@ -2567,6 +2740,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     zoomPullDurationMs = zoomPullDurationMs,
                     gridModeName = overlayView.gridMode.name,
                     aspectGuideName = overlayView.aspectGuide.name,
+                    frameCropRecEnabled = engine.frameCropRecEnabled,
                     peakingColorName = overlayView.peakingColor.name,
                     peakingSensitivityName = overlayView.peakingSensitivity.name,
                     zebraModeName = overlayView.zebraMode.name,
@@ -2643,9 +2817,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         styleToolPill(btnToolGrid, overlayView.gridMode != GridMode.OFF)
 
         overlayView.aspectGuide = try { AspectGuide.valueOf(p.aspectGuideName) } catch (_: Exception) { AspectGuide.OFF }
-        frameGuideIdx = AspectGuide.values().indexOf(overlayView.aspectGuide).coerceAtLeast(0)
-        btnToolFrame.text = "FRAME: ${overlayView.aspectGuide.label}"
-        styleToolPill(btnToolFrame, overlayView.aspectGuide != AspectGuide.OFF)
+        engine.activeFrameGuide = overlayView.aspectGuide
+        engine.frameCropRecEnabled = p.frameCropRecEnabled && overlayView.aspectGuide != AspectGuide.OFF && overlayView.aspectGuide != AspectGuide.WIDE_169
+        overlayView.frameCropRecEnabled = engine.frameCropRecEnabled
+        syncOutputMonitorUi()
 
         overlayView.peakingColor = try { PeakingColor.valueOf(p.peakingColorName) } catch (_: Exception) { PeakingColor.GREEN }
         overlayView.peakingSensitivity = try { PeakingSensitivity.valueOf(p.peakingSensitivityName) } catch (_: Exception) { PeakingSensitivity.MED }
@@ -2793,7 +2968,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
 
         view.findViewById<TextView>(R.id.txtCreditsVersion).text =
-            "v${getCurrentVersionName()} • SAVIOR Stable"
+            "v${getCurrentVersionName()} • SAVIOR Cinema Engine"
 
         view.findViewById<TextView>(R.id.btnCreditsWebsite).setOnClickListener {
             try {
@@ -2929,8 +3104,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.7.1"
-    } catch (_: Exception) { "0.7.7.1" }
+        info.versionName ?: "0.7.7.2"
+    } catch (_: Exception) { "0.7.7.2" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -4916,6 +5091,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         textureView.post {
             engine.onPreviewSizeChanged(textureView.width, textureView.height)
             engine.setDisplayRotation(lastDisplayRotation)
+            syncOutputMonitorUi()
         }
     }
 

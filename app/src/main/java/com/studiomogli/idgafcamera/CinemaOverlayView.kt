@@ -34,7 +34,6 @@ enum class GridMode(val label: String) {
 
 enum class RecordAspectMode(val label: String, val shortBadge: String) {
     WIDE_16_9("16:9 WIDE", ""),
-    VERT_9_16_CROP("9:16 CROP", "9:16C"),
     VERT_9_16_PORTRAIT("9:16 PORT", "9:16P")
 }
 
@@ -72,6 +71,12 @@ class CinemaOverlayView @JvmOverloads constructor(
         }
 
     @Volatile var aspectGuide: AspectGuide = AspectGuide.OFF
+        set(value) {
+            field = value
+            postInvalidate()
+        }
+
+    @Volatile var frameCropRecEnabled: Boolean = false
         set(value) {
             field = value
             postInvalidate()
@@ -367,12 +372,12 @@ class CinemaOverlayView @JvmOverloads constructor(
 
         val dp = resources.displayMetrics.density
 
-        // 1. Aspect Ratio Frame Guides (or Forced 9:16 Vertical Crop Recording Frame!)
-        val forcedVertCrop = (recordAspectMode == RecordAspectMode.VERT_9_16_CROP)
-        val effRatio = when {
-            forcedVertCrop -> 9f / 16f
-            aspectGuide != AspectGuide.OFF && aspectGuide.ratio > 0f -> aspectGuide.ratio
-            else -> 0f
+        // 1. Aspect Ratio Frame Guides (Landscape guides + Frame Crop Rec mode!)
+        val isPortMode = (recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT)
+        val effRatio = if (!isPortMode && aspectGuide != AspectGuide.OFF && aspectGuide.ratio > 0f) {
+            aspectGuide.ratio
+        } else {
+            0f
         }
         if (effRatio > 0f) {
             val viewRatio = w / h
@@ -393,9 +398,9 @@ class CinemaOverlayView @JvmOverloads constructor(
             }
         }
 
-        // Subtle live badge when Vertical 9:16 Recording Mode is active (clear of top low-battery banner!)
-        if (recordAspectMode == RecordAspectMode.VERT_9_16_CROP) {
-            val tag = "9:16 CROP REC"
+        // Subtle live badge when True Frame Crop Rec OR Portrait 9:16 Mode is active
+        if (!isPortMode && frameCropRecEnabled && aspectGuide != AspectGuide.OFF && aspectGuide != AspectGuide.WIDE_169) {
+            val tag = "${aspectGuide.label} CROP REC"
             splitTextPaint.textSize = 8.5f * dp
             val tw = splitTextPaint.measureText(tag) + 16f * dp
             val th = 18f * dp
@@ -405,7 +410,7 @@ class CinemaOverlayView @JvmOverloads constructor(
             canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, frameBorderPaint)
             splitTextPaint.color = Color.parseColor("#FF5F1F")
             canvas.drawText(tag, w / 2f, botY + 12.5f * dp, splitTextPaint)
-        } else if (recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT) {
+        } else if (isPortMode) {
             // Rotated 90° so it sits upright at the TOP-CENTER when the user holds the phone vertically!
             val tag = "9:16 PORTRAIT • UPRIGHT"
             splitTextPaint.textSize = 8.5f * dp

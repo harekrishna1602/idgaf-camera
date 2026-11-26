@@ -195,6 +195,7 @@ class CinemaGlRenderer(
             uniform float uLutSize;
             uniform float uLutIntensity;
             uniform float uSplitPixelX;
+            uniform vec2 uCropMatteLimits;
 
             varying vec2 vTexCoord;
             varying vec2 vRawUv;
@@ -340,6 +341,10 @@ class CinemaGlRenderer(
                     }
                 }
 
+                if (uEnableScopes == 0 && (abs(vScreenPos.x) > uCropMatteLimits.x || abs(vScreenPos.y) > uCropMatteLimits.y)) {
+                    outColor = vec3(0.0);
+                }
+
                 gl_FragColor = vec4(outColor, 1.0);
             }
         """
@@ -412,6 +417,7 @@ class CinemaGlRenderer(
     private var uLutSizeLoc: Int = -1
     private var uLutIntensityLoc: Int = -1
     private var uSplitPixelXLoc: Int = -1
+    private var uCropMatteLimitsLoc: Int = -1
 
     // Dynamic Drop-In Era Plug-In GL Program Slot (compiled on-demand on IdgafGlThread!)
     private var pluginHandles: PluginGlHandles? = null
@@ -519,6 +525,8 @@ class CinemaGlRenderer(
     @Volatile private var encoderRotation: Int = Surface.ROTATION_90
     @Volatile private var encoderAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9
     @Volatile private var encoderUsesHintRotation: Boolean = false
+    @Volatile private var encoderCropTargetAspect: Float = 0f
+    @Volatile private var encoderMatteFallbackAspect: Float = 0f
     @Volatile private var targetEncoderFps: Int = 30
     @Volatile private var hardwareFpsUpper: Int = 30
     @Volatile private var isEncoderRecording: Boolean = false
@@ -734,7 +742,9 @@ class CinemaGlRenderer(
         hwFpsUpper: Int,
         timelapseIntervalMs: Long = 0L,
         aspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9,
-        usesHintRotation: Boolean = false
+        usesHintRotation: Boolean = false,
+        cropTargetAspect: Float = 0f,
+        matteFallbackAspect: Float = 0f
     ): Boolean {
         val handler = glHandler ?: return false
         if (isReleased) return false
@@ -759,6 +769,8 @@ class CinemaGlRenderer(
                 encoderRotation = rotation
                 encoderAspectMode = aspectMode
                 encoderUsesHintRotation = usesHintRotation
+                encoderCropTargetAspect = cropTargetAspect
+                encoderMatteFallbackAspect = matteFallbackAspect
                 targetEncoderFps = desiredFps.coerceIn(1, 60)
                 hardwareFpsUpper = hwFpsUpper.coerceIn(1, 120)
                 isEncoderRecording = false
@@ -993,7 +1005,8 @@ class CinemaGlRenderer(
                     stepXy = stepXy,
                     stepYx = stepYx,
                     stepYy = stepYy,
-                    timeSec = timeSec
+                    timeSec = timeSec,
+                    allowCropMatte = true
                 )
                 val ptsNs = if (timelapseIntervalNs > 0L) {
                     computeTimelapseCompressedPtsNs()
@@ -1199,38 +1212,29 @@ class CinemaGlRenderer(
                     if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
                 }
             }
-            RecordAspectMode.VERT_9_16_CROP -> {
-                // Hold phone Horizontal (Landscape) -> Center-crop exact 9:16 vertical slice from upright landscape frame!
-                val glRotDeg = displayRotationToGlDegrees(rot)
-                val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
-                val effW = if (rotSwapped) rot0H else rot0W
-                val effH = if (rotSwapped) rot0W else rot0H
-                val videoAspect = effW / effH.coerceAtLeast(1f)
-                val targetPortraitAspect = 9.0f / 16.0f
-                val cropScaleX = videoAspect / targetPortraitAspect
-                val cropScaleY = 1.0f
-
-                Matrix.setIdentityM(outMvp, 0)
-                if (encoderUsesHintRotation) {
-                    // Fallback 1920x1080 + orientationHint=90: post-rotate +90 CCW so 90 CW playback stands 100% upright!
-                    Matrix.rotateM(outMvp, 0, 90f, 0f, 0f, 1f)
-                }
-                Matrix.scaleM(outMvp, 0, cropScaleX * unMirror, cropScaleY, 1.0f)
-                if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
-            }
             RecordAspectMode.WIDE_16_9 -> {
                 val glRotDeg = displayRotationToGlDegrees(rot)
                 val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
                 val effVideoW = if (rotSwapped) rot0H else rot0W
                 val effVideoH = if (rotSwapped) rot0W else rot0H
-                val encAspect = encW.toFloat() / encH.coerceAtLeast(1).toFloat()
                 val videoAspect = effVideoW / effVideoH.coerceAtLeast(1f)
-                val scaleX = if (encAspect > videoAspect) 1.0f else videoAspect / encAspect
-                val scaleY = if (encAspect > videoAspect) encAspect / videoAspect else 1.0f
 
-                Matrix.setIdentityM(outMvp, 0)
-                Matrix.scaleM(outMvp, 0, scaleX * unMirror, scaleY, 1.0f)
-                if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
+                if (encoderUsesHintRotation && encoderCropTargetAspect > 0.05f && encoderCropTargetAspect < 0.95f) {
+                    // Fallback 1920x1080 + orientationHint=90 for tall 9:16 crop on strict encoders
+                    val cropScaleX = videoAspect / encoderCropTargetAspect
+                    Matrix.setIdentityM(outMvp, 0)
+                    Matrix.rotateM(outMvp, 0, 90f, 0f, 0f, 1f)
+                    Matrix.scaleM(outMvp, 0, cropScaleX * unMirror, 1.0f, 1.0f)
+                    if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
+                } else {
+                    val encAspect = encW.toFloat() / encH.coerceAtLeast(1).toFloat()
+                    val scaleX = if (encAspect > videoAspect) 1.0f else videoAspect / encAspect
+                    val scaleY = if (encAspect > videoAspect) encAspect / videoAspect else 1.0f
+
+                    Matrix.setIdentityM(outMvp, 0)
+                    Matrix.scaleM(outMvp, 0, scaleX * unMirror, scaleY, 1.0f)
+                    if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
+                }
             }
         }
     }
@@ -1283,18 +1287,6 @@ class CinemaGlRenderer(
                 val sy = if (monAspect > videoAspect) monAspect / videoAspect else 1.0f
                 Matrix.setIdentityM(outMvp, 0)
                 Matrix.scaleM(outMvp, 0, sx * unMirror, sy, 1.0f)
-            }
-            RecordAspectMode.VERT_9_16_CROP -> {
-                val glRotDeg = displayRotationToGlDegrees(rot)
-                val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
-                val effW = if (rotSwapped) rot0H else rot0W
-                val effH = if (rotSwapped) rot0W else rot0H
-                val videoAspect = effW / effH.coerceAtLeast(1f)
-                val targetPortraitAspect = monW.toFloat() / monH.coerceAtLeast(1).toFloat()
-                val cropScaleX = videoAspect / targetPortraitAspect.coerceAtLeast(0.1f)
-                Matrix.setIdentityM(outMvp, 0)
-                Matrix.scaleM(outMvp, 0, cropScaleX * unMirror, 1.0f, 1.0f)
-                if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
             }
             RecordAspectMode.WIDE_16_9 -> {
                 val glRotDeg = displayRotationToGlDegrees(rot)
@@ -1360,7 +1352,8 @@ class CinemaGlRenderer(
         stepXy: Float,
         stepYx: Float,
         stepYy: Float,
-        timeSec: Float
+        timeSec: Float,
+        allowCropMatte: Boolean = false
     ) {
         val activePlugin = pluginHandles
         if (activePlugin != null) {
@@ -1432,6 +1425,16 @@ class CinemaGlRenderer(
             -1.0f
         }
         GLES20.glUniform1f(uSplitPixelXLoc, splitPx)
+        var matteLimX = 2.0f
+        var matteLimY = 2.0f
+        if (allowCropMatte && !enableScopes && encoderMatteFallbackAspect > 0.05f && viewportAspect > 0.05f) {
+            if (encoderMatteFallbackAspect > viewportAspect) {
+                matteLimY = (viewportAspect / encoderMatteFallbackAspect).coerceIn(0.05f, 1.0f)
+            } else {
+                matteLimX = (encoderMatteFallbackAspect / viewportAspect).coerceIn(0.05f, 1.0f)
+            }
+        }
+        GLES20.glUniform2f(uCropMatteLimitsLoc, matteLimX, matteLimY)
 
         GLES20.glEnableVertexAttribArray(aPositionLoc)
         GLES20.glVertexAttribPointer(aPositionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
@@ -1681,6 +1684,7 @@ class CinemaGlRenderer(
             uLutSizeLoc = GLES20.glGetUniformLocation(programId, "uLutSize")
             uLutIntensityLoc = GLES20.glGetUniformLocation(programId, "uLutIntensity")
             uSplitPixelXLoc = GLES20.glGetUniformLocation(programId, "uSplitPixelX")
+            uCropMatteLimitsLoc = GLES20.glGetUniformLocation(programId, "uCropMatteLimits")
             if (desiredLutData != null) {
                 lutUploadDirty = true
             }

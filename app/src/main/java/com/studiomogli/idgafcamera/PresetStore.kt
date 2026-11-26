@@ -30,6 +30,7 @@ data class CameraPreset(
     val zoomPullDurationMs: Long = 1500L,
     val gridModeName: String = GridMode.OFF.name,
     val aspectGuideName: String = AspectGuide.OFF.name,
+    val frameCropRecEnabled: Boolean = false,
     val peakingColorName: String = PeakingColor.GREEN.name,
     val peakingSensitivityName: String = PeakingSensitivity.MED.name,
     val zebraModeName: String = ZebraMode.IRE_92.name,
@@ -69,6 +70,7 @@ data class CameraPreset(
         put("zoomPullDurationMs", zoomPullDurationMs)
         put("gridModeName", gridModeName)
         put("aspectGuideName", aspectGuideName)
+        put("frameCropRecEnabled", frameCropRecEnabled)
         put("peakingColorName", peakingColorName)
         put("peakingSensitivityName", peakingSensitivityName)
         put("zebraModeName", zebraModeName)
@@ -110,6 +112,7 @@ data class CameraPreset(
             zoomPullDurationMs = obj.optLong("zoomPullDurationMs", 1500L),
             gridModeName = obj.optString("gridModeName", GridMode.OFF.name),
             aspectGuideName = obj.optString("aspectGuideName", AspectGuide.OFF.name),
+            frameCropRecEnabled = obj.optBoolean("frameCropRecEnabled", false),
             peakingColorName = obj.optString("peakingColorName", PeakingColor.GREEN.name),
             peakingSensitivityName = obj.optString("peakingSensitivityName", PeakingSensitivity.MED.name),
             zebraModeName = obj.optString("zebraModeName", ZebraMode.IRE_92.name),

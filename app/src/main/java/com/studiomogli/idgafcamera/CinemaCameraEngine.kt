@@ -184,6 +184,8 @@ class CinemaCameraEngine(
     @Volatile var antiFlickerMode: AntiFlickerMode = loadSavedAntiFlickerMode()
         private set
     @Volatile var recordAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9
+    @Volatile var activeFrameGuide: AspectGuide = AspectGuide.OFF
+    @Volatile var frameCropRecEnabled: Boolean = false
     var micPreference: MicPreference = MicPreference.AUTO
     @Volatile var audioPreampMode: AudioPreampMode = AudioPreampMode.CAMCORDER
     @Volatile var isAudioMuted: Boolean = false
@@ -1614,10 +1616,37 @@ class CinemaCameraEngine(
 
         try {
             val activeAspect = if (activeEraPlugin != null) RecordAspectMode.WIDE_16_9 else recordAspectMode
-            val wantVertical = (activeAspect != RecordAspectMode.WIDE_16_9)
-            var encW = if (wantVertical) resolvedVideoSize.height else resolvedVideoSize.width
-            var encH = if (wantVertical) resolvedVideoSize.width else resolvedVideoSize.height
+            val isPortMode = (activeAspect == RecordAspectMode.VERT_9_16_PORTRAIT)
+            val customCropGuide = if (activeEraPlugin == null && !isPortMode && frameCropRecEnabled &&
+                activeFrameGuide != AspectGuide.OFF && activeFrameGuide != AspectGuide.WIDE_169 && activeFrameGuide.ratio > 0f
+            ) activeFrameGuide else null
+
+            fun align16(v: Int): Int = ((v + 8) / 16).coerceAtLeast(2) * 16
+
+            var encW: Int
+            var encH: Int
+            if (isPortMode) {
+                encW = resolvedVideoSize.height
+                encH = resolvedVideoSize.width
+            } else if (customCropGuide != null) {
+                val srcW = resolvedVideoSize.width
+                val srcH = resolvedVideoSize.height
+                val srcRatio = srcW.toFloat() / srcH.coerceAtLeast(1).toFloat()
+                val targetRatio = customCropGuide.ratio
+                if (targetRatio >= srcRatio) {
+                    encW = srcW
+                    encH = align16((srcW / targetRatio).toInt()).coerceIn(64, srcH)
+                } else {
+                    encH = srcH
+                    encW = align16((srcH * targetRatio).toInt()).coerceIn(64, srcW)
+                }
+            } else {
+                encW = resolvedVideoSize.width
+                encH = resolvedVideoSize.height
+            }
+
             var usesHintFallback = false
+            var matteFallbackAspect = 0f
 
             val recorder = try {
                 createAndPrepareMediaRecorder(
@@ -1626,20 +1655,29 @@ class CinemaCameraEngine(
                     encW = encW,
                     encH = encH,
                     orientationHint = 0,
-                    aspectMode = activeAspect
+                    aspectMode = activeAspect,
+                    cropGuide = customCropGuide
                 )
             } catch (firstErr: Exception) {
-                if (!wantVertical) throw firstErr
-                // Hardware encoder rejected height > width (common on some MediaTek SoCs):
-                // Cleanly fall back to landscape encoder buffer + MP4 orientationHint (100% upright 9:16 playback everywhere!)
+                if (!isPortMode && customCropGuide == null) throw firstErr
+                // Hardware encoder rejected non-standard dimensions (e.g. tall portrait or custom Mod-16 aspect):
+                // Cleanly fall back to standard hardware-guaranteed resolvedVideoSize!
                 cleanupRecorderOnFailure()
                 encW = resolvedVideoSize.width
                 encH = resolvedVideoSize.height
-                usesHintFallback = true
-                val hintDeg = if (activeAspect == RecordAspectMode.VERT_9_16_PORTRAIT && displayRotation == Surface.ROTATION_270) {
-                    270
-                } else {
-                    90
+                val isTallCropFallback = (customCropGuide != null && customCropGuide.ratio < 0.85f)
+                val hintDeg = when {
+                    isPortMode && displayRotation == Surface.ROTATION_270 -> {
+                        usesHintFallback = true; 270
+                    }
+                    isPortMode || isTallCropFallback -> {
+                        usesHintFallback = true; 90
+                    }
+                    else -> {
+                        // Wide/Boxy ratio fallback (2.39:1, 1.85:1, 4:3, 1:1): burn exact black cinema mattes in Pass 2!
+                        matteFallbackAspect = customCropGuide?.ratio ?: 0f
+                        0
+                    }
                 }
                 createAndPrepareMediaRecorder(
                     lens = lens,
@@ -1647,7 +1685,8 @@ class CinemaCameraEngine(
                     encW = encW,
                     encH = encH,
                     orientationHint = hintDeg,
-                    aspectMode = activeAspect
+                    aspectMode = activeAspect,
+                    cropGuide = customCropGuide
                 )
             }
             mediaRecorder = recorder
@@ -1661,7 +1700,9 @@ class CinemaCameraEngine(
                 hwFpsUpper = resolvedFpsRange.upper,
                 timelapseIntervalMs = timelapseIntervalMs,
                 aspectMode = activeAspect,
-                usesHintRotation = usesHintFallback
+                usesHintRotation = usesHintFallback,
+                cropTargetAspect = customCropGuide?.ratio ?: 0f,
+                matteFallbackAspect = matteFallbackAspect
             )
             if (!attached) {
                 throw IllegalStateException("Failed to attach OpenGL encoder surface")
@@ -1819,16 +1860,17 @@ class CinemaCameraEngine(
         encW: Int,
         encH: Int,
         orientationHint: Int,
-        aspectMode: RecordAspectMode
+        aspectMode: RecordAspectMode,
+        cropGuide: AspectGuide? = null
     ): MediaRecorder {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val isTl = isTimelapseEnabled()
         val plugin = activeEraPlugin
         val eraTag = plugin?.fileTag?.trim().orEmpty()
-        val aspectTag = when (aspectMode) {
-            RecordAspectMode.VERT_9_16_CROP -> "9x16C_"
-            RecordAspectMode.VERT_9_16_PORTRAIT -> "9x16P_"
-            RecordAspectMode.WIDE_16_9 -> ""
+        val aspectTag = when {
+            aspectMode == RecordAspectMode.VERT_9_16_PORTRAIT -> "9x16P_"
+            cropGuide != null -> "${cropGuide.label.replace(':', 'x').replace('.', 'p')}_"
+            else -> ""
         }
         val fileName = when {
             eraTag.isNotEmpty() -> "IDGAF_${eraTag}_${targetFps}fps_$timestamp.mp4"

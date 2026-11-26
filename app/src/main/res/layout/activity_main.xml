@@ -257,19 +257,6 @@
                 android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/btnToolFrame"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_marginEnd="5dp"
-                android:layout_weight="1.15"
-                android:background="@drawable/bg_hud_pill"
-                android:gravity="center"
-                android:text="FRAME: OFF"
-                android:textColor="#FFFFFF"
-                android:textSize="9.5sp"
-                android:textStyle="bold" />
-
-            <TextView
                 android:id="@+id/btnToolPeak"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
@@ -734,7 +721,25 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:fontFamily="monospace"
-            android:text="CODEC &amp; RECORDING ORIENTATION (9:16 VERTICAL)"
+            android:text="FRAME RATIO (GUIDES OR EXACT CROP REC)"
+            android:textColor="#8E96A4"
+            android:textSize="8.5sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:id="@+id/formatFrameRatioRow"
+            android:layout_width="match_parent"
+            android:layout_height="26dp"
+            android:layout_marginTop="3dp"
+            android:gravity="center"
+            android:orientation="horizontal" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:fontFamily="monospace"
+            android:text="CODEC • FRAME CROP • FULL PORTRAIT"
             android:textColor="#8E96A4"
             android:textSize="8.5sp"
             android:textStyle="bold" />
@@ -790,7 +795,7 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- Section A: Workbench Selector (SAVIOR / ERA / PURIST) -->
+        <!-- Section A: Workbench Selector -->
         <LinearLayout
             android:id="@+id/workbenchSection"
             android:layout_width="match_parent"
@@ -1830,6 +1835,18 @@
                 android:id="@+id/outputMonitorTextureView"
                 android:layout_width="168dp"
                 android:layout_height="95dp" />
+
+            <TextView
+                android:id="@+id/btnOutMonResize"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_gravity="bottom|end"
+                android:background="#B314181F"
+                android:gravity="center"
+                android:text="⤡"
+                android:textColor="#FF5F1F"
+                android:textSize="11sp"
+                android:textStyle="bold" />
         </FrameLayout>
     </LinearLayout>
 
@@ -2656,7 +2673,7 @@
     </LinearLayout>
 
 
-    <!-- ==================== ERA / PURIST / CREATOR CAMERA HUD MOUNT ==================== -->
+    <!-- ==================== ERA CAMERA HUD MOUNT ==================== -->
     <FrameLayout
         android:id="@+id/eraPluginContainer"
         android:layout_width="match_parent"
