@@ -53,7 +53,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
                 android:lineSpacingExtra="2dp"
-                android:text="• Cost: $0 / ₹0 FOREVER. Zero paywalls, zero watermarks, zero subscriptions.\n• Optional Human Lifetime License: $1 USD globally — only if you want to own it officially. Otherwise 100% free forever."
+                android:text="• Cost: $0 / ₹0 FOREVER. Zero paywalls, zero watermarks, zero subscriptions.\n• Optional Human Lifetime License: $29 USD globally — only if you want to own it officially. Otherwise 100% free forever."
                 android:textColor="#E5E7EB"
                 android:textSize="11.5sp" />
 
@@ -91,7 +91,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
                 android:lineSpacingExtra="2dp"
-                android:text="• Any other corporation charging humans monthly rent just to breathe: Mandatory Corporate Redemption Subscription of $9,999 USD / month per device (billed annually in advance, zero grace period).\n• Corporations are permanently banned from the $1 Human Lifetime License. No buyouts, no loopholes."
+                android:text="• Any other corporation charging humans monthly rent just to breathe: Mandatory Corporate Redemption Subscription of $9,999 USD / month per device (billed annually in advance, zero grace period).\n• Corporations are permanently banned from the $29 Human Lifetime License. No buyouts, no loopholes."
                 android:textColor="#E5E7EB"
                 android:textSize="11.5sp" />
 
