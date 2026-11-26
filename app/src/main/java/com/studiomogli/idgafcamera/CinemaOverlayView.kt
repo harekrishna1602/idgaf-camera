@@ -172,6 +172,30 @@ class CinemaOverlayView @JvmOverloads constructor(
     private val frontBinsY = FloatArray(64)
     private var hasHighlightClip = false
 
+    // Stop-Motion Live Onion Skin Ghost Overlay + Cinema Slate HUD Badge
+    @Volatile var onionSkinBitmap: Bitmap? = null
+        set(value) {
+            field = value
+            postInvalidate()
+        }
+    @Volatile var onionSkinAlpha: Float = 0.40f
+        set(value) {
+            field = value.coerceIn(0f, 0.85f)
+            postInvalidate()
+        }
+    @Volatile var slateHudBadge: String = ""
+        set(value) {
+            field = value
+            postInvalidate()
+        }
+    private val onionSkinPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val onionDestRect = RectF()
+    private val slateBadgeBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(170, 255, 95, 31)
+        strokeWidth = 1.4f
+        style = Paint.Style.STROKE
+    }
+
     // Safe Area HUD Inset Tracking + Live Minecraft-Style Corner Calibrator Preview
     @Volatile var safeInsetLeftPx: Int = 0
     @Volatile var safeInsetTopPx: Int = 0
@@ -517,6 +541,14 @@ class CinemaOverlayView @JvmOverloads constructor(
 
         val dp = resources.displayMetrics.density
 
+        // 0. Stop-Motion / Match-Cut Live Onion Skin Ghost Overlay (semi-transparent previous frame)
+        val ghost = onionSkinBitmap
+        if (ghost != null && !ghost.isRecycled && onionSkinAlpha > 0.01f) {
+            onionSkinPaint.alpha = (onionSkinAlpha * 255f).toInt().coerceIn(0, 225)
+            onionDestRect.set(0f, 0f, w, h)
+            canvas.drawBitmap(ghost, null, onionDestRect, onionSkinPaint)
+        }
+
         // 1. Aspect Ratio Frame Guides (Landscape guides + Frame Crop Rec mode!)
         val isPortMode = (recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT)
         val effRatio = if (!isPortMode && aspectGuide != AspectGuide.OFF && aspectGuide.ratio > 0f) {
@@ -757,6 +789,21 @@ class CinemaOverlayView @JvmOverloads constructor(
             if (clipAlert) {
                 canvas.drawCircle(left + boxW - 7.5f * dp, top + 7f * dp, 2.8f * dp, clipDotPaint)
             }
+        }
+
+        // 6.5. Compact Cinema Slate Badge (Bottom-Left above dock inside Safe Area when SLATE is armed)
+        val slateTxt = slateHudBadge
+        if (slateTxt.isNotEmpty() && !safeAreaPreviewActive) {
+            splitTextPaint.textSize = 8.5f * dp
+            val tw = splitTextPaint.measureText(slateTxt) + 14f * dp
+            val th = 18f * dp
+            val bx = (w - safeInsetRightPx.toFloat() - tw - 16f * dp).coerceAtLeast(safeLeft + 16f * dp)
+            val by = safeTop + 56f * dp
+            pillRect.set(bx, by, bx + tw, by + th)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, histBgPaint)
+            canvas.drawRoundRect(pillRect, 6f * dp, 6f * dp, slateBadgeBorderPaint)
+            splitTextPaint.color = Color.parseColor("#FF5F1F")
+            canvas.drawText(slateTxt, pillRect.centerX(), by + 12.2f * dp, splitTextPaint)
         }
 
         // 7. Minecraft-Style Interactive Safe Area Calibration Frame (Visible only while calibrating in PRO -> SAFE)

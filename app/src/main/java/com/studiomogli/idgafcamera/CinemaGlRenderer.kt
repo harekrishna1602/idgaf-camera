@@ -539,11 +539,21 @@ class CinemaGlRenderer(
     private var lastEncoderPtsNs: Long = -1L
     private var nextEncoderFrameDueNs: Long = -1L
 
-    // Phase 7.2C Pro Time-Lapse Intervalometer state (0L = standard real-time video mode)
+    // Phase 7.2C Pro Time-Lapse Intervalometer + Stop-Motion Manual Single-Frame Engine
     @Volatile private var timelapseIntervalNs: Long = 0L
+    @Volatile private var isStopMotionMode: Boolean = false
+    private val pendingStopMotionFrames = java.util.concurrent.atomic.AtomicInteger(0)
     private var timelapseBaseMonoNs: Long = -1L
     private var timelapseCapturedFrames: Long = 0L
     @Volatile var onTimelapseFrameCaptured: ((capturedFrames: Long) -> Unit)? = null
+
+    fun triggerStopMotionCaptureFrame() {
+        if (isEncoderRecording && isStopMotionMode) {
+            pendingStopMotionFrames.incrementAndGet()
+        }
+    }
+
+    fun getCompressedCapturedFrameCount(): Long = timelapseCapturedFrames
 
     // Live Program / Output Monitor (PiP Clean Feed — exact aspect crop, LUT, and Time-Lapse / FPS cadence!)
     @Volatile private var outputMonitorWidth: Int = 0
@@ -742,6 +752,7 @@ class CinemaGlRenderer(
         desiredFps: Int,
         hwFpsUpper: Int,
         timelapseIntervalMs: Long = 0L,
+        stopMotionMode: Boolean = false,
         aspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9,
         usesHintRotation: Boolean = false,
         cropTargetAspect: Float = 0f,
@@ -779,7 +790,9 @@ class CinemaGlRenderer(
                 encoderBaseMonoNs = -1L
                 lastEncoderPtsNs = -1L
                 nextEncoderFrameDueNs = -1L
-                timelapseIntervalNs = if (timelapseIntervalMs > 0L) timelapseIntervalMs * 1_000_000L else 0L
+                timelapseIntervalNs = if (!stopMotionMode && timelapseIntervalMs > 0L) timelapseIntervalMs * 1_000_000L else 0L
+                isStopMotionMode = stopMotionMode
+                pendingStopMotionFrames.set(0)
                 timelapseBaseMonoNs = -1L
                 timelapseCapturedFrames = 0L
                 encoderEglSurface = surface
@@ -810,6 +823,9 @@ class CinemaGlRenderer(
                 nextEncoderFrameDueNs = -1L
                 timelapseBaseMonoNs = -1L
                 timelapseCapturedFrames = 0L
+                pendingStopMotionFrames.set(0)
+            } else {
+                pendingStopMotionFrames.set(0)
             }
             isEncoderRecording = active
         }
@@ -1009,14 +1025,14 @@ class CinemaGlRenderer(
                     timeSec = timeSec,
                     allowCropMatte = true
                 )
-                val ptsNs = if (timelapseIntervalNs > 0L) {
+                val ptsNs = if (isStopMotionMode || timelapseIntervalNs > 0L) {
                     computeTimelapseCompressedPtsNs()
                 } else {
                     computeMonotonicEncoderPtsNs(frameTimestampNs)
                 }
                 EGLExt.eglPresentationTimeANDROID(eglDisplay, encoderEglSurface, ptsNs)
                 EGL14.eglSwapBuffers(eglDisplay, encoderEglSurface)
-                if (timelapseIntervalNs > 0L) {
+                if (isStopMotionMode || timelapseIntervalNs > 0L) {
                     onTimelapseFrameCaptured?.invoke(timelapseCapturedFrames)
                 }
             }
@@ -1103,6 +1119,15 @@ class CinemaGlRenderer(
      * while leaving Pass 1 (live viewfinder) smooth. Never throttles when target >= hardware FPS.
      */
     private fun shouldEncodeFrameNow(): Boolean {
+        // Stop-Motion Manual Single-Frame Gate (captures 1 frame ONLY when user taps Shutter / Volume!)
+        if (isStopMotionMode) {
+            while (true) {
+                val cur = pendingStopMotionFrames.get()
+                if (cur <= 0) return false
+                if (pendingStopMotionFrames.compareAndSet(cur, cur - 1)) return true
+            }
+        }
+
         // Phase 7.2C Time-Lapse Intervalometer Gate (captures Frame 0 immediately, then 1 frame every intervalNs)
         val tlNs = timelapseIntervalNs
         if (tlNs > 0L) {

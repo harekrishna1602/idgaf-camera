@@ -192,6 +192,31 @@ class CinemaCameraEngine(
     @Volatile var audioMonitorTrimDb: Int = 0
     @Volatile var timelapseIntervalMs: Long = 0L
     fun isTimelapseEnabled(): Boolean = timelapseIntervalMs > 0L
+    @Volatile var stopMotionEnabled: Boolean = false
+    @Volatile var stopMotionPlaybackFps: Int = 12
+    @Volatile var slateEnabled: Boolean = false
+    @Volatile var slateReel: String = "A001"
+    @Volatile var slateScene: Int = 1
+    @Volatile var slateTake: Int = 1
+    @Volatile var slateAutoIncrementTake: Boolean = true
+
+    fun formatSlatePrefix(): String {
+        val cleanReel = slateReel.trim().uppercase(Locale.US).replace(Regex("[^A-Z0-9]"), "").ifEmpty { "A001" }.take(6)
+        return String.format(Locale.US, "%s_S%02d_T%02d", cleanReel, slateScene.coerceIn(1, 999), slateTake.coerceIn(1, 999))
+    }
+
+    fun formatSlateBadge(): String {
+        val cleanReel = slateReel.trim().uppercase(Locale.US).replace(Regex("[^A-Z0-9]"), "").ifEmpty { "A001" }.take(6)
+        return String.format(Locale.US, "%s•S%02d•T%02d", cleanReel, slateScene.coerceIn(1, 999), slateTake.coerceIn(1, 999))
+    }
+
+    fun captureStopMotionFrame(): Boolean {
+        if (!isRecording || !stopMotionEnabled) return false
+        glRenderer?.triggerStopMotionCaptureFrame()
+        return true
+    }
+
+    fun getStopMotionCapturedFrames(): Long = glRenderer?.getCompressedCapturedFrameCount() ?: 0L
     @Volatile var activeEraPlugin: EraCameraPlugin? = null
         private set
     @Volatile var eraRenderConfig: EraRenderConfig = EraRenderConfig()
@@ -386,7 +411,8 @@ class CinemaCameraEngine(
         cleanupOrphanEraCacheFiles()
         glRenderer?.setCubeLut(activeCubeLut)
         glRenderer?.onTimelapseFrameCaptured = { frames ->
-            val outSec = frames.toFloat() / targetFps.coerceIn(1, 60).toFloat()
+            val fpsDenom = if (stopMotionEnabled) stopMotionPlaybackFps.coerceIn(1, 60) else targetFps.coerceIn(1, 60)
+            val outSec = frames.toFloat() / fpsDenom.toFloat()
             listener.onTimelapseProgress(frames, outSec)
         }
         if (lenses.isEmpty()) {
@@ -1707,14 +1733,17 @@ class CinemaCameraEngine(
             }
             mediaRecorder = recorder
 
+            val isSm = (activeEraPlugin == null && stopMotionEnabled)
+            val encTargetFps = if (isSm) stopMotionPlaybackFps.coerceIn(1, 60) else targetFps
             val attached = renderer.attachEncoderSurfaceSync(
                 recorderSurface = recorder.surface,
                 width = encW,
                 height = encH,
                 rotation = displayRotation,
-                desiredFps = targetFps,
+                desiredFps = encTargetFps,
                 hwFpsUpper = resolvedFpsRange.upper,
-                timelapseIntervalMs = timelapseIntervalMs,
+                timelapseIntervalMs = if (isSm) 0L else timelapseIntervalMs,
+                stopMotionMode = isSm,
                 aspectMode = activeAspect,
                 usesHintRotation = usesHintFallback,
                 cropTargetAspect = customCropGuide?.ratio ?: 0f,
@@ -1728,6 +1757,10 @@ class CinemaCameraEngine(
             isRecording = true
             // Enable GL encoder pass ONLY after MediaRecorder.start() has initialized its audio + video tracks!
             renderer.setEncoderRecordingActive(true)
+            if (isSm) {
+                // Immediately capture Frame #1 on initial Shutter press!
+                renderer.triggerStopMotionCaptureFrame()
+            }
             listener.onRecordingStarted()
         } catch (e: Exception) {
             glRenderer?.detachEncoderSurfaceSync()
@@ -1813,7 +1846,9 @@ class CinemaCameraEngine(
                 context.contentResolver.delete(savedUri, null, null)
             } catch (_: Exception) {
             }
-            if (isTimelapseEnabled()) {
+            if (stopMotionEnabled) {
+                listener.onError("Stop-Motion needs at least 2 snapped frames to save an MP4.")
+            } else if (isTimelapseEnabled()) {
                 listener.onError("Time-Lapse too short — wait for at least 2 frames to capture.")
             }
             listener.onRecordingStopped(null, "")
@@ -1830,6 +1865,9 @@ class CinemaCameraEngine(
             }
         }
 
+        if (savedUri != null && activeEraPlugin == null && slateEnabled && slateAutoIncrementTake) {
+            slateTake = (slateTake + 1).coerceAtMost(999)
+        }
         listener.onRecordingStopped(savedUri, label)
     }
 
@@ -1880,9 +1918,11 @@ class CinemaCameraEngine(
         cropGuide: AspectGuide? = null
     ): MediaRecorder {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val isTl = isTimelapseEnabled()
         val plugin = activeEraPlugin
+        val isSm = (plugin == null && stopMotionEnabled)
+        val isTl = (!isSm && isTimelapseEnabled())
         val eraTag = plugin?.fileTag?.trim().orEmpty()
+        val slateTag = if (plugin == null && slateEnabled) "${formatSlatePrefix()}_" else "IDGAF_"
         val aspectTag = when {
             aspectMode == RecordAspectMode.VERT_9_16_PORTRAIT -> "9x16P_"
             anamorphicDesqueeze > 1.01f -> "ANA${String.format(Locale.US, "%.2f", anamorphicDesqueeze).replace('.', 'p')}x_"
@@ -1891,8 +1931,9 @@ class CinemaCameraEngine(
         }
         val fileName = when {
             eraTag.isNotEmpty() -> "IDGAF_${eraTag}_${targetFps}fps_$timestamp.mp4"
-            isTl -> "IDGAF_${aspectTag}TL${formatTimelapseFileTag()}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
-            else -> "IDGAF_${aspectTag}${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+            isSm -> "${slateTag}${aspectTag}SM${stopMotionPlaybackFps}fps_${resolvedVideoSize.height}p_$timestamp.mp4"
+            isTl -> "${slateTag}${aspectTag}TL${formatTimelapseFileTag()}_${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
+            else -> "${slateTag}${aspectTag}${resolvedVideoSize.height}p_${targetFps}fps_$timestamp.mp4"
         }
         activeFileLabel = "Movies/IDGAF_Camera/$fileName"
 
@@ -1904,9 +1945,9 @@ class CinemaCameraEngine(
         }
 
         val isSilentPlugin = (plugin?.isSilentAudio == true)
-        val useEraAudioDsp = (plugin != null && plugin.usesPostAudioProcessor && !isSilentPlugin && !isTl)
+        val useEraAudioDsp = (plugin != null && plugin.usesPostAudioProcessor && !isSilentPlugin && !isTl && !isSm)
         pendingPostAudioPlugin = if (useEraAudioDsp) plugin else null
-        val recordAudio = if (useEraAudioDsp) true else (!isAudioMuted && !isTl && !isSilentPlugin)
+        val recordAudio = if (useEraAudioDsp) true else (!isAudioMuted && !isTl && !isSm && !isSilentPlugin)
         if (recordAudio) {
             recorder.setAudioSource(if (useEraAudioDsp) MediaRecorder.AudioSource.CAMCORDER else audioPreampMode.audioSource)
         }
@@ -1950,7 +1991,7 @@ class CinemaCameraEngine(
 
         val bitrateBps = targetBitrateMbps.coerceIn(2, 120) * 1_000_000
         recorder.setVideoEncodingBitRate(bitrateBps)
-        recorder.setVideoFrameRate(targetFps.coerceIn(1, 60))
+        recorder.setVideoFrameRate((if (isSm) stopMotionPlaybackFps else targetFps).coerceIn(1, 60))
         recorder.setVideoSize(encW, encH)
         recorder.setVideoEncoder(targetCodec.encoder)
         if (recordAudio) {
