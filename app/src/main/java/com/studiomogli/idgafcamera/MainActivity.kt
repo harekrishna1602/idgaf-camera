@@ -243,7 +243,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnToolFalseColor: TextView
     private lateinit var btnToolHist: TextView
     private lateinit var btnToolHorizon: TextView
+    private lateinit var btnToolOutMon: TextView
     private lateinit var btnToolMonConfig: TextView
+    private lateinit var outputMonitorCard: LinearLayout
+    private lateinit var viewOutMonDot: View
+    private lateinit var txtOutMonBadge: TextView
+    private lateinit var btnOutMonClose: TextView
+    private lateinit var outputMonitorTextureView: TextureView
+    private var isOutputMonitorEnabled: Boolean = false
+    private var outMonLastDragX: Float = 0f
+    private var outMonLastDragY: Float = 0f
     private var sensorManager: SensorManager? = null
     private var smoothedRoll = 0f
     private var frameGuideIdx = 0
@@ -350,6 +359,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var txtSliderReadout: TextView
     private lateinit var btnWbCustom: TextView
     private lateinit var btnSliderAuto: TextView
+    private lateinit var btnIsoCustom: TextView
+    private lateinit var isoPresetRow: LinearLayout
     private lateinit var btnShutterAntiFlicker: TextView
     private lateinit var btnShutterCustom: TextView
     private lateinit var btnShutterUnit: TextView
@@ -718,7 +729,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnToolFalseColor = findViewById(R.id.btnToolFalseColor)
         btnToolHist = findViewById(R.id.btnToolHist)
         btnToolHorizon = findViewById(R.id.btnToolHorizon)
+        btnToolOutMon = findViewById(R.id.btnToolOutMon)
         btnToolMonConfig = findViewById(R.id.btnToolMonConfig)
+        outputMonitorCard = findViewById(R.id.outputMonitorCard)
+        viewOutMonDot = findViewById(R.id.viewOutMonDot)
+        txtOutMonBadge = findViewById(R.id.txtOutMonBadge)
+        btnOutMonClose = findViewById(R.id.btnOutMonClose)
+        outputMonitorTextureView = findViewById(R.id.outputMonitorTextureView)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
         lastDisplayRotation = getCurrentDisplayRotation()
@@ -800,6 +817,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtSliderReadout = findViewById(R.id.txtSliderReadout)
         btnWbCustom = findViewById(R.id.btnWbCustom)
         btnSliderAuto = findViewById(R.id.btnSliderAuto)
+        btnIsoCustom = findViewById(R.id.btnIsoCustom)
+        isoPresetRow = findViewById(R.id.isoPresetRow)
         btnShutterAntiFlicker = findViewById(R.id.btnShutterAntiFlicker)
         btnShutterCustom = findViewById(R.id.btnShutterCustom)
         btnShutterUnit = findViewById(R.id.btnShutterUnit)
@@ -1211,6 +1230,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             rightRailContainer.visibility = View.GONE
             txtLowBatteryBanner.visibility = View.GONE
             btnExitSplitWipe.visibility = View.GONE
+            outputMonitorCard.visibility = View.GONE
 
             btnRestoreCleanUi.visibility = View.VISIBLE
             updateRestoreCleanEyeBadge()
@@ -1227,6 +1247,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 lensRail.visibility = View.VISIBLE
                 zoomRockerContainer.visibility = View.VISIBLE
                 syncExitSplitPillVisibility()
+                if (isOutputMonitorEnabled) outputMonitorCard.visibility = View.VISIBLE
             }
             updateCleanUiToggleStyle()
             syncLowBatteryBannerVisibility()
@@ -1280,7 +1301,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         eraVaultSection.visibility = if (showVault) View.VISIBLE else View.GONE
         txtEraDrawerTitle.text = when (mode) {
             EraDrawerMode.WORKBENCH_ONLY -> "SWITCH WORKBENCH"
-            EraDrawerMode.ERA_VAULT_ONLY -> "ERA PLUG-IN VAULT"
+            EraDrawerMode.ERA_VAULT_ONLY -> "ERA CAMERAS"
             EraDrawerMode.BOTH -> "WORKBENCH & ERA VAULT"
         }
 
@@ -1301,8 +1322,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         closeWorkbenchEraDrawer()
                         enterEraPlugin(target)
                     } else {
-                        txtEraVaultDesc.text = "No Era plug-ins installed yet — SAVIOR Core Stable"
-                        showSingleToast("No Era plug-ins installed yet")
+                        txtEraVaultDesc.text = "Era Cameras — Coming Soon"
+                        showSingleToast("Era Cameras — Coming Soon")
                     }
                 },
                 Triple("PURIST", currentWorkbench == CameraWorkbench.ERA && activeEraPlugin?.category == EraWorkbenchCategory.PURIST) {
@@ -1310,8 +1331,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         closeWorkbenchEraDrawer()
                         enterEraPlugin(puristPlugin)
                     } else {
-                        txtEraVaultDesc.text = "PURIST — 65mm / 1.43:1 Celluloid Workflow (Drop-in plug-in planned)"
-                        showSingleToast("PURIST 65mm Workflow — Plug-in planned")
+                        txtEraVaultDesc.text = "PURIST — 65mm / 1.43:1 Celluloid Workflow (Coming Soon)"
+                        showSingleToast("PURIST 65mm — Coming Soon")
                     }
                 }
             )
@@ -1356,7 +1377,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (eraPlugins.isEmpty()) {
                 eraVaultSelectRow2.visibility = View.GONE
                 val emptyChip = TextView(this).apply {
-                    text = "NO ERA PLUG-INS INSTALLED • SAVIOR CORE READY"
+                    text = "COMING SOON"
                     textSize = 8.8f
                     typeface = android.graphics.Typeface.MONOSPACE
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
@@ -1405,8 +1426,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         txtEraVaultDesc.text = when {
             activeEraPlugin != null -> activeEraPlugin!!.description
-            eraPlugins.isEmpty() -> "SAVIOR Core Stable • Drop Era*.kt plug-ins into era/ to add cameras"
-            else -> "Active: SAVIOR Digital Cinema Core • ${eraPlugins.size} Era plug-in(s) ready"
+            eraPlugins.isEmpty() -> "SAVIOR Cinema Engine • Classic Era Cameras Coming Soon"
+            else -> "SAVIOR Cinema Engine • ${eraPlugins.size} Era Camera(s) Ready"
         }
     }
 
@@ -1584,6 +1605,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         val changed = (engine.recordAspectMode != mode)
         engine.recordAspectMode = mode
         overlayView.recordAspectMode = mode
+        syncOutputMonitorUi()
         if (formatDrawer.visibility == View.VISIBLE) {
             renderFormatDrawerChips()
         } else {
@@ -1929,12 +1951,147 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             syncHorizonSensor()
         }
 
+        btnToolOutMon.setOnClickListener {
+            setOutputMonitorEnabled(!isOutputMonitorEnabled, announce = true)
+        }
+
+        btnOutMonClose.setOnClickListener {
+            setOutputMonitorEnabled(false, announce = false)
+        }
+
+        outputMonitorTextureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                if (isOutputMonitorEnabled) {
+                    engine.attachOutputMonitorSurface(surface, width, height) { pulseOutputMonitorDot() }
+                }
+            }
+            override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+                engine.updateOutputMonitorSize(width, height)
+            }
+            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+                engine.detachOutputMonitorSurface()
+                return true
+            }
+            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+        }
+
+        outputMonitorCard.setOnTouchListener { v, event ->
+            val parentView = v.parent as? View ?: return@setOnTouchListener false
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    outMonLastDragX = event.rawX
+                    outMonLastDragY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - outMonLastDragX
+                    val dy = event.rawY - outMonLastDragY
+                    outMonLastDragX = event.rawX
+                    outMonLastDragY = event.rawY
+                    val maxX = (parentView.width - v.width).coerceAtLeast(0).toFloat()
+                    val maxY = (parentView.height - v.height).coerceAtLeast(0).toFloat()
+                    v.x = (v.x + dx).coerceIn(0f, maxX)
+                    v.y = (v.y + dy).coerceIn(0f, maxY)
+                    true
+                }
+                else -> true
+            }
+        }
+
         btnToolMonConfig.setOnClickListener {
             val showing = monConfigSubPanel.visibility == View.VISIBLE
             monConfigSubPanel.visibility = if (showing) View.GONE else View.VISIBLE
             styleToolPill(btnToolMonConfig, !showing)
             if (!showing) renderMonConfigInlineChips()
         }
+    }
+
+    private fun setOutputMonitorEnabled(enabled: Boolean, announce: Boolean) {
+        isOutputMonitorEnabled = enabled
+        styleToolPill(btnToolOutMon, enabled)
+        if (enabled) {
+            if (!isCleanFrameMode) {
+                outputMonitorCard.visibility = View.VISIBLE
+            }
+            syncOutputMonitorUi()
+            if (outputMonitorTextureView.isAvailable) {
+                val st = outputMonitorTextureView.surfaceTexture
+                if (st != null) {
+                    engine.attachOutputMonitorSurface(
+                        st,
+                        outputMonitorTextureView.width.coerceAtLeast(1),
+                        outputMonitorTextureView.height.coerceAtLeast(1)
+                    ) { pulseOutputMonitorDot() }
+                }
+            }
+            if (announce) {
+                showSingleToast("Live Output Monitor ON — drag anywhere (Clean Program Feed)")
+            }
+        } else {
+            engine.detachOutputMonitorSurface()
+            outputMonitorCard.visibility = View.GONE
+            if (announce) {
+                showSingleToast("Live Output Monitor OFF")
+            }
+        }
+    }
+
+    private fun pulseOutputMonitorDot() {
+        runOnUiThread {
+            if (!isOutputMonitorEnabled) return@runOnUiThread
+            viewOutMonDot.alpha = 1.0f
+            viewOutMonDot.animate().cancel()
+            viewOutMonDot.scaleX = 1.45f
+            viewOutMonDot.scaleY = 1.45f
+            viewOutMonDot.animate().scaleX(1.0f).scaleY(1.0f).setDuration(220L).start()
+        }
+    }
+
+    private fun syncOutputMonitorUi(tlFrames: Long = -1L) {
+        engine.syncOutputMonitorParams()
+        if (!isOutputMonitorEnabled) return
+
+        val effAspect = if (currentWorkbench == CameraWorkbench.ERA) RecordAspectMode.WIDE_16_9 else engine.recordAspectMode
+        val isVert = (effAspect != RecordAspectMode.WIDE_16_9)
+        val wantW = dpToPx(if (isVert) 82 else 168)
+        val wantH = dpToPx(if (isVert) 146 else 95)
+        val lp = outputMonitorTextureView.layoutParams
+        if (lp.width != wantW || lp.height != wantH) {
+            lp.width = wantW
+            lp.height = wantH
+            outputMonitorTextureView.layoutParams = lp
+        }
+
+        val isTl = engine.isTimelapseEnabled() && currentWorkbench == CameraWorkbench.SAVIOR
+        val isRec = engine.isRecording
+        val aspectLbl = when (effAspect) {
+            RecordAspectMode.WIDE_16_9 -> "16:9"
+            RecordAspectMode.VERT_9_16_CROP -> "9:16"
+            RecordAspectMode.VERT_9_16_PORTRAIT -> "9:16P"
+        }
+
+        txtOutMonBadge.text = when {
+            isRec && isTl && tlFrames >= 0L -> "TL REC • ${tlFrames}F"
+            isRec && isTl -> "TL REC • ${formatTimelapseLabel(engine.timelapseIntervalMs)}"
+            isRec -> "REC OUT • $aspectLbl"
+            isTl -> "TL OUT • ${formatTimelapseLabel(engine.timelapseIntervalMs)}"
+            currentFps < 20 -> "OUT • ${currentFps}FPS"
+            else -> "OUT • $aspectLbl"
+        }
+        txtOutMonBadge.setTextColor(
+            when {
+                isRec -> 0xFFFF3B30.toInt()
+                isTl -> 0xFFFF5F1F.toInt()
+                else -> 0xFFFFFFFF.toInt()
+            }
+        )
+        viewOutMonDot.setBackgroundResource(
+            when {
+                isRec -> R.drawable.bg_shutter_rec
+                isTl -> R.drawable.bg_lens_active
+                else -> R.drawable.bg_pilot_active
+            }
+        )
     }
 
     private fun updateMonitorPillLabels() {
@@ -2315,6 +2472,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.updateSettings(currentResolution, smoothFps)
         }
         updateTimelapseUi()
+        syncOutputMonitorUi()
         if (intervalMs > 0L) {
             val tag = formatTimelapseLabel(intervalMs)
             showSingleToast("Time-Lapse ARMED: 1 frame / $tag → smooth $currentFps FPS MP4 (Video-Only)", Toast.LENGTH_LONG)
@@ -2635,7 +2793,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
 
         view.findViewById<TextView>(R.id.txtCreditsVersion).text =
-            "v${getCurrentVersionName()} • Savior Cinema Engine"
+            "v${getCurrentVersionName()} • SAVIOR Stable"
 
         view.findViewById<TextView>(R.id.btnCreditsWebsite).setOnClickListener {
             try {
@@ -2771,8 +2929,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.7"
-    } catch (_: Exception) { "0.7.7" }
+        info.versionName ?: "0.7.7.1"
+    } catch (_: Exception) { "0.7.7.1" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -4117,6 +4275,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         currentFps = clamped
         updateFormatPillUi()
         engine.updateSettings(currentResolution, currentFps)
+        syncOutputMonitorUi()
     }
 
     private fun setupProDockAndDrawer() {
@@ -4185,6 +4344,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnShutterAntiFlicker.setOnClickListener {
             cycleAntiFlickerMode()
             refreshSliderState()
+        }
+
+        btnIsoCustom.setOnClickListener {
+            showTapToTypeValueDialog()
         }
 
         btnShutterCustom.setOnClickListener {
@@ -4321,6 +4484,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         val iso = progressToLogIso(progress)
                         engine.setManualIso(iso)
                         txtSliderReadout.text = "ISO $iso"
+                        renderIsoPresetChips(iso)
+                        updateEvDisplay()
                         updateAutoButtonVisual(isManual = true)
                     }
                     ProControlPanel.SHUTTER -> {
@@ -4390,6 +4555,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         sliderDrawer.visibility = View.VISIBLE
         btnWbCustom.visibility = if (panel == ProControlPanel.WB) View.VISIBLE else View.GONE
+        btnIsoCustom.visibility = if (panel == ProControlPanel.ISO) View.VISIBLE else View.GONE
+        isoPresetRow.visibility = if (panel == ProControlPanel.ISO) View.VISIBLE else View.GONE
         btnShutterAntiFlicker.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnShutterCustom.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
         btnShutterUnit.visibility = if (panel == ProControlPanel.SHUTTER) View.VISIBLE else View.GONE
@@ -4420,6 +4587,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 val shownIso = if (engine.isManualExposure) engine.manualIso else (live?.iso ?: engine.manualIso)
                 proSeekBar.progress = logIsoToProgress(shownIso)
                 txtSliderReadout.text = if (engine.isManualExposure) "ISO $shownIso" else "AUTO • $shownIso"
+                renderIsoPresetChips(shownIso)
                 updateAutoButtonVisual(engine.isManualExposure)
             }
             ProControlPanel.SHUTTER -> {
@@ -4492,6 +4660,48 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             AntiFlickerMode.OFF -> "Anti-Flicker: OFF (Pure 180° Shutter)"
         }
         showSingleToast(msg)
+    }
+
+    private fun renderIsoPresetChips(shownIso: Int) {
+        isoPresetRow.removeAllViews()
+        val minIso = engine.capabilities.effectiveIsoRange.lower
+        val maxIso = engine.capabilities.effectiveIsoRange.upper
+        val standardStops = listOf(50, 100, 200, 400, 800, 1600, 3200, 6400)
+        var presets = standardStops.filter { it in minIso..maxIso }
+        if (presets.size > 7) {
+            // Keep the 7 cleanest everyday cinema stops (50..3200 or 100..6400)
+            presets = if (minIso <= 50) listOf(50, 100, 200, 400, 800, 1600, 3200).filter { it in minIso..maxIso }
+            else presets.take(7)
+        }
+        if (presets.isEmpty()) {
+            presets = listOf(minIso, maxIso).distinct()
+        }
+        presets.forEachIndexed { idx, isoVal ->
+            val tol = maxOf(5, isoVal / 20)
+            val selected = engine.isManualExposure && kotlin.math.abs(shownIso - isoVal) <= tol
+            val chip = TextView(this).apply {
+                text = isoVal.toString()
+                textSize = 8.8f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    if (idx < presets.lastIndex) marginEnd = dpToPx(3)
+                }
+                setOnClickListener {
+                    if (engine.isAeAfLocked) {
+                        showSingleToast("AE/AF Lock is ON — turn off LOCK first")
+                        return@setOnClickListener
+                    }
+                    engine.setManualIso(isoVal)
+                    updateEvDisplay()
+                    refreshSliderState()
+                }
+            }
+            isoPresetRow.addView(chip)
+        }
     }
 
     private fun renderShutterPresetChips(shownNs: Long) {
@@ -4973,6 +5183,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_stop)
             btnShutterInner.animate().scaleX(0.54f).scaleY(0.54f).setDuration(140L).start()
             updateRestoreCleanEyeBadge()
+            syncOutputMonitorUi()
             uiHandler.removeCallbacks(timecodeRunnable)
             if (currentWorkbench == CameraWorkbench.ERA) {
                 activeEraPlugin?.onRecordingStarted(eraHostBridge)
@@ -4999,6 +5210,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 val mins = (outputDurationSec / 60f).toInt()
                 val secs = outputDurationSec - (mins * 60f)
                 txtTimecode.text = String.format(Locale.US, "TL %df • %02d:%04.1f", capturedFrames, mins, secs)
+                syncOutputMonitorUi(tlFrames = capturedFrames)
             }
         }
     }
@@ -5011,6 +5223,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_rec)
             btnShutterInner.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140L).start()
             updateRestoreCleanEyeBadge()
+            syncOutputMonitorUi()
             btnAutoPilot.alpha = 1.0f
             if (currentWorkbench == CameraWorkbench.ERA) {
                 activeEraPlugin?.onRecordingStopped(eraHostBridge)
@@ -5064,6 +5277,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         if (textureView.isAvailable) {
             openCameraIfReady()
         }
+        if (isOutputMonitorEnabled && outputMonitorTextureView.isAvailable) {
+            outputMonitorTextureView.surfaceTexture?.let { st ->
+                engine.attachOutputMonitorSurface(
+                    st,
+                    outputMonitorTextureView.width.coerceAtLeast(1),
+                    outputMonitorTextureView.height.coerceAtLeast(1)
+                ) { pulseOutputMonitorDot() }
+            }
+            syncOutputMonitorUi()
+        }
     }
 
     override fun onPause() {
@@ -5083,6 +5306,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         uiHandler.removeCallbacks(countdownRunnable)
         txtTimerCountdown.visibility = View.GONE
         sensorManager?.unregisterListener(horizonSensorListener)
+        engine.detachOutputMonitorSurface()
         engine.stopThread()
         super.onPause()
     }

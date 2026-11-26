@@ -339,7 +339,20 @@
                 android:gravity="center"
                 android:text="LEVEL"
                 android:textColor="#FFFFFF"
-                android:textSize="9.5sp"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnToolOutMon"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginEnd="5dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="OUT"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -351,7 +364,7 @@
                 android:gravity="center"
                 android:text="⚙ CFG"
                 android:textColor="#FF5F1F"
-                android:textSize="9.5sp"
+                android:textSize="9sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
@@ -735,7 +748,7 @@
             android:orientation="horizontal" />
     </LinearLayout>
 
-    <!-- FLOATING UNIFIED WORKBENCH & ERA PLUG-IN VAULT DRAWER (Auto-populated by EraPluginRegistry!) -->
+    <!-- FLOATING UNIFIED WORKBENCH & ERA CAMERA DRAWER -->
     <LinearLayout
         android:id="@+id/workbenchEraDrawer"
         android:layout_width="368dp"
@@ -815,7 +828,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:fontFamily="monospace"
-                android:text="INSTALLED ERA PLUG-INS"
+                android:text="ERA CAMERAS"
                 android:textColor="#8E96A4"
                 android:textSize="8.5sp"
                 android:textStyle="bold" />
@@ -1754,6 +1767,72 @@
         android:textStyle="bold"
         android:visibility="gone" />
 
+    <!-- FLOATING DRAGGABLE LIVE OUTPUT MONITOR (PiP Clean Program Feed — exact crop, LUT & Time-Lapse cadence!) -->
+    <LinearLayout
+        android:id="@+id/outputMonitorCard"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="56dp"
+        android:layout_marginEnd="110dp"
+        android:background="@drawable/bg_hud_pill"
+        android:elevation="10dp"
+        android:orientation="vertical"
+        android:padding="5dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="20dp"
+            android:layout_marginBottom="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <View
+                android:id="@+id/viewOutMonDot"
+                android:layout_width="6dp"
+                android:layout_height="6dp"
+                android:layout_marginStart="2dp"
+                android:layout_marginEnd="5dp"
+                android:background="@drawable/bg_pilot_active" />
+
+            <TextView
+                android:id="@+id/txtOutMonBadge"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:fontFamily="monospace"
+                android:singleLine="true"
+                android:text="OUT • 16:9"
+                android:textColor="#FFFFFF"
+                android:textSize="8.5sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnOutMonClose"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="✕"
+                android:textColor="#FFFFFF"
+                android:textSize="9.5sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="#000000">
+
+            <TextureView
+                android:id="@+id/outputMonitorTextureView"
+                android:layout_width="168dp"
+                android:layout_height="95dp" />
+        </FrameLayout>
+    </LinearLayout>
+
     <!-- LEFT RAIL WRAPPER: DYNAMIC LENS SWITCHER + CLEAN-FRAME EYE TOGGLE (Works in SAVIOR & ERA!) -->
     <LinearLayout
         android:id="@+id/leftRailWrapper"
@@ -2104,6 +2183,23 @@
                     android:textSize="13sp"
                     android:textStyle="bold" />
 
+                <!-- Pencil Button for Exact Custom ISO (ISO Panel Only) -->
+                <TextView
+                    android:id="@+id/btnIsoCustom"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="5dp"
+                    android:background="@drawable/bg_hud_pill"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:text="✎"
+                    android:textColor="#FF5F1F"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
                 <!-- Anti-Flicker Grid Selector (50Hz / 60Hz / OFF — Shutter Panel Only) -->
                 <TextView
                     android:id="@+id/btnShutterAntiFlicker"
@@ -2277,6 +2373,16 @@
             <!-- Quick 1-Tap Shutter Speed / Angle Preset Chips (Shown in SHUTTER Panel) -->
             <LinearLayout
                 android:id="@+id/shutterPresetRow"
+                android:layout_width="match_parent"
+                android:layout_height="26dp"
+                android:layout_marginTop="6dp"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:visibility="gone" />
+
+            <!-- Quick 1-Tap Cinema ISO Preset Chips (Shown in ISO Panel) -->
+            <LinearLayout
+                android:id="@+id/isoPresetRow"
                 android:layout_width="match_parent"
                 android:layout_height="26dp"
                 android:layout_marginTop="6dp"
@@ -2550,7 +2656,7 @@
     </LinearLayout>
 
 
-    <!-- ==================== DROP-IN ERA / PURIST / CREATOR PLUG-IN HUD MOUNT ==================== -->
+    <!-- ==================== ERA / PURIST / CREATOR CAMERA HUD MOUNT ==================== -->
     <FrameLayout
         android:id="@+id/eraPluginContainer"
         android:layout_width="match_parent"

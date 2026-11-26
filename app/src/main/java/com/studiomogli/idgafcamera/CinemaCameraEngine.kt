@@ -379,6 +379,7 @@ class CinemaCameraEngine(
         }
         syncEvOverdriveToGpu()
         glRenderer?.mirrorFrontExport = mirrorFrontExport
+        glRenderer?.updateOutputMonitorParams(targetFps, timelapseIntervalMs, recordAspectMode)
         cleanupOrphanEraCacheFiles()
         glRenderer?.setCubeLut(activeCubeLut)
         glRenderer?.onTimelapseFrameCaptured = { frames ->
@@ -523,6 +524,25 @@ class CinemaCameraEngine(
     fun onPreviewSurfaceDestroyed() {
         previewSurfaceTexture = null
         glRenderer?.detachPreviewSurfaceSync()
+    }
+
+    fun attachOutputMonitorSurface(texture: SurfaceTexture, width: Int, height: Int, onPulse: ((Boolean) -> Unit)? = null) {
+        glRenderer?.onOutputMonitorPulse = onPulse
+        glRenderer?.updateOutputMonitorParams(targetFps, timelapseIntervalMs, recordAspectMode)
+        glRenderer?.attachOutputMonitorSurface(texture, width, height)
+    }
+
+    fun updateOutputMonitorSize(width: Int, height: Int) {
+        glRenderer?.updateOutputMonitorSize(width, height)
+    }
+
+    fun syncOutputMonitorParams() {
+        glRenderer?.updateOutputMonitorParams(targetFps, timelapseIntervalMs, recordAspectMode)
+    }
+
+    fun detachOutputMonitorSurface() {
+        glRenderer?.onOutputMonitorPulse = null
+        glRenderer?.detachOutputMonitorSurfaceSync()
     }
 
     private fun discoverLenses() {
@@ -1688,6 +1708,7 @@ class CinemaCameraEngine(
         val tempRaw = activeTempRawFile
         val targetName = activeTargetFileName
         val label = activeFileLabel
+        val postPlugin = pendingPostAudioPlugin
         activeTempRawFile = null
         activeTargetFileName = ""
         pendingPostAudioPlugin = null
@@ -1701,8 +1722,6 @@ class CinemaCameraEngine(
             }
 
             // Plugin Post-Recording Audio DSP Remux (100% lossless video passthrough + plugin's own audio DSP!)
-            val postPlugin = pendingPostAudioPlugin
-            pendingPostAudioPlugin = null
             isFinalizingClip = true
             Thread {
                 val processedFile = File(context.cacheDir, "era_proc_${System.currentTimeMillis()}.mp4")

@@ -383,6 +383,7 @@ class CinemaGlRenderer(
     private var pbufferSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var previewEglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var encoderEglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var outputMonitorEglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
 
     private var programId: Int = 0
     private var oesTextureId: Int = 0
@@ -535,6 +536,15 @@ class CinemaGlRenderer(
     private var timelapseCapturedFrames: Long = 0L
     @Volatile var onTimelapseFrameCaptured: ((capturedFrames: Long) -> Unit)? = null
 
+    // Live Program / Output Monitor (PiP Clean Feed — exact aspect crop, LUT, and Time-Lapse / FPS cadence!)
+    @Volatile private var outputMonitorWidth: Int = 0
+    @Volatile private var outputMonitorHeight: Int = 0
+    @Volatile private var monitorTargetFps: Int = 30
+    @Volatile private var monitorTimelapseIntervalNs: Long = 0L
+    @Volatile private var monitorAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9
+    private var nextMonitorFrameDueNs: Long = -1L
+    @Volatile var onOutputMonitorPulse: ((isCadenceStep: Boolean) -> Unit)? = null
+
     fun start(): Boolean {
         if (glThread != null && !isReleased) return true
         val thread = HandlerThread("IdgafGlThread").also { it.start() }
@@ -662,6 +672,59 @@ class CinemaGlRenderer(
         }
     }
 
+    fun attachOutputMonitorSurface(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+        val handler = glHandler ?: return
+        if (isReleased) return
+        handler.post {
+            if (isReleased || eglDisplay == EGL14.EGL_NO_DISPLAY) return@post
+            try {
+                destroyOutputMonitorSurfaceOnGlThread()
+                outputMonitorWidth = width.coerceAtLeast(1)
+                outputMonitorHeight = height.coerceAtLeast(1)
+                nextMonitorFrameDueNs = -1L
+                val cfg = eglConfig ?: return@post
+                val surface = EGL14.eglCreateWindowSurface(
+                    eglDisplay,
+                    cfg,
+                    surfaceTexture,
+                    intArrayOf(EGL14.EGL_NONE),
+                    0
+                )
+                if (surface != null && surface != EGL14.EGL_NO_SURFACE) {
+                    outputMonitorEglSurface = surface
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    fun updateOutputMonitorSize(width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            outputMonitorWidth = width
+            outputMonitorHeight = height
+        }
+    }
+
+    fun updateOutputMonitorParams(desiredFps: Int, timelapseIntervalMs: Long, aspectMode: RecordAspectMode) {
+        monitorTargetFps = desiredFps.coerceIn(1, 60)
+        monitorTimelapseIntervalNs = if (timelapseIntervalMs > 0L) timelapseIntervalMs * 1_000_000L else 0L
+        monitorAspectMode = aspectMode
+        nextMonitorFrameDueNs = -1L
+    }
+
+    fun detachOutputMonitorSurfaceSync() {
+        val handler = glHandler ?: return
+        val latch = CountDownLatch(1)
+        handler.post {
+            destroyOutputMonitorSurfaceOnGlThread()
+            latch.countDown()
+        }
+        try {
+            latch.await(1000L, TimeUnit.MILLISECONDS)
+        } catch (_: Exception) {
+        }
+    }
+
     fun attachEncoderSurfaceSync(
         recorderSurface: Surface,
         width: Int,
@@ -770,6 +833,7 @@ class CinemaGlRenderer(
             try {
                 isReleased = true
                 destroyEncoderSurfaceOnGlThread()
+                destroyOutputMonitorSurfaceOnGlThread()
                 destroyPreviewSurfaceOnGlThread()
 
                 cameraInputSurface?.release()
@@ -913,9 +977,11 @@ class CinemaGlRenderer(
         }
 
         // PASS 2: Clean Hardware Encoder Surface (ONLY while MediaRecorder is actively started; ZERO scopes baked in!)
+        var encodedThisTick = false
         if (isEncoderRecording && encoderEglSurface != EGL14.EGL_NO_SURFACE && encoderWidth > 0 && encoderHeight > 0) {
             val shouldEncodeFrame = shouldEncodeFrameNow()
             if (shouldEncodeFrame && EGL14.eglMakeCurrent(eglDisplay, encoderEglSurface, encoderEglSurface, eglContext)) {
+                encodedThisTick = true
                 GLES20.glViewport(0, 0, encoderWidth, encoderHeight)
                 GLES20.glClearColor(0f, 0f, 0f, 1f)
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
@@ -938,6 +1004,36 @@ class CinemaGlRenderer(
                 EGL14.eglSwapBuffers(eglDisplay, encoderEglSurface)
                 if (timelapseIntervalNs > 0L) {
                     onTimelapseFrameCaptured?.invoke(timelapseCapturedFrames)
+                }
+            }
+        }
+
+        // PASS 3: Optional Live Output Monitor (PiP Clean Feed — exact clean graded output, aspect crop & Time-Lapse/FPS cadence!)
+        if (outputMonitorEglSurface != EGL14.EGL_NO_SURFACE && outputMonitorWidth > 0 && outputMonitorHeight > 0) {
+            val isCadenceMode = (monitorTimelapseIntervalNs > 0L || monitorTargetFps < 20)
+            val shouldDrawMonitor = if (isEncoderRecording) {
+                encodedThisTick
+            } else {
+                shouldDrawOutputMonitorIdleNow()
+            }
+            if (shouldDrawMonitor && EGL14.eglMakeCurrent(eglDisplay, outputMonitorEglSurface, outputMonitorEglSurface, eglContext)) {
+                GLES20.glViewport(0, 0, outputMonitorWidth, outputMonitorHeight)
+                GLES20.glClearColor(0f, 0f, 0f, 1f)
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                val effAspect = if (pluginHandles != null) RecordAspectMode.WIDE_16_9 else monitorAspectMode
+                buildOutputMonitorMvp(mvpMatrix, outputMonitorWidth, outputMonitorHeight, displayRotation, effAspect)
+                drawQuad(
+                    enableScopes = false,
+                    viewportAspect = outputMonitorWidth.toFloat() / outputMonitorHeight.coerceAtLeast(1).toFloat(),
+                    stepXx = stepXx,
+                    stepXy = stepXy,
+                    stepYx = stepYx,
+                    stepYy = stepYy,
+                    timeSec = timeSec
+                )
+                EGL14.eglSwapBuffers(eglDisplay, outputMonitorEglSurface)
+                if (isCadenceMode) {
+                    onOutputMonitorPulse?.invoke(true)
                 }
             }
         }
@@ -1139,6 +1235,83 @@ class CinemaGlRenderer(
         }
     }
 
+    private fun shouldDrawOutputMonitorIdleNow(): Boolean {
+        val tlNs = monitorTimelapseIntervalNs
+        if (tlNs > 0L) {
+            val nowNs = System.nanoTime()
+            if (nextMonitorFrameDueNs < 0L) {
+                nextMonitorFrameDueNs = nowNs + tlNs
+                return true
+            }
+            if (nowNs + 12_000_000L < nextMonitorFrameDueNs) return false
+            nextMonitorFrameDueNs += tlNs
+            if (nextMonitorFrameDueNs < nowNs) nextMonitorFrameDueNs = nowNs + tlNs
+            return true
+        }
+        val desired = monitorTargetFps.coerceIn(1, 60)
+        if (desired >= 20) return true
+        val nowNs = System.nanoTime()
+        val intervalNs = 1_000_000_000L / desired.toLong()
+        if (nextMonitorFrameDueNs < 0L) {
+            nextMonitorFrameDueNs = nowNs + intervalNs
+            return true
+        }
+        if (nowNs + 8_000_000L < nextMonitorFrameDueNs) return false
+        nextMonitorFrameDueNs += intervalNs
+        if (nextMonitorFrameDueNs < nowNs) nextMonitorFrameDueNs = nowNs + intervalNs
+        return true
+    }
+
+    private fun buildOutputMonitorMvp(
+        outMvp: FloatArray,
+        monW: Int,
+        monH: Int,
+        rot: Int,
+        aspectMode: RecordAspectMode
+    ) {
+        val stSwapped = kotlin.math.abs(stMatrix[1]) > kotlin.math.abs(stMatrix[0])
+        val rot0W = if (stSwapped) videoHeight.toFloat() else videoWidth.toFloat()
+        val rot0H = if (stSwapped) videoWidth.toFloat() else videoHeight.toFloat()
+        val stDet = stMatrix[0] * stMatrix[5] - stMatrix[1] * stMatrix[4]
+        val unMirror = if (isFrontCamera && stDet > 0f && !mirrorFrontExport) -1.0f else 1.0f
+
+        when (aspectMode) {
+            RecordAspectMode.VERT_9_16_PORTRAIT -> {
+                val monAspect = monW.toFloat() / monH.coerceAtLeast(1).toFloat()
+                val videoAspect = rot0W / rot0H.coerceAtLeast(1f)
+                val sx = if (monAspect > videoAspect) 1.0f else videoAspect / monAspect
+                val sy = if (monAspect > videoAspect) monAspect / videoAspect else 1.0f
+                Matrix.setIdentityM(outMvp, 0)
+                Matrix.scaleM(outMvp, 0, sx * unMirror, sy, 1.0f)
+            }
+            RecordAspectMode.VERT_9_16_CROP -> {
+                val glRotDeg = displayRotationToGlDegrees(rot)
+                val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
+                val effW = if (rotSwapped) rot0H else rot0W
+                val effH = if (rotSwapped) rot0W else rot0H
+                val videoAspect = effW / effH.coerceAtLeast(1f)
+                val targetPortraitAspect = monW.toFloat() / monH.coerceAtLeast(1).toFloat()
+                val cropScaleX = videoAspect / targetPortraitAspect.coerceAtLeast(0.1f)
+                Matrix.setIdentityM(outMvp, 0)
+                Matrix.scaleM(outMvp, 0, cropScaleX * unMirror, 1.0f, 1.0f)
+                if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
+            }
+            RecordAspectMode.WIDE_16_9 -> {
+                val glRotDeg = displayRotationToGlDegrees(rot)
+                val rotSwapped = (glRotDeg == 90f || glRotDeg == -90f)
+                val effVideoW = if (rotSwapped) rot0H else rot0W
+                val effVideoH = if (rotSwapped) rot0W else rot0H
+                val monAspect = monW.toFloat() / monH.coerceAtLeast(1).toFloat()
+                val videoAspect = effVideoW / effVideoH.coerceAtLeast(1f)
+                val scaleX = if (monAspect > videoAspect) 1.0f else videoAspect / monAspect
+                val scaleY = if (monAspect > videoAspect) monAspect / videoAspect else 1.0f
+                Matrix.setIdentityM(outMvp, 0)
+                Matrix.scaleM(outMvp, 0, scaleX * unMirror, scaleY, 1.0f)
+                if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
+            }
+        }
+    }
+
     private fun displayRotationToGlDegrees(displayRot: Int): Float {
         return when (displayRot) {
             Surface.ROTATION_0 -> 0f
@@ -1167,7 +1340,7 @@ class CinemaGlRenderer(
 
         val pid = createProgram(VERTEX_SHADER, targetSrc)
         if (pid == 0) {
-            onGlError("Era Plug-In '$targetId' shader compile failed — falling back to SAVIOR.")
+            onGlError("Era camera '$targetId' failed to load — falling back to SAVIOR.")
             return
         }
         val h = PluginGlHandles(pid)
@@ -1421,6 +1594,17 @@ class CinemaGlRenderer(
             }
             EGL14.eglDestroySurface(eglDisplay, encoderEglSurface)
             encoderEglSurface = EGL14.EGL_NO_SURFACE
+        }
+    }
+
+    private fun destroyOutputMonitorSurfaceOnGlThread() {
+        if (outputMonitorEglSurface != EGL14.EGL_NO_SURFACE && eglDisplay != EGL14.EGL_NO_DISPLAY) {
+            val fallback = if (previewEglSurface != EGL14.EGL_NO_SURFACE) previewEglSurface else pbufferSurface
+            if (fallback != EGL14.EGL_NO_SURFACE) {
+                EGL14.eglMakeCurrent(eglDisplay, fallback, fallback, eglContext)
+            }
+            EGL14.eglDestroySurface(eglDisplay, outputMonitorEglSurface)
+            outputMonitorEglSurface = EGL14.EGL_NO_SURFACE
         }
     }
 
