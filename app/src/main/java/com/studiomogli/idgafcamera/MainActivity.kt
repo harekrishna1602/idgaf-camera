@@ -137,6 +137,7 @@ data class RigHistorySnapshot(
     val mirrorFrontExport: Boolean,
     val zoomRatio: Float,
     val isAudioMuted: Boolean,
+    val wavSidecarEnabled: Boolean,
     val audioPreampMode: AudioPreampMode,
     val micPreference: MicPreference,
     val audioMonitorTrimDb: Int,
@@ -269,7 +270,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     // Phase 6.8 / 7.1.1 Unified Pro Audio Controller Drawer (Mute + Mic Input + Stage + VU Trim)
     private lateinit var btnAudioPanelToggle: LinearLayout
     private lateinit var txtAudioDb: TextView
+    private lateinit var drawerTouchScrim: View
     private lateinit var audioControlDrawer: LinearLayout
+    private lateinit var txtAudioDrawerTitle: TextView
+    private lateinit var btnAudioWavSidecar: TextView
     private lateinit var btnAudioMute: TextView
     private lateinit var btnAudioMicAuto: TextView
     private lateinit var btnAudioMicInt: TextView
@@ -728,7 +732,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         audioMeterView = findViewById(R.id.audioMeterView)
         btnAudioPanelToggle = findViewById(R.id.btnAudioPanelToggle)
         txtAudioDb = findViewById(R.id.txtAudioDb)
+        drawerTouchScrim = findViewById(R.id.drawerTouchScrim)
         audioControlDrawer = findViewById(R.id.audioControlDrawer)
+        txtAudioDrawerTitle = findViewById(R.id.txtAudioDrawerTitle)
+        btnAudioWavSidecar = findViewById(R.id.btnAudioWavSidecar)
         btnAudioMute = findViewById(R.id.btnAudioMute)
         btnAudioMicAuto = findViewById(R.id.btnAudioMicAuto)
         btnAudioMicInt = findViewById(R.id.btnAudioMicInt)
@@ -1237,6 +1244,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         mirrorFrontExport = engine.mirrorFrontExport,
         zoomRatio = engine.currentZoomRatio,
         isAudioMuted = engine.isAudioMuted,
+        wavSidecarEnabled = engine.wavSidecarEnabled,
         audioPreampMode = engine.audioPreampMode,
         micPreference = engine.micPreference,
         audioMonitorTrimDb = engine.audioMonitorTrimDb,
@@ -1359,6 +1367,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 engine.audioPreampMode != s.audioPreampMode ||
                 engine.micPreference != s.micPreference)
             engine.isAudioMuted = s.isAudioMuted
+            engine.wavSidecarEnabled = s.wavSidecarEnabled
             engine.audioPreampMode = s.audioPreampMode
             engine.micPreference = s.micPreference
             engine.audioMonitorTrimDb = s.audioMonitorTrimDb
@@ -1541,6 +1550,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     // ==================== PHASE 7.5.1: UNIFIED INLINE DRAWERS, CLEAN-FRAME EYE & CINEMA INPUT BAR ====================
 
     private fun setupUnifiedInlineDrawersAndCleanUi() {
+        drawerTouchScrim.setOnClickListener {
+            when {
+                safeAreaDrawer.visibility == View.VISIBLE -> closeSafeAreaCalibrator()
+                cinemaInputDrawer.visibility == View.VISIBLE -> closeCinemaInputDrawer()
+                workbenchEraDrawer.visibility == View.VISIBLE -> closeWorkbenchEraDrawer()
+                else -> closeTopDrawers(except = null)
+            }
+        }
+
         btnCleanUiToggle.setOnClickListener { setCleanFrameMode(true) }
         btnRestoreCleanUi.setOnClickListener { setCleanFrameMode(false) }
 
@@ -2249,6 +2267,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } catch (_: Exception) {
         }
         cinemaInputDrawer.visibility = View.VISIBLE
+        syncDrawerTouchScrim()
     }
 
     private fun stepCinemaInputValue(dir: Float) {
@@ -2282,6 +2301,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } catch (_: Exception) {
         }
         edtCinemaInput.clearFocus()
+        syncDrawerTouchScrim()
         enableImmersiveFullscreen()
     }
 
@@ -2828,7 +2848,26 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             safeAreaDrawer.visibility == View.VISIBLE
     }
 
+    private fun syncDrawerTouchScrim() {
+        if (isCleanFrameMode) {
+            drawerTouchScrim.visibility = View.GONE
+            return
+        }
+        val anyFloatingDrawerOpen =
+            monitorToolsBar.visibility == View.VISIBLE ||
+            proSettingsBar.visibility == View.VISIBLE ||
+            formatDrawer.visibility == View.VISIBLE ||
+            workbenchEraDrawer.visibility == View.VISIBLE ||
+            colorControlDrawer.visibility == View.VISIBLE ||
+            audioControlDrawer.visibility == View.VISIBLE ||
+            zoomPopoutDrawer.visibility == View.VISIBLE ||
+            cinemaInputDrawer.visibility == View.VISIBLE ||
+            safeAreaDrawer.visibility == View.VISIBLE
+        drawerTouchScrim.visibility = if (anyFloatingDrawerOpen) View.VISIBLE else View.GONE
+    }
+
     private fun syncLowBatteryBannerVisibility() {
+        syncDrawerTouchScrim()
         if (isCleanFrameMode) {
             txtLowBatteryBanner.visibility = View.GONE
             return
@@ -3627,8 +3666,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.7.5"
-    } catch (_: Exception) { "0.7.7.5" }
+        info.versionName ?: "0.7.7.6"
+    } catch (_: Exception) { "0.7.7.6" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -3654,6 +3693,22 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             lensRail.visibility = if (nextVisible) View.GONE else View.VISIBLE
             syncExitSplitPillVisibility()
             updateAudioTopPillVisual()
+            syncDrawerTouchScrim()
+        }
+
+        btnAudioWavSidecar.setOnClickListener {
+            if (engine.isRecording) {
+                showSingleToast("Stop recording to toggle 48kHz WAV Sidecar")
+                return@setOnClickListener
+            }
+            recordUndoCheckpoint()
+            engine.wavSidecarEnabled = !engine.wavSidecarEnabled
+            updateAudioDrawerUi()
+            showSingleToast(
+                if (engine.wavSidecarEnabled) "48kHz WAV Sidecar ON — Saves uncompressed .wav in Music/IDGAF_Camera + MP4"
+                else "48kHz WAV Sidecar OFF (Standard 48kHz AAC MP4)",
+                Toast.LENGTH_LONG
+            )
         }
 
         btnAudioMute.setOnClickListener {
@@ -4473,6 +4528,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun updateAudioDrawerUi() {
         val muted = engine.isAudioMuted
+        val wavOn = engine.wavSidecarEnabled
+        txtAudioDrawerTitle.text = if (wavOn && !muted) "PRO AUDIO • 48kHz WAV+AAC" else "PRO AUDIO • 48kHz AAC"
+        btnAudioWavSidecar.text = if (wavOn) "WAV: ON" else "WAV: OFF"
+        btnAudioWavSidecar.alpha = if (muted) 0.40f else 1.0f
+        styleToolPill(btnAudioWavSidecar, wavOn && !muted)
+
         btnAudioMute.text = if (muted) "MUTED" else "LIVE"
         btnAudioMute.setBackgroundResource(if (muted) R.drawable.bg_shutter_stop else R.drawable.bg_hud_pill)
         btnAudioMute.setTextColor(if (muted) 0xFFFFFFFF.toInt() else 0xFF34C759.toInt())
@@ -4822,6 +4883,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (!showing) closeTopDrawers(except = "ZOOM")
             zoomPopoutDrawer.visibility = if (showing) View.GONE else View.VISIBLE
             if (!showing) updateZoomReadout()
+            syncDrawerTouchScrim()
         }
 
         btnZoomPreset1x.setOnClickListener { animateZoomTo(1.0f) }
@@ -6439,6 +6501,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         overlayView.safeAreaPreviewActive = true
         safeAreaDrawer.visibility = View.VISIBLE
         applySafeAreaInsets()
+        syncDrawerTouchScrim()
     }
 
     private fun closeSafeAreaCalibrator() {
@@ -6568,6 +6631,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 .putBoolean("stab_enabled", engine.isStabilizationEnabled)
                 .putBoolean("mirror_front", engine.mirrorFrontExport)
                 .putBoolean("audio_muted", engine.isAudioMuted)
+                .putBoolean("wav_sidecar", engine.wavSidecarEnabled)
                 .putString("audio_preamp", engine.audioPreampMode.name)
                 .putString("mic_pref", engine.micPreference.name)
                 .putInt("audio_trim_db", engine.audioMonitorTrimDb)
@@ -6654,6 +6718,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             updateMirrorFrontPillUi()
 
             engine.isAudioMuted = prefs.getBoolean("audio_muted", false)
+            engine.wavSidecarEnabled = prefs.getBoolean("wav_sidecar", false)
             engine.audioPreampMode = try {
                 AudioPreampMode.valueOf(prefs.getString("audio_preamp", AudioPreampMode.CAMCORDER.name)!!)
             } catch (_: Exception) { AudioPreampMode.CAMCORDER }

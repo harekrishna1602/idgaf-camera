@@ -20,6 +20,8 @@ import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.TonemapCurve
 import android.media.AudioDeviceInfo
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.AudioManager
 import android.media.MediaRecorder
 import android.net.Uri
@@ -33,6 +35,10 @@ import android.util.Range
 import android.util.Size
 import android.view.Surface
 import java.io.File
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -189,7 +195,14 @@ class CinemaCameraEngine(
     var micPreference: MicPreference = MicPreference.AUTO
     @Volatile var audioPreampMode: AudioPreampMode = AudioPreampMode.CAMCORDER
     @Volatile var isAudioMuted: Boolean = false
+    @Volatile var wavSidecarEnabled: Boolean = false
     @Volatile var audioMonitorTrimDb: Int = 0
+    @Volatile private var wavRecRunning: Boolean = false
+    @Volatile private var wavLivePeakAmp: Int = 0
+    private var wavRecThread: Thread? = null
+    private var activeTempWavFile: File? = null
+    private var activeTargetWavName: String = ""
+    private var isWavSidecarRecordingSession: Boolean = false
     @Volatile var timelapseIntervalMs: Long = 0L
     fun isTimelapseEnabled(): Boolean = timelapseIntervalMs > 0L
     @Volatile var stopMotionEnabled: Boolean = false
@@ -504,7 +517,7 @@ class CinemaCameraEngine(
         try {
             val cutoff = System.currentTimeMillis() - 60_000L
             context.cacheDir.listFiles { f ->
-                f.isFile && (f.name.startsWith("era_raw_") || f.name.startsWith("era_proc_")) && f.lastModified() < cutoff
+                f.isFile && (f.name.startsWith("era_raw_") || f.name.startsWith("era_proc_") || f.name.startsWith("wav_vid_") || f.name.startsWith("wav_aud_") || f.name.startsWith("wav_mux_")) && f.lastModified() < cutoff
             }?.forEach { f ->
                 try { f.delete() } catch (_: Exception) {}
             }
@@ -636,7 +649,8 @@ class CinemaCameraEngine(
 
     fun getRecordingMaxAmplitude(): Int {
         return try {
-            if (isRecording && !isAudioMuted) mediaRecorder?.maxAmplitude ?: 0 else 0
+            if (!isRecording || isAudioMuted) return 0
+            if (isWavSidecarRecordingSession) wavLivePeakAmp else (mediaRecorder?.maxAmplitude ?: 0)
         } catch (_: Exception) {
             0
         }
@@ -1754,6 +1768,9 @@ class CinemaCameraEngine(
             }
 
             recorder.start()
+            if (isWavSidecarRecordingSession) {
+                activeTempWavFile?.let { startWavSidecarCaptureThread(it) }
+            }
             isRecording = true
             // Enable GL encoder pass ONLY after MediaRecorder.start() has initialized its audio + video tracks!
             renderer.setEncoderRecordingActive(true)
@@ -1776,6 +1793,12 @@ class CinemaCameraEngine(
         // Step 1: Synchronously detach GL encoder surface BEFORE MediaRecorder.stop() so EGL never writes to a dead surface!
         glRenderer?.detachEncoderSurfaceSync()
 
+        val wasWavSession = isWavSidecarRecordingSession
+        isWavSidecarRecordingSession = false
+        if (wasWavSession) {
+            stopWavSidecarCaptureThread()
+        }
+
         var stopSucceeded = false
         try {
             mediaRecorder?.stop()
@@ -1796,34 +1819,58 @@ class CinemaCameraEngine(
         activeOutputPfd = null
 
         val tempRaw = activeTempRawFile
+        val tempWav = activeTempWavFile
         val targetName = activeTargetFileName
+        val targetWavName = activeTargetWavName
         val label = activeFileLabel
         val postPlugin = pendingPostAudioPlugin
         activeTempRawFile = null
+        activeTempWavFile = null
         activeTargetFileName = ""
+        activeTargetWavName = ""
         pendingPostAudioPlugin = null
 
         if (tempRaw != null) {
             activeMediaUri = null
             if (!stopSucceeded || !tempRaw.exists() || tempRaw.length() < 1024L) {
                 try { tempRaw.delete() } catch (_: Exception) {}
+                try { tempWav?.delete() } catch (_: Exception) {}
                 listener.onRecordingStopped(null, "")
                 return
             }
 
-            // Plugin Post-Recording Audio DSP Remux (100% lossless video passthrough + plugin's own audio DSP!)
             isFinalizingClip = true
             Thread {
-                val processedFile = File(context.cacheDir, "era_proc_${System.currentTimeMillis()}.mp4")
+                val processedFile = File(context.cacheDir, if (wasWavSession) "wav_mux_${System.currentTimeMillis()}.mp4" else "era_proc_${System.currentTimeMillis()}.mp4")
                 var finalUri: Uri? = null
+                var wavCommitted = false
                 try {
-                    val dspOk = postPlugin?.processRecordedMp4Audio(tempRaw, processedFile) == true
-                    val sourceToCommit = if (dspOk && processedFile.exists() && processedFile.length() > 1024L) {
-                        processedFile
+                    if (wasWavSession && tempWav != null && tempWav.exists() && tempWav.length() > 44L) {
+                        // 1. Save true uncompressed 48kHz 16-bit PCM WAV sidecar to Music/IDGAF_Camera/
+                        wavCommitted = commitCacheWavToMediaStore(tempWav, targetWavName) != null
+                        // 2. Lossless-video passthrough + 256kbps 48kHz AAC mux so MP4 plays everywhere with perfect sync!
+                        val muxOk = EraAudioProcessor.muxVideoWithWavPcmAsAac(
+                            videoMp4File = tempRaw,
+                            wavFile = tempWav,
+                            outputMp4File = processedFile,
+                            sampleRate = 48_000,
+                            channels = 1
+                        )
+                        val sourceToCommit = if (muxOk && processedFile.exists() && processedFile.length() > 1024L) {
+                            processedFile
+                        } else {
+                            tempRaw
+                        }
+                        finalUri = commitCacheMp4ToMediaStore(sourceToCommit, targetName)
                     } else {
-                        tempRaw // Ironclad fallback: never lose a take!
+                        val dspOk = postPlugin?.processRecordedMp4Audio(tempRaw, processedFile) == true
+                        val sourceToCommit = if (dspOk && processedFile.exists() && processedFile.length() > 1024L) {
+                            processedFile
+                        } else {
+                            tempRaw // Ironclad fallback: never lose a take!
+                        }
+                        finalUri = commitCacheMp4ToMediaStore(sourceToCommit, targetName)
                     }
-                    finalUri = commitCacheMp4ToMediaStore(sourceToCommit, targetName)
                 } catch (_: Exception) {
                     try {
                         finalUri = commitCacheMp4ToMediaStore(tempRaw, targetName)
@@ -1831,9 +1878,14 @@ class CinemaCameraEngine(
                     }
                 } finally {
                     try { tempRaw.delete() } catch (_: Exception) {}
+                    try { tempWav?.delete() } catch (_: Exception) {}
                     try { processedFile.delete() } catch (_: Exception) {}
+                    if (finalUri != null && activeEraPlugin == null && slateEnabled && slateAutoIncrementTake) {
+                        slateTake = (slateTake + 1).coerceAtMost(999)
+                    }
                     isFinalizingClip = false
-                    listener.onRecordingStopped(finalUri, label)
+                    val finalLabel = if (wavCommitted) "$label + WAV (48kHz)" else label
+                    listener.onRecordingStopped(finalUri, finalLabel)
                 }
             }.start()
             return
@@ -1946,18 +1998,32 @@ class CinemaCameraEngine(
 
         val isSilentPlugin = (plugin?.isSilentAudio == true)
         val useEraAudioDsp = (plugin != null && plugin.usesPostAudioProcessor && !isSilentPlugin && !isTl && !isSm)
+        val useWavSidecar = (plugin == null && wavSidecarEnabled && !isAudioMuted && !isTl && !isSm)
         pendingPostAudioPlugin = if (useEraAudioDsp) plugin else null
-        val recordAudio = if (useEraAudioDsp) true else (!isAudioMuted && !isTl && !isSm && !isSilentPlugin)
-        if (recordAudio) {
+        isWavSidecarRecordingSession = useWavSidecar
+        val recordAudioInMr = if (useEraAudioDsp) true else (!useWavSidecar && !isAudioMuted && !isTl && !isSm && !isSilentPlugin)
+        if (recordAudioInMr) {
             recorder.setAudioSource(if (useEraAudioDsp) MediaRecorder.AudioSource.CAMCORDER else audioPreampMode.audioSource)
         }
         recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
         recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
 
-        if (useEraAudioDsp) {
+        if (useWavSidecar) {
+            val tsNow = System.currentTimeMillis()
+            val rawVid = File(context.cacheDir, "wav_vid_$tsNow.mp4")
+            val rawWav = File(context.cacheDir, "wav_aud_$tsNow.wav")
+            activeTempRawFile = rawVid
+            activeTempWavFile = rawWav
+            activeTargetFileName = fileName
+            activeTargetWavName = fileName.removeSuffix(".mp4") + ".wav"
+            activeMediaUri = null
+            recorder.setOutputFile(rawVid.absolutePath)
+        } else if (useEraAudioDsp) {
             val rawCache = File(context.cacheDir, "era_raw_${System.currentTimeMillis()}.mp4")
             activeTempRawFile = rawCache
+            activeTempWavFile = null
             activeTargetFileName = fileName
+            activeTargetWavName = ""
             activeMediaUri = null
             recorder.setOutputFile(rawCache.absolutePath)
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1994,7 +2060,7 @@ class CinemaCameraEngine(
         recorder.setVideoFrameRate((if (isSm) stopMotionPlaybackFps else targetFps).coerceIn(1, 60))
         recorder.setVideoSize(encW, encH)
         recorder.setVideoEncoder(targetCodec.encoder)
-        if (recordAudio) {
+        if (recordAudioInMr) {
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             if (useEraAudioDsp) {
                 recorder.setAudioChannels(1)
@@ -2008,7 +2074,7 @@ class CinemaCameraEngine(
         recorder.setOrientationHint(orientationHint)
 
         // Route external USB/Wired mic if preferred or detected in AUTO mode (API 28+)
-        if (recordAudio && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
+        if (recordAudioInMr && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
             val extMic = findExternalMicDevice()
             if (extMic != null) {
                 try {
@@ -2042,9 +2108,167 @@ class CinemaCameraEngine(
         activeTempRawFile?.let { f ->
             try { f.delete() } catch (_: Exception) {}
         }
+        isWavSidecarRecordingSession = false
+        stopWavSidecarCaptureThread()
         activeTempRawFile = null
+        activeTempWavFile?.let { f ->
+            try { f.delete() } catch (_: Exception) {}
+        }
+        activeTempWavFile = null
         activeTargetFileName = ""
+        activeTargetWavName = ""
         pendingPostAudioPlugin = null
+    }
+
+    // ==================== 48kHz 16-BIT PCM UNCOMPRESSED WAV SIDECAR RECORDER ====================
+
+    @SuppressLint("MissingPermission")
+    private fun startWavSidecarCaptureThread(outWavFile: File) {
+        stopWavSidecarCaptureThread()
+        wavLivePeakAmp = 0
+        wavRecRunning = true
+        wavRecThread = Thread {
+            val sampleRate = 48_000
+            val minBuf = AudioRecord.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(4096)
+            var ar: AudioRecord? = null
+            var totalDataBytes = 0L
+            try {
+                ar = AudioRecord(
+                    audioPreampMode.audioSource,
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    minBuf * 2
+                )
+                if (ar.state != AudioRecord.STATE_INITIALIZED) {
+                    ar.release()
+                    ar = AudioRecord(
+                        MediaRecorder.AudioSource.MIC,
+                        sampleRate,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        minBuf * 2
+                    )
+                }
+                if (ar.state != AudioRecord.STATE_INITIALIZED) return@Thread
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && micPreference != MicPreference.INTERNAL) {
+                    findExternalMicDevice()?.let { ext ->
+                        try { ar.setPreferredDevice(ext) } catch (_: Exception) {}
+                    }
+                }
+
+                FileOutputStream(outWavFile).use { fos ->
+                    // Reserve 44-byte RIFF/WAVE header
+                    fos.write(ByteArray(44))
+                    val buf = ByteArray(minBuf)
+                    ar.startRecording()
+                    while (wavRecRunning) {
+                        val read = ar.read(buf, 0, buf.size)
+                        if (read > 0) {
+                            val even = read - (read % 2)
+                            if (even > 0) {
+                                fos.write(buf, 0, even)
+                                totalDataBytes += even.toLong()
+                                var peak = 0
+                                var i = 0
+                                while (i < even) {
+                                    val lo = buf[i].toInt() and 0xFF
+                                    val hi = buf[i + 1].toInt()
+                                    val s = (hi shl 8) or lo
+                                    val a = abs(s)
+                                    if (a > peak) peak = a
+                                    i += 2
+                                }
+                                wavLivePeakAmp = peak
+                            }
+                        }
+                    }
+                    fos.flush()
+                }
+                if (totalDataBytes > 0L) {
+                    writeWavHeader(outWavFile, totalDataBytes, sampleRate, 1, 16)
+                }
+            } catch (_: Exception) {
+            } finally {
+                wavLivePeakAmp = 0
+                try { ar?.stop() } catch (_: Exception) {}
+                try { ar?.release() } catch (_: Exception) {}
+            }
+        }.also { it.start() }
+    }
+
+    private fun stopWavSidecarCaptureThread() {
+        wavRecRunning = false
+        val t = wavRecThread
+        wavRecThread = null
+        if (t != null && t !== Thread.currentThread()) {
+            try { t.join(1200L) } catch (_: Exception) {}
+        }
+        wavLivePeakAmp = 0
+    }
+
+    private fun writeWavHeader(file: File, pcmDataBytes: Long, sampleRate: Int, channels: Int, bitsPerSample: Int) {
+        val byteRate = sampleRate.toLong() * channels.toLong() * (bitsPerSample / 8).toLong()
+        val blockAlign = (channels * (bitsPerSample / 8)).toShort()
+        val riffChunkSize = (36L + pcmDataBytes).coerceAtMost(0xFFFFFFFFL).toInt()
+        val dataChunkSize = pcmDataBytes.coerceAtMost(0xFFFFFFFFL).toInt()
+
+        val hdr = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put('R'.code.toByte()); put('I'.code.toByte()); put('F'.code.toByte()); put('F'.code.toByte())
+            putInt(riffChunkSize)
+            put('W'.code.toByte()); put('A'.code.toByte()); put('V'.code.toByte()); put('E'.code.toByte())
+            put('f'.code.toByte()); put('m'.code.toByte()); put('t'.code.toByte()); put(' '.code.toByte())
+            putInt(16) // PCM fmt chunk size
+            putShort(1.toShort()) // AudioFormat = 1 (PCM)
+            putShort(channels.toShort())
+            putInt(sampleRate)
+            putInt(byteRate.toInt())
+            putShort(blockAlign)
+            putShort(bitsPerSample.toShort())
+            put('d'.code.toByte()); put('a'.code.toByte()); put('t'.code.toByte()); put('a'.code.toByte())
+            putInt(dataChunkSize)
+        }
+        RandomAccessFile(file, "rw").use { raf ->
+            raf.seek(0L)
+            raf.write(hdr.array())
+        }
+    }
+
+    private fun commitCacheWavToMediaStore(sourceWav: File, wavFileName: String): Uri? {
+        if (!sourceWav.exists() || sourceWav.length() <= 44L) return null
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Audio.Media.DISPLAY_NAME, wavFileName)
+                put(MediaStore.Audio.Media.MIME_TYPE, "audio/wav")
+                put(MediaStore.Audio.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MUSIC}/IDGAF_Camera")
+                put(MediaStore.Audio.Media.IS_PENDING, 1)
+            }
+            val uri = context.contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values) ?: return null
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                sourceWav.inputStream().use { ins -> ins.copyTo(out, 65_536) }
+            }
+            val doneVals = ContentValues().apply {
+                put(MediaStore.Audio.Media.IS_PENDING, 0)
+            }
+            context.contentResolver.update(uri, doneVals, null, null)
+            uri
+        } else {
+            val dir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
+                "IDGAF_Camera"
+            )
+            if (!dir.exists()) dir.mkdirs()
+            val outFile = File(dir, wavFileName)
+            sourceWav.inputStream().use { ins ->
+                outFile.outputStream().use { out -> ins.copyTo(out, 65_536) }
+            }
+            Uri.fromFile(outFile)
+        }
     }
 
     private fun closeSession() {

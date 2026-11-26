@@ -470,4 +470,170 @@ object EraAudioProcessor {
             try { audioExtractor?.release() } catch (_: Exception) {}
         }
     }
+
+    /**
+     * Lossless-Video / 48kHz WAV-Sidecar MP4 Muxer:
+     * Copies video track bit-for-bit (0% re-encode, preserves rotation hint) and encodes the recorded
+     * 48kHz 16-bit Mono PCM WAV file into 256kbps 48kHz AAC-LC alongside it for universal playback.
+     */
+    fun muxVideoWithWavPcmAsAac(
+        videoMp4File: File,
+        wavFile: File,
+        outputMp4File: File,
+        sampleRate: Int = 48_000,
+        channels: Int = 1
+    ): Boolean {
+        if (!videoMp4File.exists() || videoMp4File.length() < 1024L) return false
+        if (!wavFile.exists() || wavFile.length() <= 44L) return false
+
+        var videoExtractor: MediaExtractor? = null
+        var encoder: MediaCodec? = null
+        var muxer: MediaMuxer? = null
+        var muxerStarted = false
+
+        try {
+            videoExtractor = MediaExtractor().apply { setDataSource(videoMp4File.absolutePath) }
+            var videoTrackIdx = -1
+            var videoFormat: MediaFormat? = null
+            for (i in 0 until videoExtractor.trackCount) {
+                val fmt = videoExtractor.getTrackFormat(i)
+                val mime = fmt.getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/")) {
+                    videoTrackIdx = i
+                    videoFormat = fmt
+                    break
+                }
+            }
+            if (videoTrackIdx < 0 || videoFormat == null) return false
+
+            val rotationDeg = if (videoFormat.containsKey(MediaFormat.KEY_ROTATION)) {
+                videoFormat.getInteger(MediaFormat.KEY_ROTATION)
+            } else 0
+
+            val encFormat = MediaFormat.createAudioFormat(
+                MediaFormat.MIMETYPE_AUDIO_AAC,
+                sampleRate.coerceIn(16000, 48000),
+                channels.coerceIn(1, 2)
+            ).apply {
+                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                setInteger(MediaFormat.KEY_BIT_RATE, 256_000)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
+            }
+
+            encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            encoder.configure(encFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            encoder.start()
+
+            if (outputMp4File.exists()) outputMp4File.delete()
+            muxer = MediaMuxer(outputMp4File.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            muxer.setOrientationHint(rotationDeg)
+            val muxVideoTrack = muxer.addTrack(videoFormat)
+            var muxAudioTrack = -1
+
+            val encInfo = MediaCodec.BufferInfo()
+            val bytesPerFrame = 2 * channels.coerceIn(1, 2)
+            val pcmBuf = ByteArray(4096)
+            var totalSamplesFed = 0L
+            var encInputDone = false
+            var encOutputDone = false
+
+            wavFile.inputStream().use { rawIn ->
+                // Skip 44-byte RIFF/WAVE header
+                var toSkip = 44L
+                while (toSkip > 0L) {
+                    val skipped = rawIn.skip(toSkip)
+                    if (skipped <= 0L) break
+                    toSkip -= skipped
+                }
+
+                while (!encOutputDone) {
+                    if (!encInputDone) {
+                        val inIdx = encoder.dequeueInputBuffer(10_000L)
+                        if (inIdx >= 0) {
+                            val inBuf = encoder.getInputBuffer(inIdx)
+                            if (inBuf != null) {
+                                inBuf.clear()
+                                val maxRead = minOf(pcmBuf.size, inBuf.capacity())
+                                val alignedMax = maxRead - (maxRead % bytesPerFrame)
+                                val read = rawIn.read(pcmBuf, 0, alignedMax)
+                                if (read <= 0) {
+                                    val eosPts = (totalSamplesFed * 1_000_000L) / sampleRate.toLong()
+                                    encoder.queueInputBuffer(inIdx, 0, 0, eosPts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                    encInputDone = true
+                                } else {
+                                    val evenRead = read - (read % bytesPerFrame)
+                                    val ptsUs = (totalSamplesFed * 1_000_000L) / sampleRate.toLong()
+                                    inBuf.put(pcmBuf, 0, evenRead)
+                                    encoder.queueInputBuffer(inIdx, 0, evenRead, ptsUs, 0)
+                                    totalSamplesFed += (evenRead / bytesPerFrame).toLong()
+                                }
+                            }
+                        }
+                    }
+
+                    val outIdx = encoder.dequeueOutputBuffer(encInfo, 10_000L)
+                    when {
+                        outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            if (!muxerStarted) {
+                                muxAudioTrack = muxer.addTrack(encoder.outputFormat)
+                                muxer.start()
+                                muxerStarted = true
+                            }
+                        }
+                        outIdx >= 0 -> {
+                            val outBuf = encoder.getOutputBuffer(outIdx)
+                            val isConfig = (encInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                            if (muxerStarted && muxAudioTrack >= 0 && !isConfig && outBuf != null && encInfo.size > 0) {
+                                outBuf.position(encInfo.offset)
+                                outBuf.limit(encInfo.offset + encInfo.size)
+                                muxer.writeSampleData(muxAudioTrack, outBuf, encInfo)
+                            }
+                            encoder.releaseOutputBuffer(outIdx, false)
+                            if ((encInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                encOutputDone = true
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!muxerStarted) return false
+
+            videoExtractor.selectTrack(videoTrackIdx)
+            val maxVideoBufSize = if (videoFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                videoFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceAtLeast(512 * 1024)
+            } else {
+                1024 * 1024
+            }
+            val videoBuf = ByteBuffer.allocateDirect(maxVideoBufSize)
+            val vidInfo = MediaCodec.BufferInfo()
+            while (true) {
+                videoBuf.clear()
+                val size = videoExtractor.readSampleData(videoBuf, 0)
+                if (size < 0) break
+                vidInfo.offset = 0
+                vidInfo.size = size
+                vidInfo.presentationTimeUs = videoExtractor.sampleTime.coerceAtLeast(0L)
+                val extFlags = videoExtractor.sampleFlags
+                vidInfo.flags = if ((extFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                    MediaCodec.BUFFER_FLAG_KEY_FRAME
+                } else 0
+                muxer.writeSampleData(muxVideoTrack, videoBuf, vidInfo)
+                videoExtractor.advance()
+            }
+
+            muxer.stop()
+            muxerStarted = false
+            return outputMp4File.exists() && outputMp4File.length() > 1024L
+        } catch (_: Exception) {
+            try { if (outputMp4File.exists()) outputMp4File.delete() } catch (_: Exception) {}
+            return false
+        } finally {
+            try { encoder?.stop() } catch (_: Exception) {}
+            try { encoder?.release() } catch (_: Exception) {}
+            try { if (muxerStarted) muxer?.stop() } catch (_: Exception) {}
+            try { muxer?.release() } catch (_: Exception) {}
+            try { videoExtractor?.release() } catch (_: Exception) {}
+        }
+    }
 }
