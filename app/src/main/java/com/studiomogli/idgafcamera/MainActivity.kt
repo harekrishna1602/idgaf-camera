@@ -17,7 +17,9 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.content.res.ColorStateList
@@ -75,6 +77,8 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
@@ -83,6 +87,7 @@ enum class ProControlPanel { NONE, EV, ISO, SHUTTER, FOCUS, WB }
 enum class ZoomCurve(val label: String) { LINEAR("LIN"), EXPONENTIAL("EXP"), CRASH("CRASH") }
 enum class CameraWorkbench { SAVIOR, ERA }
 enum class EraDrawerMode { BOTH, WORKBENCH_ONLY, ERA_VAULT_ONLY }
+enum class StopMotionOutputMode(val label: String) { MP4("MP4"), JPG("JPG"), BOTH("MP4+JPG") }
 
 data class SaviorWorkbenchSnapshot(
     val resolution: CinemaResolution,
@@ -180,14 +185,27 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnProSlate: TextView
     private lateinit var btnProSafeArea: TextView
     private lateinit var btnProPresets: TextView
-    private lateinit var proStopMoSubPanel: LinearLayout
-    private lateinit var proStopMoModeRow: LinearLayout
-    private lateinit var proStopMoFpsRow: LinearLayout
-    private lateinit var proStopMoOnionRow: LinearLayout
-    private lateinit var proSlateSubPanel: LinearLayout
-    private lateinit var proSlateToggleRow: LinearLayout
-    private lateinit var proSlateFieldsRow: LinearLayout
+    private lateinit var stopMotionHudBar: LinearLayout
+    private lateinit var btnSmFps: TextView
+    private lateinit var btnSmOnion: TextView
+    private lateinit var btnSmOutput: TextView
+    private lateinit var btnSmUndo: TextView
     private lateinit var btnFinishStopMotion: TextView
+    private lateinit var btnSmExit: TextView
+    private lateinit var slateHudBar: LinearLayout
+    private lateinit var btnSlateHudReel: TextView
+    private lateinit var btnSlateHudScene: TextView
+    private lateinit var btnSlateHudTakeDec: TextView
+    private lateinit var btnSlateHudTake: TextView
+    private lateinit var btnSlateHudTakeInc: TextView
+    private lateinit var btnSlateHudAuto: TextView
+    private lateinit var btnSlateHudClose: TextView
+    private var stopMotionOutputMode: StopMotionOutputMode = StopMotionOutputMode.MP4
+    private var smJpgSessionActive: Boolean = false
+    private var smJpgSessionFolder: String = ""
+    private var smJpgFrameCount: Int = 0
+    private val smJpgSavedUris = mutableListOf<Uri>()
+    private val smJpgGhostHistory = mutableListOf<Bitmap>()
     private var stopMotionFinishWarned: Boolean = false
 
     // Phase 7.2A Live GPU Color Studio Drawer (+ v0.7.1.1 Peek-Through Grading Mode)
@@ -390,6 +408,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnCinemaInputApply: TextView
     private var cinemaInputStep: Float = 1f
     private var cinemaInputAllowDecimal: Boolean = false
+    private var cinemaInputMin: Float? = null
+    private var cinemaInputMax: Float? = null
     private var cinemaInputOnApply: ((String) -> Boolean)? = null
     private var isCleanFrameMode: Boolean = false
     private lateinit var lensRail: LinearLayout
@@ -761,14 +781,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProSlate = findViewById(R.id.btnProSlate)
         btnProSafeArea = findViewById(R.id.btnProSafeArea)
         btnProPresets = findViewById(R.id.btnProPresets)
-        proStopMoSubPanel = findViewById(R.id.proStopMoSubPanel)
-        proStopMoModeRow = findViewById(R.id.proStopMoModeRow)
-        proStopMoFpsRow = findViewById(R.id.proStopMoFpsRow)
-        proStopMoOnionRow = findViewById(R.id.proStopMoOnionRow)
-        proSlateSubPanel = findViewById(R.id.proSlateSubPanel)
-        proSlateToggleRow = findViewById(R.id.proSlateToggleRow)
-        proSlateFieldsRow = findViewById(R.id.proSlateFieldsRow)
+        stopMotionHudBar = findViewById(R.id.stopMotionHudBar)
+        btnSmFps = findViewById(R.id.btnSmFps)
+        btnSmOnion = findViewById(R.id.btnSmOnion)
+        btnSmOutput = findViewById(R.id.btnSmOutput)
+        btnSmUndo = findViewById(R.id.btnSmUndo)
         btnFinishStopMotion = findViewById(R.id.btnFinishStopMotion)
+        btnSmExit = findViewById(R.id.btnSmExit)
+        slateHudBar = findViewById(R.id.slateHudBar)
+        btnSlateHudReel = findViewById(R.id.btnSlateHudReel)
+        btnSlateHudScene = findViewById(R.id.btnSlateHudScene)
+        btnSlateHudTakeDec = findViewById(R.id.btnSlateHudTakeDec)
+        btnSlateHudTake = findViewById(R.id.btnSlateHudTake)
+        btnSlateHudTakeInc = findViewById(R.id.btnSlateHudTakeInc)
+        btnSlateHudAuto = findViewById(R.id.btnSlateHudAuto)
+        btnSlateHudClose = findViewById(R.id.btnSlateHudClose)
         btnColorPanelToggle = findViewById(R.id.btnColorPanelToggle)
         colorControlDrawer = findViewById(R.id.colorControlDrawer)
         colorDrawerHeaderRow = findViewById(R.id.colorDrawerHeaderRow)
@@ -1093,17 +1120,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         shutterOuter.setOnClickListener {
             handleShutterTrigger()
         }
-        shutterOuter.setOnLongClickListener {
-            if (engine.isRecording && engine.stopMotionEnabled && currentWorkbench == CameraWorkbench.SAVIOR) {
-                finishStopMotionSession()
-                true
-            } else {
-                false
-            }
-        }
-        btnFinishStopMotion.setOnClickListener {
-            finishStopMotionSession()
-        }
+        setupStopMotionAndSlateHudBars()
 
         btnFormatToggle.setOnClickListener {
             if (engine.isRecording) {
@@ -1119,6 +1136,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnLastClip.setOnClickListener {
+            if (isStopMotionSessionRunning()) {
+                finishStopMotionSession()
+                return@setOnClickListener
+            }
             if (engine.isRecording || engine.isFinalizingClip) {
                 showSingleToast(if (engine.isFinalizingClip) "Developing clip — wait a moment..." else "Stop recording before opening Clip Vault.")
                 return@setOnClickListener
@@ -1150,11 +1171,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             showSingleToast("Developing audio track...")
             return
         }
+        if (currentWorkbench == CameraWorkbench.SAVIOR && engine.stopMotionEnabled) {
+            handleStopMotionSnapTrigger()
+            return
+        }
         if (engine.isRecording) {
-            if (currentWorkbench == CameraWorkbench.SAVIOR && engine.stopMotionEnabled) {
-                snapNextStopMotionFrame()
-                return
-            }
             val p = activeEraPlugin
             if (currentWorkbench == CameraWorkbench.ERA && p != null && p.usesPostAudioProcessor && !p.isSilentAudio) {
                 uiHandler.removeCallbacks(timecodeRunnable)
@@ -1164,11 +1185,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             val rot = getCurrentDisplayRotation()
             if (currentWorkbench == CameraWorkbench.ERA) {
-                beginRecordingCleanly(rot)
-            } else if (engine.stopMotionEnabled) {
-                stopMotionFinishWarned = false
-                captureOnionSkinGhostFromViewfinder()
-                flashShutterCapturePulse()
                 beginRecordingCleanly(rot)
             } else if (engine.isAudioMuted && !engine.isTimelapseEnabled()) {
                 IdgafUiDialogs.showActionDialog(
@@ -1600,6 +1616,13 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
         }
 
+        edtCinemaInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                updateCinemaInputStepperVisuals(s?.toString()?.trim()?.toFloatOrNull())
+            }
+        })
         btnCinemaInputMinus.setOnClickListener { stepCinemaInputValue(-1f) }
         btnCinemaInputPlus.setOnClickListener { stepCinemaInputValue(+1f) }
 
@@ -1633,7 +1656,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             rightRailContainer.visibility = View.GONE
             txtLowBatteryBanner.visibility = View.GONE
             btnExitSplitWipe.visibility = View.GONE
-            btnFinishStopMotion.visibility = View.GONE
+            stopMotionHudBar.visibility = View.GONE
+            slateHudBar.visibility = View.GONE
             outputMonitorCard.visibility = View.GONE
 
             btnRestoreCleanUi.visibility = View.VISIBLE
@@ -1652,7 +1676,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 zoomRockerContainer.visibility = View.VISIBLE
                 syncExitSplitPillVisibility()
                 if (isOutputMonitorEnabled) outputMonitorCard.visibility = View.VISIBLE
-                if (engine.isRecording && engine.stopMotionEnabled) btnFinishStopMotion.visibility = View.VISIBLE
+                updateStopMotionUi()
+                updateSlateUi()
             }
             updateCleanUiToggleStyle()
             syncLowBatteryBannerVisibility()
@@ -2239,11 +2264,15 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         allowDecimal: Boolean,
         allowSigned: Boolean = false,
         step: Float = 1f,
+        minValue: Float? = null,
+        maxValue: Float? = null,
         isClassicStyle: Boolean = false,
         onApply: (String) -> Boolean
     ) {
         cinemaInputStep = step
         cinemaInputAllowDecimal = allowDecimal
+        cinemaInputMin = minValue
+        cinemaInputMax = maxValue
         cinemaInputOnApply = onApply
 
         txtCinemaInputTitle.text = title
@@ -2259,6 +2288,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         edtCinemaInput.inputType = flags
         edtCinemaInput.setText(initialValue)
         edtCinemaInput.hint = hint
+        updateCinemaInputStepperVisuals(initialValue.toFloatOrNull())
         // Keep keyboard CLOSED by default so user can tap − / + freely without keyboard blocking viewfinder!
         edtCinemaInput.clearFocus()
         try {
@@ -2270,10 +2300,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         syncDrawerTouchScrim()
     }
 
+    private fun updateCinemaInputStepperVisuals(curVal: Float?) {
+        val lo = cinemaInputMin
+        val hi = cinemaInputMax
+        val atMin = (curVal != null && lo != null && curVal <= lo + 0.0001f)
+        val atMax = (curVal != null && hi != null && curVal >= hi - 0.0001f)
+        btnCinemaInputMinus.alpha = if (atMin) 0.30f else 1.0f
+        btnCinemaInputPlus.alpha = if (atMax) 0.30f else 1.0f
+    }
+
     private fun stepCinemaInputValue(dir: Float) {
         val raw = edtCinemaInput.text?.toString()?.trim().orEmpty()
-        val cur = raw.toFloatOrNull() ?: 0f
-        val next = cur + (cinemaInputStep * dir)
+        val cur = raw.toFloatOrNull() ?: (cinemaInputMin ?: 0f)
+        var next = cur + (cinemaInputStep * dir)
+        cinemaInputMin?.let { lo -> if (next < lo) next = lo }
+        cinemaInputMax?.let { hi -> if (next > hi) next = hi }
         val formatted = if (cinemaInputAllowDecimal) {
             String.format(Locale.US, "%.1f", next)
         } else {
@@ -2281,6 +2322,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         edtCinemaInput.setText(formatted)
         edtCinemaInput.setSelection(formatted.length)
+        updateCinemaInputStepperVisuals(next)
     }
 
     private fun submitCinemaInputDrawer() {
@@ -2372,9 +2414,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         eraPluginContainer.visibility = View.VISIBLE
 
         engine.timelapseIntervalMs = 0L
+        if (smJpgSessionActive) finishStopMotionSession()
         engine.stopMotionEnabled = false
         overlayView.onionSkinBitmap = null
-        overlayView.slateHudBadge = ""
+        stopMotionHudBar.visibility = View.GONE
+        slateHudBar.visibility = View.GONE
         engine.recordAspectMode = RecordAspectMode.WIDE_16_9
         overlayView.recordAspectMode = RecordAspectMode.WIDE_16_9
         engine.clearAeAfLock()
@@ -2469,6 +2513,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnAutoPilot.visibility = View.VISIBLE
         overlayView.visibility = View.VISIBLE
         updateCleanUiToggleStyle()
+        updateStopMotionUi()
+        updateSlateUi()
         syncExitSplitPillVisibility()
         syncAnalysisLoop()
         updateSystemTelemetry(null)
@@ -2877,7 +2923,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             proSettingsBar.visibility == View.VISIBLE ||
             formatDrawer.visibility == View.VISIBLE ||
             workbenchEraDrawer.visibility == View.VISIBLE ||
-            cinemaInputDrawer.visibility == View.VISIBLE
+            cinemaInputDrawer.visibility == View.VISIBLE ||
+            stopMotionHudBar.visibility == View.VISIBLE
         txtLowBatteryBanner.visibility = if (!isBatteryCharging && lastBatteryPct <= 15 && !lowBatteryBannerDismissed && !anyTopDrawerOpen) {
             View.VISIBLE
         } else {
@@ -2896,8 +2943,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             proSettingsBar.visibility = View.GONE
             proTimerSubPanel.visibility = View.GONE
             proTimelapseSubPanel.visibility = View.GONE
-            proStopMoSubPanel.visibility = View.GONE
-            proSlateSubPanel.visibility = View.GONE
             styleToolPill(btnProSettingsToggle, false)
         }
         if (except != "FORMAT" && formatDrawer.visibility == View.VISIBLE) {
@@ -2998,8 +3043,6 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             val showing = proTimerSubPanel.visibility == View.VISIBLE
             proTimelapseSubPanel.visibility = View.GONE
-            proStopMoSubPanel.visibility = View.GONE
-            proSlateSubPanel.visibility = View.GONE
             proTimerSubPanel.visibility = if (showing) View.GONE else View.VISIBLE
             if (!showing) renderTimerInlineChips()
         }
@@ -3011,32 +3054,32 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             val showing = proTimelapseSubPanel.visibility == View.VISIBLE
             proTimerSubPanel.visibility = View.GONE
-            proStopMoSubPanel.visibility = View.GONE
-            proSlateSubPanel.visibility = View.GONE
             proTimelapseSubPanel.visibility = if (showing) View.GONE else View.VISIBLE
             if (!showing) renderTimelapseInlineChips()
         }
 
         btnProStopMo.setOnClickListener {
-            val showing = proStopMoSubPanel.visibility == View.VISIBLE
-            proTimerSubPanel.visibility = View.GONE
-            proTimelapseSubPanel.visibility = View.GONE
-            proSlateSubPanel.visibility = View.GONE
-            proStopMoSubPanel.visibility = if (showing) View.GONE else View.VISIBLE
-            if (!showing) renderStopMotionInlineChips()
+            if (engine.isRecording || smJpgSessionActive) {
+                showSingleToast("Finish current Stop-Motion session first")
+                return@setOnClickListener
+            }
+            val next = !engine.stopMotionEnabled
+            setStopMotionModeEnabled(next, closeProOnEnable = true)
         }
 
         btnProSlate.setOnClickListener {
             if (engine.isRecording) {
-                showSingleToast("Stop recording to edit Cinema Slate")
+                showSingleToast("Stop recording to toggle Cinema Slate")
                 return@setOnClickListener
             }
-            val showing = proSlateSubPanel.visibility == View.VISIBLE
-            proTimerSubPanel.visibility = View.GONE
-            proTimelapseSubPanel.visibility = View.GONE
-            proStopMoSubPanel.visibility = View.GONE
-            proSlateSubPanel.visibility = if (showing) View.GONE else View.VISIBLE
-            if (!showing) renderSlateInlineChips()
+            engine.slateEnabled = !engine.slateEnabled
+            if (engine.slateEnabled) {
+                closeTopDrawers(except = null)
+                showSingleToast("Cinema Slate ON — tap REEL / S / T / + directly on screen")
+            } else {
+                showSingleToast("Cinema Slate OFF")
+            }
+            updateSlateUi()
         }
 
         btnProMirrorFront.setOnClickListener {
@@ -3093,7 +3136,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             hint = "1 to 60 seconds (Step ±1s)",
             initialValue = initVal.toString(),
             allowDecimal = false,
-            step = 1f
+            step = 1f,
+            minValue = 1f,
+            maxValue = 60f
         ) { raw ->
             val v = raw.toIntOrNull()
             if (v == null || v !in 1..60) {
@@ -3167,7 +3212,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             hint = "0.5 to 60.0 sec/frame (Step ±0.5s)",
             initialValue = initStr,
             allowDecimal = true,
-            step = 0.5f
+            step = 0.5f,
+            minValue = 0.5f,
+            maxValue = 60.0f
         ) { raw ->
             val secs = raw.toFloatOrNull()
             if (secs == null || secs < 0.5f || secs > 60.0f) {
@@ -3666,8 +3713,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.7.6"
-    } catch (_: Exception) { "0.7.7.6" }
+        info.versionName ?: "0.7.7.7"
+    } catch (_: Exception) { "0.7.7.7" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -4705,7 +4752,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     initialValue = String.format(Locale.US, "%.1f", engine.getCurrentEvStops()),
                     allowDecimal = true,
                     allowSigned = true,
-                    step = 0.3f
+                    step = 0.3f,
+                    minValue = minEvStops,
+                    maxValue = maxEvStops
                 ) { raw ->
                     val stops = raw.toFloatOrNull()
                     if (stops == null) {
@@ -4727,7 +4776,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     hint = "Range ${engine.capabilities.effectiveIsoRange.lower}–${engine.capabilities.effectiveIsoRange.upper} (Step ±50)",
                     initialValue = curIso.toString(),
                     allowDecimal = false,
-                    step = 50f
+                    step = 50f,
+                    minValue = engine.capabilities.effectiveIsoRange.lower.toFloat(),
+                    maxValue = engine.capabilities.effectiveIsoRange.upper.toFloat()
                 ) { raw ->
                     val v = raw.toIntOrNull()
                     if (v == null || v <= 0) {
@@ -4749,7 +4800,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         hint = "11° to 360° (Step ±15° • Cinema 180°)",
                         initialValue = curAng.toString(),
                         allowDecimal = false,
-                        step = 15f
+                        step = 15f,
+                        minValue = 11f,
+                        maxValue = 360f
                     ) { raw ->
                         val v = raw.toIntOrNull()
                         if (v == null || v !in 11..360) {
@@ -4770,7 +4823,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         hint = "Denominator e.g. 48, 50, 60, 120, 500 (Step ±10)",
                         initialValue = curDenom.toString(),
                         allowDecimal = false,
-                        step = 10f
+                        step = 10f,
+                        minValue = 1f,
+                        maxValue = 8000f
                     ) { raw ->
                         val v = raw.toIntOrNull()
                         if (v == null || v !in 1..8000) {
@@ -4792,7 +4847,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     hint = "2500K – 8500K (Step ±100K)",
                     initialValue = curK.toString(),
                     allowDecimal = false,
-                    step = 100f
+                    step = 100f,
+                    minValue = 2500f,
+                    maxValue = 8500f
                 ) { raw ->
                     val v = raw.toIntOrNull()
                     if (v == null || v !in 2500..8500) {
@@ -4814,7 +4871,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     hint = "0 = Infinity ∞ • 100 = Macro (Step ±5%)",
                     initialValue = curPct.toString(),
                     allowDecimal = false,
-                    step = 5f
+                    step = 5f,
+                    minValue = 0f,
+                    maxValue = 100f
                 ) { raw ->
                     val v = raw.toIntOrNull()
                     if (v == null || v !in 0..100) {
@@ -4911,7 +4970,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 hint = "0.2 to 15.0 seconds (Step ±0.5s)",
                 initialValue = String.format(Locale.US, "%.1f", zoomPullDurationMs / 1000f),
                 allowDecimal = true,
-                step = 0.5f
+                step = 0.5f,
+                minValue = 0.2f,
+                maxValue = 15.0f
             ) { raw ->
                 val secs = raw.toFloatOrNull()
                 if (secs != null && secs in 0.2f..15.0f) {
@@ -5043,7 +5104,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             hint = "1 to $maxHw FPS (Step ±1 • GPU Pacer below 20)",
             initialValue = currentFps.toString(),
             allowDecimal = false,
-            step = 1f
+            step = 1f,
+            minValue = 1f,
+            maxValue = maxHw.toFloat()
         ) { raw ->
             val typed = raw.toIntOrNull()
             if (typed == null || typed !in 1..60) {
@@ -5165,7 +5228,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 hint = "0.2 to 15.0 seconds (Step ±0.2s)",
                 initialValue = String.format(Locale.US, "%.1f", focusPullDurationMs / 1000f),
                 allowDecimal = true,
-                step = 0.2f
+                step = 0.2f,
+                minValue = 0.2f,
+                maxValue = 15.0f
             ) { raw ->
                 val secs = raw.toFloatOrNull()
                 if (secs != null && secs in 0.2f..15.0f) {
@@ -6000,8 +6065,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     override fun onRecordingStarted() {
         runOnUiThread {
             recStartMs = System.currentTimeMillis()
-            btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_stop)
-            btnShutterInner.animate().scaleX(0.54f).scaleY(0.54f).setDuration(140L).start()
+            val isSmRec = (currentWorkbench == CameraWorkbench.SAVIOR && engine.stopMotionEnabled)
+            if (!isSmRec) {
+                btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_stop)
+                btnShutterInner.animate().scaleX(0.54f).scaleY(0.54f).setDuration(140L).start()
+            }
             updateRestoreCleanEyeBadge()
             syncOutputMonitorUi()
             uiHandler.removeCallbacks(timecodeRunnable)
@@ -6012,11 +6080,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 viewRecDot.visibility = View.VISIBLE
                 txtTimecode.setTextColor(0xFFFF3B30.toInt())
                 btnAutoPilot.alpha = 0.45f
-                if (engine.stopMotionEnabled) {
-                    txtTimecode.text = "SM 1f • 00:00.0"
-                    btnFinishStopMotion.text = "■ FINISH STOP-MO (1F)"
-                    if (!isCleanFrameMode) btnFinishStopMotion.visibility = View.VISIBLE
-                    showSingleToast("Stop-Motion LIVE: Tap Shutter / Vol for next frame • Tap FINISH when done", Toast.LENGTH_LONG)
+                if (isSmRec) {
+                    txtTimecode.text = "SM 1F • 00:00.1"
+                    updateStopMotionUi()
                 } else if (engine.isTimelapseEnabled()) {
                     txtTimecode.text = "TL 0f • 00:00.0"
                 } else {
@@ -6034,8 +6100,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             if (engine.isRecording && engine.stopMotionEnabled) {
                 val mins = (outputDurationSec / 60f).toInt()
                 val secs = outputDurationSec - (mins * 60f)
-                txtTimecode.text = String.format(Locale.US, "SM %df • %02d:%04.1f", capturedFrames, mins, secs)
-                btnFinishStopMotion.text = "■ FINISH STOP-MO (${capturedFrames}F)"
+                txtTimecode.text = String.format(Locale.US, "SM %dF • %02d:%04.1f", capturedFrames, mins, secs)
+                btnSmFps.text = String.format(Locale.US, "%dF • %.1fs", capturedFrames, outputDurationSec)
+                btnFinishStopMotion.text = "■ SAVE"
                 syncOutputMonitorUi(tlFrames = capturedFrames)
             } else if (engine.isRecording && engine.isTimelapseEnabled()) {
                 val mins = (outputDurationSec / 60f).toInt()
@@ -6051,20 +6118,28 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         runOnUiThread {
             uiHandler.removeCallbacks(timecodeRunnable)
             viewRecDot.visibility = View.GONE
-            btnFinishStopMotion.visibility = View.GONE
             stopMotionFinishWarned = false
-            btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_rec)
             btnShutterInner.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140L).start()
             updateRestoreCleanEyeBadge()
             syncOutputMonitorUi()
             btnAutoPilot.alpha = 1.0f
             if (currentWorkbench == CameraWorkbench.ERA) {
+                btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_rec)
                 activeEraPlugin?.onRecordingStopped(eraHostBridge)
             } else {
+                val savedJpgFolder = if (stopMotionOutputMode == StopMotionOutputMode.BOTH && smJpgFrameCount > 0) smJpgSessionFolder else ""
+                val savedJpgCount = smJpgFrameCount
+                smJpgSessionActive = false
+                smJpgFrameCount = 0
+                smJpgSavedUris.clear()
+                smJpgGhostHistory.clear()
+                overlayView.onionSkinBitmap = null
                 updateTimelapseUi()
                 updateStopMotionUi()
                 updateSlateUi()
-                if (proSlateSubPanel.visibility == View.VISIBLE) renderSlateInlineChips()
+                if (savedJpgFolder.isNotEmpty()) {
+                    showSingleToast("Saved MP4 + $savedJpgCount JPGs → Pictures/IDGAF_Camera/$savedJpgFolder/", Toast.LENGTH_LONG)
+                }
             }
             if (savedUri != null) {
                 lastSavedUri = savedUri
@@ -6127,7 +6202,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
 
 
-    // ==================== WB CUSTOM TINT + STOP-MOTION ONION SKIN + CINEMA SLATE ====================
+    // ==================== WB CUSTOM TINT + LIVE STOP-MOTION HUD (MP4/JPG/BOTH) + BLACKMAGIC SLATE HUD ====================
 
     private fun showCustomTintInputDialog() {
         if (engine.isAeAfLocked) {
@@ -6141,7 +6216,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             initialValue = curTint.toString(),
             allowDecimal = false,
             allowSigned = true,
-            step = 1f
+            step = 1f,
+            minValue = -50f,
+            maxValue = 50f
         ) { raw ->
             val v = raw.toIntOrNull()
             if (v == null || v !in -50..50) {
@@ -6156,17 +6233,225 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
-    private fun captureOnionSkinGhostFromViewfinder() {
-        if (!textureView.isAvailable) return
+    private fun isStopMotionSessionRunning(): Boolean =
+        currentWorkbench == CameraWorkbench.SAVIOR && engine.stopMotionEnabled && (engine.isRecording || smJpgSessionActive)
+
+    private fun setupStopMotionAndSlateHudBars() {
+        // 1. Live Stop-Motion Top Strip (Zero buried menus!)
+        btnSmFps.setOnClickListener {
+            if (isStopMotionSessionRunning()) return@setOnClickListener
+            val steps = listOf(8, 12, 15, 24)
+            val idx = steps.indexOf(engine.stopMotionPlaybackFps).let { if (it < 0) 1 else it }
+            engine.stopMotionPlaybackFps = steps[(idx + 1) % steps.size]
+            updateStopMotionUi()
+            showSingleToast("Stop-Motion Playback: ${engine.stopMotionPlaybackFps} FPS")
+        }
+
+        btnSmOnion.setOnClickListener {
+            val steps = listOf(0.0f, 0.25f, 0.40f, 0.60f)
+            val cur = overlayView.onionSkinAlpha
+            val idx = steps.indices.minByOrNull { kotlin.math.abs(steps[it] - cur) } ?: 2
+            val next = steps[(idx + 1) % steps.size]
+            overlayView.onionSkinAlpha = next
+            updateStopMotionUi()
+            showSingleToast(if (next <= 0.01f) "Onion Skin Ghost: OFF" else "Onion Skin Ghost: ${(next * 100).roundToInt()}%")
+        }
+
+        btnSmOutput.setOnClickListener {
+            if (isStopMotionSessionRunning()) {
+                showSingleToast("Finish current Stop-Motion session to switch output format")
+                return@setOnClickListener
+            }
+            val modes = StopMotionOutputMode.values()
+            stopMotionOutputMode = modes[(modes.indexOf(stopMotionOutputMode) + 1) % modes.size]
+            updateStopMotionUi()
+            showSingleToast(
+                when (stopMotionOutputMode) {
+                    StopMotionOutputMode.MP4 -> "Stop-Motion Output: MP4 Video (Movies/IDGAF_Camera)"
+                    StopMotionOutputMode.JPG -> "Stop-Motion Output: Frame-by-Frame JPG Photos (Pictures/IDGAF_Camera)"
+                    StopMotionOutputMode.BOTH -> "Stop-Motion Output: MP4 Video + Individual JPG Frames"
+                },
+                Toast.LENGTH_LONG
+            )
+        }
+
+        btnSmUndo.setOnClickListener {
+            undoLastStopMotionJpgFrame()
+        }
+
+        btnFinishStopMotion.setOnClickListener {
+            finishStopMotionSession()
+        }
+
+        btnSmExit.setOnClickListener {
+            if (isStopMotionSessionRunning()) {
+                finishStopMotionSession()
+            } else {
+                setStopMotionModeEnabled(false, closeProOnEnable = false)
+            }
+        }
+
+        // 2. Blackmagic-Style Live Interactive Slate HUD Bar (Right outside PRO!)
+        btnSlateHudReel.setOnClickListener {
+            if (engine.isRecording) return@setOnClickListener
+            IdgafUiDialogs.showTextInputDialog(
+                context = this,
+                title = "CINEMA SLATE — REEL",
+                hint = "e.g. A001, B002, CAM1",
+                initialText = engine.slateReel,
+                primaryLabel = "SET REEL",
+                onPrimary = { raw ->
+                    val clean = raw.trim().uppercase(Locale.US).replace(Regex("[^A-Z0-9]"), "").take(6)
+                    if (clean.isNotEmpty()) {
+                        engine.slateReel = clean
+                        updateSlateUi()
+                    }
+                }
+            )
+        }
+
+        btnSlateHudScene.setOnClickListener {
+            if (engine.isRecording) return@setOnClickListener
+            openCinemaInputDrawer(
+                title = "SLATE — SCENE NUMBER",
+                hint = "1 to 999 (Resets Take to 01 on change)",
+                initialValue = engine.slateScene.toString(),
+                allowDecimal = false,
+                step = 1f,
+                minValue = 1f,
+                maxValue = 999f
+            ) { raw ->
+                val v = raw.toIntOrNull()
+                if (v == null || v !in 1..999) {
+                    showSingleToast("Enter 1 to 999")
+                    false
+                } else {
+                    if (v != engine.slateScene) engine.slateTake = 1
+                    engine.slateScene = v
+                    updateSlateUi()
+                    true
+                }
+            }
+        }
+
+        btnSlateHudTakeDec.setOnClickListener {
+            if (engine.isRecording) return@setOnClickListener
+            engine.slateTake = (engine.slateTake - 1).coerceAtLeast(1)
+            updateSlateUi()
+        }
+
+        btnSlateHudTake.setOnClickListener {
+            if (engine.isRecording) return@setOnClickListener
+            openCinemaInputDrawer(
+                title = "SLATE — TAKE NUMBER",
+                hint = "1 to 999 (Auto-increments after each clip)",
+                initialValue = engine.slateTake.toString(),
+                allowDecimal = false,
+                step = 1f,
+                minValue = 1f,
+                maxValue = 999f
+            ) { raw ->
+                val v = raw.toIntOrNull()
+                if (v == null || v !in 1..999) {
+                    showSingleToast("Enter 1 to 999")
+                    false
+                } else {
+                    engine.slateTake = v
+                    updateSlateUi()
+                    true
+                }
+            }
+        }
+
+        btnSlateHudTakeInc.setOnClickListener {
+            if (engine.isRecording) return@setOnClickListener
+            engine.slateTake = (engine.slateTake + 1).coerceAtMost(999)
+            updateSlateUi()
+        }
+
+        btnSlateHudAuto.setOnClickListener {
+            engine.slateAutoIncrementTake = !engine.slateAutoIncrementTake
+            updateSlateUi()
+            showSingleToast(if (engine.slateAutoIncrementTake) "Slate Auto +Take: ON" else "Slate Auto +Take: OFF")
+        }
+
+        btnSlateHudClose.setOnClickListener {
+            if (engine.isRecording) {
+                showSingleToast("Stop recording to hide Slate")
+                return@setOnClickListener
+            }
+            engine.slateEnabled = false
+            updateSlateUi()
+            showSingleToast("Cinema Slate OFF")
+        }
+    }
+
+    private fun setStopMotionModeEnabled(enabled: Boolean, closeProOnEnable: Boolean) {
+        engine.stopMotionEnabled = enabled
+        if (enabled) {
+            engine.timelapseIntervalMs = 0L
+            if (overlayView.onionSkinAlpha <= 0.01f) overlayView.onionSkinAlpha = 0.40f
+            if (closeProOnEnable) {
+                closeTopDrawers(except = null)
+            }
+            showSingleToast(
+                "Stop-Motion ON (${stopMotionOutputMode.label} • ${engine.stopMotionPlaybackFps} FPS) — Tap Shutter to snap frames",
+                Toast.LENGTH_LONG
+            )
+        } else {
+            overlayView.onionSkinBitmap = null
+            smJpgSessionActive = false
+            smJpgFrameCount = 0
+            smJpgSavedUris.clear()
+            smJpgGhostHistory.clear()
+            showSingleToast("Stop-Motion OFF (Normal Video)")
+        }
+        updateStopMotionUi()
+    }
+
+    private fun makeStopMotionFolderName(): String {
+        val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        return if (engine.slateEnabled) "${engine.formatSlatePrefix()}_SM_$ts" else "SM_$ts"
+    }
+
+    private fun captureStopMotionVisualSnapshot(): Bitmap? {
+        if (!textureView.isAvailable) return null
+        return try {
+            val w = textureView.width.coerceAtLeast(16)
+            val h = textureView.height.coerceAtLeast(16)
+            textureView.getBitmap(w, h)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun pushOnionSkinGhost(fullFrame: Bitmap?) {
+        if (fullFrame == null) return
         try {
-            val gw = (textureView.width / 3).coerceIn(160, 480)
-            val gh = (textureView.height / 3).coerceIn(90, 270)
-            val snap = textureView.getBitmap(gw, gh)
-            if (snap != null) {
-                overlayView.onionSkinBitmap = snap
+            val gw = (fullFrame.width / 3).coerceIn(160, 480)
+            val gh = (fullFrame.height / 3).coerceIn(90, 270)
+            val ghost = Bitmap.createScaledBitmap(fullFrame, gw, gh, true)
+            overlayView.onionSkinBitmap = ghost
+            if (stopMotionOutputMode == StopMotionOutputMode.JPG) {
+                smJpgGhostHistory.add(ghost)
+                if (smJpgGhostHistory.size > 6) {
+                    smJpgGhostHistory.removeAt(0)
+                }
             }
         } catch (_: Exception) {
         }
+    }
+
+    private fun saveAsyncStopMotionJpg(frameBmp: Bitmap, folderName: String, frameNum: Int) {
+        Thread {
+            val uri = engine.saveStopMotionJpegFrame(frameBmp, folderName, frameNum)
+            try { frameBmp.recycle() } catch (_: Exception) {}
+            if (uri != null) {
+                runOnUiThread {
+                    smJpgSavedUris.add(uri)
+                }
+            }
+        }.start()
     }
 
     private fun flashShutterCapturePulse() {
@@ -6175,20 +6460,108 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnShutterInner.animate().alpha(1.0f).setDuration(110L).start()
     }
 
-    private fun snapNextStopMotionFrame() {
-        if (!engine.isRecording || !engine.stopMotionEnabled) return
+    private fun handleStopMotionSnapTrigger() {
+        val rot = getCurrentDisplayRotation()
         stopMotionFinishWarned = false
-        captureOnionSkinGhostFromViewfinder()
+        val fullBmp = captureStopMotionVisualSnapshot()
+        pushOnionSkinGhost(fullBmp)
         flashShutterCapturePulse()
-        engine.captureStopMotionFrame()
+
+        when (stopMotionOutputMode) {
+            StopMotionOutputMode.JPG -> {
+                if (!smJpgSessionActive) {
+                    smJpgSessionActive = true
+                    smJpgSessionFolder = makeStopMotionFolderName()
+                    smJpgFrameCount = 0
+                    smJpgSavedUris.clear()
+                }
+                smJpgFrameCount++
+                val num = smJpgFrameCount
+                if (fullBmp != null) {
+                    saveAsyncStopMotionJpg(fullBmp, smJpgSessionFolder, num)
+                }
+                val outSec = num.toFloat() / engine.stopMotionPlaybackFps.coerceIn(1, 60).toFloat()
+                val mins = (outSec / 60f).toInt()
+                val secs = outSec - (mins * 60f)
+                txtTimecode.text = String.format(Locale.US, "JPG %dF • %02d:%04.1f", num, mins, secs)
+                txtTimecode.setTextColor(0xFFFF5F1F.toInt())
+                viewRecDot.visibility = View.VISIBLE
+                updateStopMotionUi()
+            }
+            StopMotionOutputMode.MP4 -> {
+                try { fullBmp?.recycle() } catch (_: Exception) {}
+                if (!engine.isRecording) {
+                    beginRecordingCleanly(rot)
+                } else {
+                    engine.captureStopMotionFrame()
+                }
+            }
+            StopMotionOutputMode.BOTH -> {
+                if (!engine.isRecording) {
+                    smJpgSessionFolder = makeStopMotionFolderName()
+                    smJpgFrameCount = 1
+                    smJpgSavedUris.clear()
+                    if (fullBmp != null) saveAsyncStopMotionJpg(fullBmp, smJpgSessionFolder, 1)
+                    beginRecordingCleanly(rot)
+                } else {
+                    smJpgFrameCount++
+                    if (fullBmp != null) saveAsyncStopMotionJpg(fullBmp, smJpgSessionFolder, smJpgFrameCount)
+                    engine.captureStopMotionFrame()
+                }
+            }
+        }
+    }
+
+    private fun undoLastStopMotionJpgFrame() {
+        if (!smJpgSessionActive || stopMotionOutputMode != StopMotionOutputMode.JPG || smJpgFrameCount <= 0) return
+        val lastUri = smJpgSavedUris.removeLastOrNull()
+        if (lastUri != null) {
+            Thread { engine.deleteMediaStoreUri(lastUri) }.start()
+        }
+        smJpgFrameCount = (smJpgFrameCount - 1).coerceAtLeast(0)
+        if (smJpgGhostHistory.isNotEmpty()) {
+            smJpgGhostHistory.removeAt(smJpgGhostHistory.lastIndex)
+        }
+        overlayView.onionSkinBitmap = smJpgGhostHistory.lastOrNull()
+        if (smJpgFrameCount == 0) {
+            smJpgSessionActive = false
+            viewRecDot.visibility = View.GONE
+            showSingleToast("Undid last frame (0 frames)")
+        } else {
+            val outSec = smJpgFrameCount.toFloat() / engine.stopMotionPlaybackFps.coerceIn(1, 60).toFloat()
+            val mins = (outSec / 60f).toInt()
+            val secs = outSec - (mins * 60f)
+            txtTimecode.text = String.format(Locale.US, "JPG %dF • %02d:%04.1f", smJpgFrameCount, mins, secs)
+            showSingleToast("Deleted Frame #${smJpgFrameCount + 1} ($smJpgFrameCount left)")
+        }
+        updateStopMotionUi()
     }
 
     private fun finishStopMotionSession() {
+        if (smJpgSessionActive && stopMotionOutputMode == StopMotionOutputMode.JPG) {
+            val count = smJpgFrameCount
+            val folder = smJpgSessionFolder
+            smJpgSessionActive = false
+            smJpgFrameCount = 0
+            smJpgSavedUris.clear()
+            smJpgGhostHistory.clear()
+            overlayView.onionSkinBitmap = null
+            viewRecDot.visibility = View.GONE
+            if (count > 0 && engine.slateEnabled && engine.slateAutoIncrementTake) {
+                engine.slateTake = (engine.slateTake + 1).coerceAtMost(999)
+                updateSlateUi()
+            }
+            updateStopMotionUi()
+            if (count > 0) {
+                showSingleToast("Saved $count JPG frames → Pictures/IDGAF_Camera/$folder/", Toast.LENGTH_LONG)
+            }
+            return
+        }
         if (!engine.isRecording || !engine.stopMotionEnabled) return
         val frames = engine.getStopMotionCapturedFrames()
         if (frames < 2L && !stopMotionFinishWarned) {
             stopMotionFinishWarned = true
-            showSingleToast("Snap at least 2 frames to save MP4 (tap FINISH again to discard)", Toast.LENGTH_LONG)
+            showSingleToast("Snap at least 2 frames to save MP4 (tap ■ SAVE again to discard)", Toast.LENGTH_LONG)
             return
         }
         overlayView.onionSkinBitmap = null
@@ -6196,244 +6569,75 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun updateStopMotionUi() {
-        val armed = engine.stopMotionEnabled
-        btnProStopMo.text = if (armed) "SM:${engine.stopMotionPlaybackFps}F" else "STOP-MO"
-        styleToolPill(btnProStopMo, armed)
-        if (!engine.isRecording) {
+        val armed = engine.stopMotionEnabled && currentWorkbench == CameraWorkbench.SAVIOR
+        val running = isStopMotionSessionRunning()
+        btnProStopMo.text = if (engine.stopMotionEnabled) "SM:${engine.stopMotionPlaybackFps}F" else "STOP-MO"
+        styleToolPill(btnProStopMo, engine.stopMotionEnabled)
+
+        stopMotionHudBar.visibility = if (armed && !isCleanFrameMode) View.VISIBLE else View.GONE
+
+        if (armed) {
+            val onionPct = (overlayView.onionSkinAlpha * 100f).roundToInt()
+            btnSmOnion.text = if (onionPct <= 0) "ONION:OFF" else "ONION ${onionPct}%"
+            styleToolPill(btnSmOnion, onionPct > 0)
+
+            btnSmOutput.text = stopMotionOutputMode.label
+            btnSmOutput.alpha = if (running) 0.45f else 1.0f
+
+            if (running) {
+                val fCount = if (stopMotionOutputMode == StopMotionOutputMode.JPG) smJpgFrameCount.toLong() else engine.getStopMotionCapturedFrames().coerceAtLeast(1L)
+                val outSec = fCount.toFloat() / engine.stopMotionPlaybackFps.coerceIn(1, 60).toFloat()
+                btnSmFps.text = String.format(Locale.US, "%dF • %.1fs", fCount, outSec)
+                btnSmUndo.visibility = if (stopMotionOutputMode == StopMotionOutputMode.JPG && smJpgFrameCount > 0) View.VISIBLE else View.GONE
+                btnFinishStopMotion.visibility = View.VISIBLE
+                btnSmExit.visibility = View.GONE
+            } else {
+                btnSmFps.text = "${engine.stopMotionPlaybackFps} FPS"
+                btnSmUndo.visibility = View.GONE
+                btnFinishStopMotion.visibility = View.GONE
+                btnSmExit.visibility = View.VISIBLE
+            }
+
+            // Dedicated tactile Stop-Motion Shutter (circular orange snap button) + Thumb-Reachable ■ SAVE on right rail!
+            btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_snap)
+            btnShutterInner.scaleX = 0.92f
+            btnShutterInner.scaleY = 0.92f
+            if (running) {
+                btnLastClip.text = "■ SAVE"
+                btnLastClip.setBackgroundResource(R.drawable.bg_shutter_stop)
+                btnLastClip.setTextColor(0xFFFFFFFF.toInt())
+            } else {
+                btnLastClip.text = "CLIPS"
+                btnLastClip.setBackgroundResource(R.drawable.bg_hud_pill)
+                btnLastClip.setTextColor(if (lastSavedUri != null) 0xFFFF5F1F.toInt() else 0xFFCCCCCC.toInt())
+            }
+        } else if (!engine.isRecording) {
+            btnShutterInner.setBackgroundResource(R.drawable.bg_shutter_rec)
+            btnShutterInner.scaleX = 1.0f
+            btnShutterInner.scaleY = 1.0f
+            btnLastClip.text = "CLIPS"
+            btnLastClip.setBackgroundResource(R.drawable.bg_hud_pill)
+            btnLastClip.setTextColor(if (lastSavedUri != null) 0xFFFF5F1F.toInt() else 0xFFCCCCCC.toInt())
+        }
+
+        if (!running && !engine.isRecording) {
             updateTimelapseUi()
         }
-    }
-
-    private fun renderStopMotionInlineChips() {
-        val armed = engine.stopMotionEnabled
-        val hasGhost = overlayView.onionSkinBitmap != null
-
-        proStopMoModeRow.removeAllViews()
-        val modeItems = listOf(
-            Triple(if (armed) "SM: ARMED" else "ARM STOP-MO", armed) {
-                if (engine.isRecording) {
-                    showSingleToast("Finish current recording first")
-                } else {
-                    val next = !engine.stopMotionEnabled
-                    engine.stopMotionEnabled = next
-                    if (next) {
-                        engine.timelapseIntervalMs = 0L
-                        if (overlayView.onionSkinAlpha <= 0.01f) overlayView.onionSkinAlpha = 0.40f
-                        showSingleToast("Stop-Motion ARMED (${engine.stopMotionPlaybackFps} FPS) • Tap Shutter / Vol per frame", Toast.LENGTH_LONG)
-                    } else {
-                        overlayView.onionSkinBitmap = null
-                        showSingleToast("Stop-Motion OFF")
-                    }
-                    updateStopMotionUi()
-                    renderStopMotionInlineChips()
-                }
-            },
-            Triple("SNAP GHOST", false) {
-                if (overlayView.onionSkinAlpha <= 0.01f) overlayView.onionSkinAlpha = 0.40f
-                captureOnionSkinGhostFromViewfinder()
-                showSingleToast("Onion Skin ghost reference captured")
-                renderStopMotionInlineChips()
-            },
-            Triple("CLEAR", hasGhost) {
-                overlayView.onionSkinBitmap = null
-                showSingleToast("Onion Skin ghost cleared")
-                renderStopMotionInlineChips()
-            }
-        )
-        modeItems.forEachIndexed { idx, (lbl, active, onClick) ->
-            val chip = TextView(this).apply {
-                text = lbl
-                textSize = 8.4f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                gravity = Gravity.CENTER
-                setBackgroundResource(if (active) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
-                setTextColor(if (active) 0xFF0B0D10.toInt() else if (idx == 2) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, if (idx == 0) 1.35f else 1f).apply {
-                    if (idx < modeItems.lastIndex) marginEnd = dpToPx(4)
-                }
-                setOnClickListener { onClick() }
-            }
-            proStopMoModeRow.addView(chip)
-        }
-
-        proStopMoFpsRow.removeAllViews()
-        val smFpsChoices = listOf(8, 12, 15, 24)
-        smFpsChoices.forEachIndexed { idx, fps ->
-            val selected = (engine.stopMotionPlaybackFps == fps)
-            val chip = TextView(this).apply {
-                text = "${fps} FPS"
-                textSize = 8.4f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                gravity = Gravity.CENTER
-                setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
-                setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                    if (idx < smFpsChoices.lastIndex) marginEnd = dpToPx(4)
-                }
-                setOnClickListener {
-                    if (engine.isRecording) {
-                        showSingleToast("Finish current Stop-Motion clip to change playback FPS")
-                        return@setOnClickListener
-                    }
-                    engine.stopMotionPlaybackFps = fps
-                    updateStopMotionUi()
-                    renderStopMotionInlineChips()
-                    showSingleToast("Stop-Motion Playback: $fps FPS")
-                }
-            }
-            proStopMoFpsRow.addView(chip)
-        }
-
-        proStopMoOnionRow.removeAllViews()
-        val onionChoices = listOf(0.0f to "ONION:OFF", 0.25f to "25%", 0.40f to "40%", 0.60f to "60%")
-        onionChoices.forEachIndexed { idx, (alphaVal, lbl) ->
-            val selected = kotlin.math.abs(overlayView.onionSkinAlpha - alphaVal) < 0.05f
-            val chip = TextView(this).apply {
-                text = lbl
-                textSize = 8.4f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                gravity = Gravity.CENTER
-                setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
-                setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, if (idx == 0) 1.3f else 1f).apply {
-                    if (idx < onionChoices.lastIndex) marginEnd = dpToPx(4)
-                }
-                setOnClickListener {
-                    overlayView.onionSkinAlpha = alphaVal
-                    renderStopMotionInlineChips()
-                    showSingleToast(if (alphaVal <= 0.01f) "Onion Skin Overlay OFF" else "Onion Skin Opacity: ${(alphaVal * 100).roundToInt()}%")
-                }
-            }
-            proStopMoOnionRow.addView(chip)
-        }
+        syncLowBatteryBannerVisibility()
     }
 
     private fun updateSlateUi() {
         val on = engine.slateEnabled && currentWorkbench == CameraWorkbench.SAVIOR
         btnProSlate.text = if (engine.slateEnabled) "SLATE:ON" else "SLATE"
         styleToolPill(btnProSlate, engine.slateEnabled)
-        overlayView.slateHudBadge = if (on) engine.formatSlateBadge() else ""
-    }
-
-    private fun renderSlateInlineChips() {
-        proSlateToggleRow.removeAllViews()
-        val togItems = listOf(
-            Triple(if (engine.slateEnabled) "SLATE: ON" else "SLATE: OFF", engine.slateEnabled) {
-                engine.slateEnabled = !engine.slateEnabled
-                updateSlateUi()
-                renderSlateInlineChips()
-                showSingleToast(if (engine.slateEnabled) "Cinema Slate ON (${engine.formatSlatePrefix()})" else "Cinema Slate OFF")
-            },
-            Triple(if (engine.slateAutoIncrementTake) "AUTO +TAKE: ON" else "AUTO +TAKE: OFF", engine.slateAutoIncrementTake) {
-                engine.slateAutoIncrementTake = !engine.slateAutoIncrementTake
-                renderSlateInlineChips()
-            }
-        )
-        togItems.forEachIndexed { idx, (lbl, active, onClick) ->
-            val chip = TextView(this).apply {
-                text = lbl
-                textSize = 8.6f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                gravity = Gravity.CENTER
-                setBackgroundResource(if (active) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
-                setTextColor(if (active) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                    if (idx < togItems.lastIndex) marginEnd = dpToPx(5)
-                }
-                setOnClickListener { onClick() }
-            }
-            proSlateToggleRow.addView(chip)
-        }
-
-        proSlateFieldsRow.removeAllViews()
-        val fieldItems = listOf(
-            "REEL:${engine.slateReel}" to {
-                IdgafUiDialogs.showTextInputDialog(
-                    context = this,
-                    title = "CINEMA SLATE — REEL",
-                    hint = "e.g. A001, B002, CAM1",
-                    initialText = engine.slateReel,
-                    primaryLabel = "SET REEL",
-                    onPrimary = { raw ->
-                        val clean = raw.trim().uppercase(Locale.US).replace(Regex("[^A-Z0-9]"), "").take(6)
-                        if (clean.isNotEmpty()) {
-                            engine.slateReel = clean
-                            engine.slateEnabled = true
-                            updateSlateUi()
-                            if (proSlateSubPanel.visibility == View.VISIBLE) renderSlateInlineChips()
-                        }
-                    }
-                )
-            },
-            String.format(Locale.US, "SC:%02d", engine.slateScene) to {
-                openCinemaInputDrawer(
-                    title = "SLATE — SCENE NUMBER",
-                    hint = "1 to 999 (Resets Take to 01 on change)",
-                    initialValue = engine.slateScene.toString(),
-                    allowDecimal = false,
-                    step = 1f
-                ) { raw ->
-                    val v = raw.toIntOrNull()
-                    if (v == null || v !in 1..999) {
-                        showSingleToast("Enter 1 to 999")
-                        false
-                    } else {
-                        if (v != engine.slateScene) engine.slateTake = 1
-                        engine.slateScene = v
-                        engine.slateEnabled = true
-                        updateSlateUi()
-                        if (proSlateSubPanel.visibility == View.VISIBLE) renderSlateInlineChips()
-                        true
-                    }
-                }
-            },
-            String.format(Locale.US, "TK:%02d", engine.slateTake) to {
-                openCinemaInputDrawer(
-                    title = "SLATE — TAKE NUMBER",
-                    hint = "1 to 999 (Auto-increments after each clip)",
-                    initialValue = engine.slateTake.toString(),
-                    allowDecimal = false,
-                    step = 1f
-                ) { raw ->
-                    val v = raw.toIntOrNull()
-                    if (v == null || v !in 1..999) {
-                        showSingleToast("Enter 1 to 999")
-                        false
-                    } else {
-                        engine.slateTake = v
-                        engine.slateEnabled = true
-                        updateSlateUi()
-                        if (proSlateSubPanel.visibility == View.VISIBLE) renderSlateInlineChips()
-                        true
-                    }
-                }
-            },
-            "+TK" to {
-                engine.slateTake = (engine.slateTake + 1).coerceAtMost(999)
-                engine.slateEnabled = true
-                updateSlateUi()
-                renderSlateInlineChips()
-            }
-        )
-        fieldItems.forEachIndexed { idx, (lbl, onClick) ->
-            val chip = TextView(this).apply {
-                text = lbl
-                textSize = 8.6f
-                typeface = android.graphics.Typeface.MONOSPACE
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                gravity = Gravity.CENTER
-                setBackgroundResource(R.drawable.bg_hud_pill)
-                setTextColor(if (idx == 3) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, if (idx == 0) 1.35f else if (idx == 3) 0.70f else 0.95f).apply {
-                    if (idx < fieldItems.lastIndex) marginEnd = dpToPx(4)
-                }
-                setOnClickListener { onClick() }
-            }
-            proSlateFieldsRow.addView(chip)
+        overlayView.slateHudBadge = ""
+        slateHudBar.visibility = if (on && !isCleanFrameMode) View.VISIBLE else View.GONE
+        if (on) {
+            btnSlateHudReel.text = engine.slateReel
+            btnSlateHudScene.text = String.format(Locale.US, "S%02d", engine.slateScene)
+            btnSlateHudTake.text = String.format(Locale.US, "T%02d", engine.slateTake)
+            btnSlateHudTakeDec.alpha = if (engine.slateTake <= 1) 0.35f else 1.0f
+            styleToolPill(btnSlateHudAuto, engine.slateAutoIncrementTake)
         }
     }
 
@@ -6651,6 +6855,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 .putFloat("out_mon_scale", outputMonitorScale)
                 .putFloat("onion_skin_alpha", overlayView.onionSkinAlpha)
                 .putInt("sm_fps", engine.stopMotionPlaybackFps)
+                .putString("sm_out_mode", stopMotionOutputMode.name)
                 .putBoolean("slate_enabled", engine.slateEnabled)
                 .putString("slate_reel", engine.slateReel)
                 .putInt("slate_scene", engine.slateScene)
@@ -6669,6 +6874,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             outputMonitorScale = prefs.getFloat("out_mon_scale", 1.0f).coerceIn(0.75f, 1.85f)
             overlayView.onionSkinAlpha = prefs.getFloat("onion_skin_alpha", 0.40f).coerceIn(0f, 0.85f)
             engine.stopMotionPlaybackFps = prefs.getInt("sm_fps", 12).coerceIn(4, 30)
+            stopMotionOutputMode = try { StopMotionOutputMode.valueOf(prefs.getString("sm_out_mode", StopMotionOutputMode.MP4.name)!!) } catch (_: Exception) { StopMotionOutputMode.MP4 }
             engine.slateEnabled = prefs.getBoolean("slate_enabled", false)
             engine.slateReel = prefs.getString("slate_reel", "A001") ?: "A001"
             engine.slateScene = prefs.getInt("slate_scene", 1).coerceIn(1, 999)
@@ -6770,6 +6976,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     override fun onPause() {
+        if (smJpgSessionActive) finishStopMotionSession()
         saveSessionState()
         displayManager?.unregisterDisplayListener(displayRotationListener)
         rackAnimator?.cancel()

@@ -5,6 +5,7 @@ import com.studiomogli.idgafcamera.era.EraCameraPlugin
 import com.studiomogli.idgafcamera.era.EraRenderConfig
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
@@ -230,6 +231,56 @@ class CinemaCameraEngine(
     }
 
     fun getStopMotionCapturedFrames(): Long = glRenderer?.getCompressedCapturedFrameCount() ?: 0L
+
+    fun saveStopMotionJpegFrame(bitmap: Bitmap, sessionFolder: String, frameNumber: Int): Uri? {
+        val fileName = String.format(Locale.US, "FRAME_%04d.jpg", frameNumber.coerceAtLeast(1))
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/IDGAF_Camera/$sessionFolder")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                }
+                val doneVals = ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }
+                context.contentResolver.update(uri, doneVals, null, null)
+                uri
+            } else {
+                val dir = File(
+                    File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "IDGAF_Camera"),
+                    sessionFolder
+                )
+                if (!dir.exists()) dir.mkdirs()
+                val outFile = File(dir, fileName)
+                FileOutputStream(outFile).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                }
+                Uri.fromFile(outFile)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun deleteMediaStoreUri(uri: Uri): Boolean {
+        return try {
+            if (uri.scheme == "file") {
+                val path = uri.path
+                if (path != null) File(path).delete() else false
+            } else {
+                context.contentResolver.delete(uri, null, null) > 0
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     @Volatile var activeEraPlugin: EraCameraPlugin? = null
         private set
     @Volatile var eraRenderConfig: EraRenderConfig = EraRenderConfig()
