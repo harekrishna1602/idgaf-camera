@@ -1,10 +1,10 @@
-# IDGAF CAMERA (`v0.7.7.9` — Pre-v1.0 Testing Build)
+# IDGAF CAMERA (`v0.7.7.10` — Pre-v1.0 Testing Build)
 
 *A love letter to indie filmmakers — by Savior San.*
 
 Free, zero-subscription Android cinema camera powered by the **Savior Cinema Engine** (native **Kotlin + Camera2 + OpenGL ES 2.0**) by **Studio Mogli** ([www.studiomogli.com](https://www.studiomogli.com)).
 
-## Highlights in `v0.7.7.9`
+## Highlights in `v0.7.7.10`
 - **Full Manual Cinema Controls:** Analog + extended ISO, Shutter Speed & Angle (`180°` lock + `50Hz / 60Hz` anti-flicker), EV Comp, Manual Focus with A/B Rack Pull, 2D White Balance × Tint pad with custom Kelvin/Tint input, AE/AF Lock, and 1-tap **Auto Pilot** scene rescue.
 - **Video Format Studio:** Up to **4K**, **H.264 / HEVC**, unlocked hardware **FPS (1–240 FPS)** with GPU Frame-Pacer, **Custom Bitrate (2–250 Mbps)**, unified **Frame Ratios** (`16:9`, `2.39:1`, `1.85:1`, `4:3`, `1:1`, `9:16`) with `GUIDE ONLY` or exact `CROP: REC`, full-res **`9:16 PORT`**, and **Anamorphic De-Squeeze** (`1.33x`–`2.0x` for external anamorphic lenses).
 - **Live GPU Color & 3D LUT Engine:** 12 built-in 33³ film stocks, `.cube` 3D LUT import (storage or URL), 7 real-time GPU color sliders with Peek-Through grading, and draggable **`RAW | LOOK`** split-screen wipe.
