@@ -46,6 +46,7 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.util.Size
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.Surface
@@ -104,6 +105,43 @@ data class SaviorWorkbenchSnapshot(
     val recordAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9,
     val aspectGuide: AspectGuide = AspectGuide.OFF,
     val frameCropRecEnabled: Boolean = false
+)
+
+data class RigHistorySnapshot(
+    val resolution: CinemaResolution,
+    val fps: Int,
+    val bitrateMbps: Int,
+    val codec: CinemaCodec,
+    val recordAspectMode: RecordAspectMode,
+    val aspectGuide: AspectGuide,
+    val frameCropRecEnabled: Boolean,
+    val timelapseIntervalMs: Long,
+    val timerDelaySec: Int,
+    val evCompensationIndex: Int,
+    val isManualExposure: Boolean,
+    val manualIso: Int,
+    val manualShutterNs: Long,
+    val isShutter180Locked: Boolean,
+    val isManualWb: Boolean,
+    val manualKelvin: Int,
+    val manualTint: Int,
+    val isManualFocus: Boolean,
+    val manualFocusDistance: Float,
+    val isAeAfLocked: Boolean,
+    val isStabilizationEnabled: Boolean,
+    val isTorchEnabled: Boolean,
+    val mirrorFrontExport: Boolean,
+    val zoomRatio: Float,
+    val isAudioMuted: Boolean,
+    val audioPreampMode: AudioPreampMode,
+    val micPreference: MicPreference,
+    val audioMonitorTrimDb: Int,
+    val gpuColorState: GpuColorState,
+    val activeLookTag: String,
+    val activeLutSourceId: String,
+    val isSplitCompareActive: Boolean,
+    val splitCompareFraction: Float,
+    val gridMode: GridMode
 )
 
 class MainActivity : AppCompatActivity(), CinemaEngineListener {
@@ -239,6 +277,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var monPeakSensRow: LinearLayout
     private lateinit var monZebraLevelRow: LinearLayout
     private lateinit var btnToolGrid: TextView
+    private lateinit var btnToolWave: TextView
     private lateinit var btnToolPeak: TextView
     private lateinit var btnToolZebra: TextView
     private lateinit var btnToolFalseColor: TextView
@@ -273,6 +312,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     @Volatile private var eraMicMonitorPaused: Boolean = false
     private var saviorSnapshot: SaviorWorkbenchSnapshot? = null
 
+    private lateinit var btnRigUndo: TextView
+    private lateinit var btnRigRedo: TextView
+    private val undoStack = ArrayDeque<RigHistorySnapshot>()
+    private val redoStack = ArrayDeque<RigHistorySnapshot>()
+    private var isRestoringUndoState: Boolean = false
     private lateinit var txtTimecode: TextView
     private lateinit var viewRecDot: View
     private lateinit var btnFormatToggle: TextView
@@ -470,9 +514,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     isAnalyzingFrame.set(false)
                 } else {
                     try {
-                        // Ultra-lightweight 64x36 sample ONLY for RGB+Luma Histogram (Peaking, Zebras & False Color run 100% on GPU at 60 FPS!)
-                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 64 && it.height == 36 }
-                            ?: Bitmap.createBitmap(64, 36, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
+                        // Ultra-lightweight 80x45 sample ONLY for RGB Histogram & Luma Waveform (Peaking, Zebras & False Color run 100% on GPU at 60 FPS!)
+                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 80 && it.height == 45 }
+                            ?: Bitmap.createBitmap(80, 45, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
                         textureView.getBitmap(reusable)
                         worker.post {
                             try {
@@ -729,6 +773,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         monPeakSensRow = findViewById(R.id.monPeakSensRow)
         monZebraLevelRow = findViewById(R.id.monZebraLevelRow)
         btnToolGrid = findViewById(R.id.btnToolGrid)
+        btnToolWave = findViewById(R.id.btnToolWave)
         btnToolPeak = findViewById(R.id.btnToolPeak)
         btnToolZebra = findViewById(R.id.btnToolZebra)
         btnToolFalseColor = findViewById(R.id.btnToolFalseColor)
@@ -753,6 +798,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         eraPluginContainer = findViewById(R.id.eraPluginContainer)
         installedEraPlugins = EraPluginRegistry.discoverAll()
 
+        btnRigUndo = findViewById(R.id.btnRigUndo)
+        btnRigRedo = findViewById(R.id.btnRigRedo)
         txtTimecode = findViewById(R.id.txtTimecode)
         viewRecDot = findViewById(R.id.viewRecDot)
         btnFormatToggle = findViewById(R.id.btnFormatToggle)
@@ -866,6 +913,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         scaleDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                if (currentWorkbench == CameraWorkbench.SAVIOR) recordUndoCheckpoint()
+                return true
+            }
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 if (currentWorkbench == CameraWorkbench.ERA) return false
                 zoomAnimator?.cancel()
@@ -937,6 +988,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun setupTopAndRightControls() {
+        btnRigUndo.setOnClickListener { performUndo() }
+        btnRigRedo.setOnClickListener { performRedo() }
+        updateUndoRedoButtonsUi()
+
         btnAutoPilot.setOnClickListener {
             if (engine.isRecording) {
                 showSingleToast("Stop recording to toggle Auto Pilot")
@@ -949,6 +1004,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     showSingleToast("Auto Pilot cancelled")
                 }
                 AutoPilotState.LOCKED -> {
+                    recordUndoCheckpoint()
                     engine.disengageAutoPilot()
                     showSingleToast("Auto Pilot OFF (Standard Auto)")
                 }
@@ -965,47 +1021,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         findViewById<View>(R.id.btnShutterOuter).setOnClickListener {
-            if (txtTimerCountdown.visibility == View.VISIBLE) {
-                uiHandler.removeCallbacks(countdownRunnable)
-                txtTimerCountdown.visibility = View.GONE
-                Toast.makeText(this, "Timer cancelled", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            if (engine.isFinalizingClip) {
-                showSingleToast("Developing audio track...")
-                return@setOnClickListener
-            }
-            if (engine.isRecording) {
-                val p = activeEraPlugin
-                if (currentWorkbench == CameraWorkbench.ERA && p != null && p.usesPostAudioProcessor && !p.isSilentAudio) {
-                    uiHandler.removeCallbacks(timecodeRunnable)
-                    p.onRecordingFinalizing(eraHostBridge)
-                }
-                engine.stopRecording()
-            } else {
-                val rot = getCurrentDisplayRotation()
-                if (currentWorkbench == CameraWorkbench.ERA) {
-                    beginRecordingCleanly(rot)
-                } else if (engine.isAudioMuted && !engine.isTimelapseEnabled()) {
-                    IdgafUiDialogs.showActionDialog(
-                        context = this,
-                        title = "AUDIO MUTED",
-                        message = "Microphone is muted. Unmute before recording, or record silent video?",
-                        primaryLabel = "UNMUTE & REC",
-                        onPrimary = {
-                            engine.isAudioMuted = false
-                            audioMonitorRestartNeeded = true
-                            updateAudioDrawerUi()
-                            launchRecordingOrTimer(rot)
-                        },
-                        secondaryLabel = "REC SILENT",
-                        onSecondary = { launchRecordingOrTimer(rot) },
-                        cancelLabel = "CANCEL"
-                    )
-                } else {
-                    launchRecordingOrTimer(rot)
-                }
-            }
+            handleShutterTrigger()
         }
 
         btnFormatToggle.setOnClickListener {
@@ -1039,6 +1055,282 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             uiHandler.post(countdownRunnable)
         } else {
             beginRecordingCleanly(rot)
+        }
+    }
+
+    private fun handleShutterTrigger() {
+        if (txtTimerCountdown.visibility == View.VISIBLE) {
+            uiHandler.removeCallbacks(countdownRunnable)
+            txtTimerCountdown.visibility = View.GONE
+            showSingleToast("Timer cancelled")
+            return
+        }
+        if (engine.isFinalizingClip) {
+            showSingleToast("Developing audio track...")
+            return
+        }
+        if (engine.isRecording) {
+            val p = activeEraPlugin
+            if (currentWorkbench == CameraWorkbench.ERA && p != null && p.usesPostAudioProcessor && !p.isSilentAudio) {
+                uiHandler.removeCallbacks(timecodeRunnable)
+                p.onRecordingFinalizing(eraHostBridge)
+            }
+            engine.stopRecording()
+        } else {
+            val rot = getCurrentDisplayRotation()
+            if (currentWorkbench == CameraWorkbench.ERA) {
+                beginRecordingCleanly(rot)
+            } else if (engine.isAudioMuted && !engine.isTimelapseEnabled()) {
+                IdgafUiDialogs.showActionDialog(
+                    context = this,
+                    title = "AUDIO MUTED",
+                    message = "Microphone is muted. Unmute before recording, or record silent video?",
+                    primaryLabel = "UNMUTE & REC",
+                    onPrimary = {
+                        engine.isAudioMuted = false
+                        audioMonitorRestartNeeded = true
+                        updateAudioDrawerUi()
+                        launchRecordingOrTimer(rot)
+                    },
+                    secondaryLabel = "REC SILENT",
+                    onSecondary = { launchRecordingOrTimer(rot) },
+                    cancelLabel = "CANCEL"
+                )
+            } else {
+                launchRecordingOrTimer(rot)
+            }
+        }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == KeyEvent.KEYCODE_CAMERA
+        ) {
+            if ((event?.repeatCount ?: 0) == 0) {
+                handleShutterTrigger()
+            }
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == KeyEvent.KEYCODE_CAMERA
+        ) {
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    // ==================== 30-STEP RIG UNDO / REDO ENGINE ====================
+
+    private fun captureRigSnapshot(): RigHistorySnapshot = RigHistorySnapshot(
+        resolution = currentResolution,
+        fps = currentFps,
+        bitrateMbps = engine.targetBitrateMbps,
+        codec = engine.targetCodec,
+        recordAspectMode = engine.recordAspectMode,
+        aspectGuide = overlayView.aspectGuide,
+        frameCropRecEnabled = engine.frameCropRecEnabled,
+        timelapseIntervalMs = engine.timelapseIntervalMs,
+        timerDelaySec = timerDelaySec,
+        evCompensationIndex = engine.evCompensationIndex,
+        isManualExposure = engine.isManualExposure,
+        manualIso = engine.manualIso,
+        manualShutterNs = engine.manualShutterNs,
+        isShutter180Locked = engine.isShutter180Locked,
+        isManualWb = engine.isManualWb,
+        manualKelvin = engine.manualKelvin,
+        manualTint = engine.manualTint,
+        isManualFocus = engine.isManualFocus,
+        manualFocusDistance = engine.manualFocusDistance,
+        isAeAfLocked = engine.isAeAfLocked,
+        isStabilizationEnabled = engine.isStabilizationEnabled,
+        isTorchEnabled = engine.isTorchEnabled,
+        mirrorFrontExport = engine.mirrorFrontExport,
+        zoomRatio = engine.currentZoomRatio,
+        isAudioMuted = engine.isAudioMuted,
+        audioPreampMode = engine.audioPreampMode,
+        micPreference = engine.micPreference,
+        audioMonitorTrimDb = engine.audioMonitorTrimDb,
+        gpuColorState = gpuColorState.copy(isBypassed = false),
+        activeLookTag = activeLookTag,
+        activeLutSourceId = activeLutSourceId,
+        isSplitCompareActive = isSplitCompareActive,
+        splitCompareFraction = splitCompareFraction,
+        gridMode = overlayView.gridMode
+    )
+
+    private fun recordUndoCheckpoint() {
+        if (isRestoringUndoState || currentWorkbench != CameraWorkbench.SAVIOR) return
+        val snap = captureRigSnapshot()
+        if (undoStack.lastOrNull() == snap) return
+        undoStack.addLast(snap)
+        while (undoStack.size > 30) {
+            undoStack.removeFirst()
+        }
+        redoStack.clear()
+        updateUndoRedoButtonsUi()
+    }
+
+    private fun performUndo() {
+        if (engine.isRecording || engine.isFinalizingClip) {
+            showSingleToast("Stop recording to undo")
+            return
+        }
+        if (undoStack.isEmpty()) {
+            showSingleToast("Nothing to undo")
+            return
+        }
+        val current = captureRigSnapshot()
+        if (redoStack.lastOrNull() != current) {
+            redoStack.addLast(current)
+            while (redoStack.size > 30) redoStack.removeFirst()
+        }
+        val prev = undoStack.removeLast()
+        applyRigSnapshot(prev)
+        showSingleToast("Undo (${undoStack.size} left)")
+    }
+
+    private fun performRedo() {
+        if (engine.isRecording || engine.isFinalizingClip) {
+            showSingleToast("Stop recording to redo")
+            return
+        }
+        if (redoStack.isEmpty()) {
+            showSingleToast("Nothing to redo")
+            return
+        }
+        val current = captureRigSnapshot()
+        if (undoStack.lastOrNull() != current) {
+            undoStack.addLast(current)
+            while (undoStack.size > 30) undoStack.removeFirst()
+        }
+        val next = redoStack.removeLast()
+        applyRigSnapshot(next)
+        showSingleToast("Redo (${redoStack.size} left)")
+    }
+
+    private fun updateUndoRedoButtonsUi() {
+        val canUndo = undoStack.isNotEmpty()
+        val canRedo = redoStack.isNotEmpty()
+        btnRigUndo.alpha = if (canUndo) 1.0f else 0.30f
+        btnRigUndo.setTextColor(if (canUndo) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
+        btnRigRedo.alpha = if (canRedo) 1.0f else 0.30f
+        btnRigRedo.setTextColor(if (canRedo) 0xFFFF5F1F.toInt() else 0xFFFFFFFF.toInt())
+    }
+
+    private fun applyRigSnapshot(s: RigHistorySnapshot) {
+        isRestoringUndoState = true
+        try {
+            rackAnimator?.cancel()
+            zoomAnimator?.cancel()
+            uiHandler.removeCallbacks(countdownRunnable)
+            txtTimerCountdown.visibility = View.GONE
+
+            if (engine.autoPilotState != AutoPilotState.OFF) {
+                engine.disengageAutoPilot()
+            }
+            engine.clearAeAfLock()
+            updateLockUi(false)
+
+            val needReopen = (currentResolution != s.resolution || currentFps != s.fps)
+            currentResolution = s.resolution
+            currentFps = s.fps
+            engine.targetBitrateMbps = s.bitrateMbps
+            bitrateIdx = bitrateOptions.indexOf(s.bitrateMbps).takeIf { it >= 0 } ?: 4
+            engine.targetCodec = s.codec
+            engine.recordAspectMode = s.recordAspectMode
+            overlayView.recordAspectMode = s.recordAspectMode
+            overlayView.aspectGuide = s.aspectGuide
+            engine.activeFrameGuide = s.aspectGuide
+            engine.frameCropRecEnabled = s.frameCropRecEnabled
+            overlayView.frameCropRecEnabled = s.frameCropRecEnabled
+
+            engine.timelapseIntervalMs = s.timelapseIntervalMs
+            updateTimelapseUi()
+            timerDelaySec = s.timerDelaySec
+            btnProTimer.text = if (timerDelaySec == 0) "TMR: OFF" else "TMR: ${timerDelaySec}s"
+            styleToolPill(btnProTimer, timerDelaySec > 0)
+
+            engine.setStabilizationEnabled(s.isStabilizationEnabled)
+            styleToolPill(btnProStab, s.isStabilizationEnabled)
+            if (engine.capabilities.hasFlash) {
+                engine.setTorchEnabled(s.isTorchEnabled)
+                styleToolPill(btnProTorch, engine.isTorchEnabled)
+            }
+            engine.setMirrorFrontExport(s.mirrorFrontExport)
+            updateMirrorFrontPillUi()
+
+            overlayView.gridMode = s.gridMode
+            gridModeIdx = GridMode.values().indexOf(s.gridMode).coerceAtLeast(0)
+            btnToolGrid.text = s.gridMode.label
+            styleToolPill(btnToolGrid, s.gridMode != GridMode.OFF)
+
+            val audioChanged = (engine.isAudioMuted != s.isAudioMuted ||
+                engine.audioPreampMode != s.audioPreampMode ||
+                engine.micPreference != s.micPreference)
+            engine.isAudioMuted = s.isAudioMuted
+            engine.audioPreampMode = s.audioPreampMode
+            engine.micPreference = s.micPreference
+            engine.audioMonitorTrimDb = s.audioMonitorTrimDb
+            audioGainSeekBar.progress = (s.audioMonitorTrimDb + 12).coerceIn(0, 24)
+            txtAudioTrimVal.text = if (s.audioMonitorTrimDb > 0) "+${s.audioMonitorTrimDb} dB" else "${s.audioMonitorTrimDb} dB"
+            if (audioChanged) audioMonitorRestartNeeded = true
+            updateAudioDrawerUi()
+
+            if (s.isManualExposure) {
+                engine.setManualIso(s.manualIso)
+                engine.setManualShutterNs(s.manualShutterNs)
+                if (s.isShutter180Locked) engine.setShutter180Locked(true)
+            } else {
+                engine.setAutoExposure()
+                engine.setEvCompensation(s.evCompensationIndex)
+            }
+            if (s.isManualWb) {
+                engine.setManualWhiteBalance(s.manualKelvin, s.manualTint)
+            } else {
+                engine.setAutoWhiteBalance()
+            }
+            if (s.isManualFocus) {
+                engine.setManualFocusDistance(s.manualFocusDistance)
+            } else {
+                engine.setAutoFocus()
+            }
+            engine.setZoomRatio(s.zoomRatio)
+            updateZoomReadout()
+
+            if (s.isAeAfLocked) {
+                engine.toggleAeAfLock()
+            }
+            updateLockUi(engine.isAeAfLocked)
+            updateEvDisplay()
+
+            gpuColorState = s.gpuColorState.copy(isBypassed = false)
+            activeLookTag = s.activeLookTag
+            if (activeLutSourceId != s.activeLutSourceId) {
+                loadAndActivateCubeLut(s.activeLutSourceId, silent = true)
+            }
+            pushGpuColorStateAndRefreshUi()
+            if (s.isSplitCompareActive) {
+                setSplitCompareMode(true, s.splitCompareFraction, announce = false)
+            } else if (isSplitCompareActive) {
+                setSplitCompareMode(false)
+            }
+
+            if (needReopen) {
+                engine.updateSettings(currentResolution, currentFps)
+            }
+            updateFormatPillUi()
+            if (formatDrawer.visibility == View.VISIBLE) renderFormatDrawerChips()
+            if (activePanel != ProControlPanel.NONE) refreshSliderState()
+            syncOutputMonitorUi()
+        } finally {
+            isRestoringUndoState = false
+            updateUndoRedoButtonsUi()
         }
     }
 
@@ -1096,6 +1388,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         override fun setAutoFocus() = engine.setAutoFocus()
         override fun setManualFocusDistance(diopters: Float) = engine.setManualFocusDistance(diopters)
         override fun toggleTorch(): Boolean {
+            recordUndoCheckpoint()
             val on = engine.toggleTorch()
             styleToolPill(btnProTorch, on)
             return on
@@ -1553,6 +1846,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     if (idx < drawerBitrates.lastIndex) marginEnd = dpToPx(3)
                 }
                 setOnClickListener {
+                    recordUndoCheckpoint()
                     engine.targetBitrateMbps = mbps
                     bitrateIdx = bitrateOptions.indexOf(mbps).takeIf { it >= 0 } ?: 4
                     renderFormatDrawerChips()
@@ -1611,6 +1905,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 marginEnd = dpToPx(5)
             }
             setOnClickListener {
+                recordUndoCheckpoint()
                 engine.targetCodec = if (engine.targetCodec == CinemaCodec.H264) CinemaCodec.HEVC else CinemaCodec.H264
                 renderFormatDrawerChips()
                 showSingleToast("Codec: ${engine.targetCodec.label}")
@@ -1666,6 +1961,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             showSingleToast("Stop recording to change frame ratio")
             return
         }
+        recordUndoCheckpoint()
         if (engine.recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT) {
             engine.recordAspectMode = RecordAspectMode.WIDE_16_9
             overlayView.recordAspectMode = RecordAspectMode.WIDE_16_9
@@ -1695,6 +1991,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             showSingleToast("Stop recording to toggle Frame Crop")
             return
         }
+        recordUndoCheckpoint()
         engine.frameCropRecEnabled = enabled
         overlayView.frameCropRecEnabled = enabled
         syncOutputMonitorUi()
@@ -1718,6 +2015,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             return
         }
         val changed = (engine.recordAspectMode != mode)
+        if (changed) recordUndoCheckpoint()
         engine.recordAspectMode = mode
         overlayView.recordAspectMode = mode
         syncOutputMonitorUi()
@@ -1751,6 +2049,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun applySelectedResolution(chosen: CinemaResolution) {
+        recordUndoCheckpoint()
         currentResolution = chosen
         val smartMbps = when (chosen) {
             CinemaResolution.SD_480P -> 4
@@ -2012,12 +2311,20 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnToolGrid.setOnClickListener {
+            recordUndoCheckpoint()
             val modes = GridMode.values()
             gridModeIdx = (gridModeIdx + 1) % modes.size
             val m = modes[gridModeIdx]
             overlayView.gridMode = m
             btnToolGrid.text = m.label
             styleToolPill(btnToolGrid, m != GridMode.OFF)
+        }
+
+        btnToolWave.setOnClickListener {
+            overlayView.showWaveform = !overlayView.showWaveform
+            styleToolPill(btnToolWave, overlayView.showWaveform)
+            syncExitSplitPillVisibility()
+            syncAnalysisLoop()
         }
 
         btnToolPeak.setOnClickListener {
@@ -2463,6 +2770,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnProStab.setOnClickListener {
+            recordUndoCheckpoint()
             val enabled = engine.toggleStabilization()
             styleToolPill(btnProStab, enabled)
             Toast.makeText(this, if (enabled) "Stabilization ON" else "Stabilization OFF", Toast.LENGTH_SHORT).show()
@@ -2500,6 +2808,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnProMirrorFront.setOnClickListener {
+            recordUndoCheckpoint()
             val next = !engine.mirrorFrontExport
             engine.setMirrorFrontExport(next)
             updateMirrorFrontPillUi()
@@ -2563,6 +2872,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun applySelfTimerDelay(seconds: Int) {
+        recordUndoCheckpoint()
         timerDelaySec = seconds.coerceIn(0, 60)
         btnProTimer.text = if (timerDelaySec == 0) "TMR: OFF" else "TMR: ${timerDelaySec}s"
         styleToolPill(btnProTimer, timerDelaySec > 0)
@@ -2636,6 +2946,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun applyTimelapseInterval(intervalMs: Long) {
+        recordUndoCheckpoint()
         engine.timelapseIntervalMs = intervalMs.coerceAtLeast(0L)
         if (intervalMs > 0L && currentFps < 20) {
             // Ensure Time-Lapse always plays back at smooth cinema FPS (30 FPS) rather than 1 FPS!
@@ -2765,6 +3076,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             Toast.makeText(this, "Stop recording before loading a template.", Toast.LENGTH_SHORT).show()
             return
         }
+        recordUndoCheckpoint()
         currentResolution = try { CinemaResolution.valueOf(p.resolutionName) } catch (_: Exception) { CinemaResolution.FHD_1080P }
         currentFps = p.fps.coerceIn(1, 60)
         engine.targetCodec = try { CinemaCodec.valueOf(p.codecName) } catch (_: Exception) { CinemaCodec.H264 }
@@ -3104,8 +3416,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.7.2"
-    } catch (_: Exception) { "0.7.7.2" }
+        info.versionName ?: "0.7.7.3"
+    } catch (_: Exception) { "0.7.7.3" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -3138,6 +3450,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 showSingleToast("Stop recording to toggle Mute")
                 return@setOnClickListener
             }
+            recordUndoCheckpoint()
             engine.isAudioMuted = !engine.isAudioMuted
             updateAudioDrawerUi()
             showSingleToast(if (engine.isAudioMuted) "Audio MUTED (Video-Only Recording)" else "Audio LIVE")
@@ -3158,11 +3471,12 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 engine.audioMonitorTrimDb = db
                 txtAudioTrimVal.text = if (db > 0) "+$db dB" else "$db dB"
             }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStartTrackingTouch(sb: SeekBar?) { recordUndoCheckpoint() }
             override fun onStopTrackingTouch(sb: SeekBar?) {}
         })
 
         txtAudioTrimVal.setOnClickListener {
+            recordUndoCheckpoint()
             engine.audioMonitorTrimDb = 0
             audioGainSeekBar.progress = 12
             txtAudioTrimVal.text = "0 dB"
@@ -3260,6 +3574,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnColorReset.setOnClickListener {
+            recordUndoCheckpoint()
             setSplitCompareMode(false)
             clearActiveCubeLut()
             applyBuiltInLook("NONE", GpuColorState())
@@ -3360,6 +3675,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     pushGpuColorStateAndRefreshUi()
                 }
                 override fun onStartTrackingTouch(s: SeekBar?) {
+                    recordUndoCheckpoint()
                     setColorDrawerPeekMode(row)
                 }
                 override fun onStopTrackingTouch(s: SeekBar?) {
@@ -3378,36 +3694,43 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
         // Tap any readout to reset just that single parameter to neutral!
         txtColorExpVal.setOnClickListener {
+            recordUndoCheckpoint()
             gpuColorState = gpuColorState.copy(exposureLift = 0f)
             activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorConVal.setOnClickListener {
+            recordUndoCheckpoint()
             gpuColorState = gpuColorState.copy(contrast = 1.0f)
             activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorSatVal.setOnClickListener {
+            recordUndoCheckpoint()
             gpuColorState = gpuColorState.copy(saturation = 1.0f)
             activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorShdVal.setOnClickListener {
+            recordUndoCheckpoint()
             gpuColorState = gpuColorState.copy(shadows = 0f)
             activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorHilVal.setOnClickListener {
+            recordUndoCheckpoint()
             gpuColorState = gpuColorState.copy(highlights = 0f)
             activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorVigVal.setOnClickListener {
+            recordUndoCheckpoint()
             gpuColorState = gpuColorState.copy(vignette = 0f)
             activeLookTag = if (gpuColorState.isNeutral(activeLutSourceId.isNotEmpty())) "NONE" else "CUSTOM"
             pushGpuColorStateAndRefreshUi()
         }
         txtColorLutMixVal.setOnClickListener {
+            recordUndoCheckpoint()
             gpuColorState = gpuColorState.copy(lutIntensity = 1.0f)
             pushGpuColorStateAndRefreshUi()
         }
@@ -3525,13 +3848,18 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         if (visible) {
             val lp = btnExitSplitWipe.layoutParams as? android.widget.FrameLayout.LayoutParams
             if (lp != null) {
-                lp.marginStart = if (overlayView.showHistogram) dpToPx(160) else dpToPx(20)
+                lp.marginStart = when {
+                    overlayView.showHistogram && overlayView.showWaveform -> dpToPx(296)
+                    overlayView.showHistogram || overlayView.showWaveform -> dpToPx(160)
+                    else -> dpToPx(20)
+                }
                 btnExitSplitWipe.layoutParams = lp
             }
         }
     }
 
     private fun applyBuiltInLook(tag: String, state: GpuColorState) {
+        recordUndoCheckpoint()
         activeLookTag = tag
         gpuColorState = state.copy(lutIntensity = gpuColorState.lutIntensity, isBypassed = false)
         // Always keep hardware sensor pipeline clean STANDARD so LOG never double-applies and RAW compares 100% faithfully!
@@ -3680,6 +4008,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         val curIdx = allIds.indexOf(activeLutSourceId).let { if (it < 0) 0 else it }
         val nextIdx = (curIdx + delta + allIds.size) % allIds.size
         val nextId = allIds[nextIdx]
+        recordUndoCheckpoint()
         if (nextId.isEmpty()) {
             clearActiveCubeLut()
             pushGpuColorStateAndRefreshUi()
@@ -3700,6 +4029,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 subtitle = "Disable 3D LUT layer",
                 isActive = activeLutSourceId.isEmpty(),
                 onClick = {
+                    recordUndoCheckpoint()
                     clearActiveCubeLut()
                     pushGpuColorStateAndRefreshUi()
                     showSingleToast("3D LUT: OFF")
@@ -3777,6 +4107,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 val lut = CubeLutLibrary.loadLutById(this, sourceId)
                 runOnUiThread {
                     if (lut != null) {
+                        if (!silent) recordUndoCheckpoint()
                         applyLoadedCubeLut(lut)
                         if (!silent) showSingleToast("LUT: ${lut.displayName} (${lut.size}³)")
                     } else if (!silent) {
@@ -3887,6 +4218,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             showSingleToast("Stop recording to switch preamp stage")
             return
         }
+        recordUndoCheckpoint()
         engine.audioPreampMode = mode
         audioMonitorRestartNeeded = true
         updateAudioDrawerUi()
@@ -3904,6 +4236,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             showSingleToast("Stop recording to switch microphone input")
             return
         }
+        recordUndoCheckpoint()
         engine.micPreference = pref
         audioMonitorRestartNeeded = true
         updateAudioDrawerUi()
@@ -4106,6 +4439,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         showSingleToast("Enter a valid EV stop (e.g. -1.0, 0, +1.5)")
                         false
                     } else {
+                        recordUndoCheckpoint()
                         val step = engine.capabilities.evStep.coerceAtLeast(0.01f)
                         if (engine.setEvCompensation((stops / step).roundToInt())) updateEvDisplay()
                         refreshSliderState()
@@ -4127,6 +4461,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         showSingleToast("Enter a valid ISO number")
                         false
                     } else {
+                        recordUndoCheckpoint()
                         engine.setManualIso(v)
                         refreshSliderState()
                         true
@@ -4148,6 +4483,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                             showSingleToast("Enter 11 to 360 degrees")
                             false
                         } else {
+                            recordUndoCheckpoint()
                             engine.setManualShutterAngle(v.toFloat())
                             refreshSliderState()
                             true
@@ -4168,6 +4504,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                             showSingleToast("Enter 1 to 8000")
                             false
                         } else {
+                            recordUndoCheckpoint()
                             engine.setManualShutterNs(1_000_000_000L / v)
                             refreshSliderState()
                             true
@@ -4189,6 +4526,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         showSingleToast("Enter 2500 to 8500 Kelvin")
                         false
                     } else {
+                        recordUndoCheckpoint()
                         engine.setManualWhiteBalanceKelvin(v)
                         refreshSliderState()
                         true
@@ -4210,6 +4548,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         showSingleToast("Enter 0 to 100%")
                         false
                     } else {
+                        recordUndoCheckpoint()
                         engine.setManualFocusDistance((v / 100f) * maxF)
                         refreshSliderState()
                         true
@@ -4225,6 +4564,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnZoomTele.setOnTouchListener { v, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    recordUndoCheckpoint()
                     zoomAnimator?.cancel()
                     zoomHoldStartMs = System.currentTimeMillis()
                     zoomRockerDir = 1
@@ -4246,6 +4586,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnZoomWide.setOnTouchListener { v, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    recordUndoCheckpoint()
                     zoomAnimator?.cancel()
                     zoomHoldStartMs = System.currentTimeMillis()
                     zoomRockerDir = -1
@@ -4348,6 +4689,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 updateZoomReadout()
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {
+                recordUndoCheckpoint()
                 zoomAnimator?.cancel()
             }
             override fun onStopTrackingTouch(sb: SeekBar?) {}
@@ -4360,6 +4702,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun animateZoomTo(targetZoom: Float) {
+        recordUndoCheckpoint()
         val minZ = engine.capabilities.minZoom
         val maxZ = engine.capabilities.maxZoom
         val start = engine.currentZoomRatio.coerceIn(minZ, maxZ)
@@ -4440,6 +4783,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun applySelectedFps(fps: Int) {
+        recordUndoCheckpoint()
         val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 60)
         val clamped = fps.coerceIn(1, maxHw)
         if (fps > maxHw) {
@@ -4479,6 +4823,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             selectPanel(if (activePanel == ProControlPanel.FOCUS) ProControlPanel.NONE else ProControlPanel.FOCUS)
         }
         btnAeAfLock.setOnClickListener {
+            recordUndoCheckpoint()
             val locked = engine.toggleAeAfLock()
             updateLockUi(locked)
             Toast.makeText(this, if (locked) "AE / AF LOCKED" else "AE / AF UNLOCKED", Toast.LENGTH_SHORT).show()
@@ -4497,6 +4842,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 showSingleToast("AE/AF Lock is ON — turn off LOCK first")
                 return@setOnClickListener
             }
+            recordUndoCheckpoint()
             when (activePanel) {
                 ProControlPanel.EV -> {
                     engine.setEvCompensation(0)
@@ -4556,6 +4902,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         btnSlider180.setOnClickListener {
+            recordUndoCheckpoint()
             val active = engine.toggleShutter180Rule()
             btnSlider180.setBackgroundResource(if (active) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
             btnSlider180.setTextColor(if (active) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
@@ -4608,6 +4955,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         wbGradientPad.onDragStateChanged = { dragging ->
+            if (dragging) recordUndoCheckpoint()
             isUserDraggingProSeek = dragging
         }
         wbGradientPad.onWbChanged = { kelvin, tint ->
@@ -4619,6 +4967,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         val applyWbPreset = { kelvin: Int ->
+            recordUndoCheckpoint()
             engine.setManualWhiteBalance(kelvin, engine.manualTint)
             refreshSliderState()
         }
@@ -4628,6 +4977,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnWbPreset6500.setOnClickListener { applyWbPreset(6500) }
 
         txtWbTintVal.setOnClickListener {
+            recordUndoCheckpoint()
             engine.setManualWhiteBalanceTint(0)
             refreshSliderState()
             showSingleToast("Tint reset to 0")
@@ -4702,6 +5052,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 }
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {
+                recordUndoCheckpoint()
                 isUserDraggingProSeek = true
             }
             override fun onStopTrackingTouch(sb: SeekBar?) {
@@ -4870,6 +5221,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                         showSingleToast("AE/AF Lock is ON — turn off LOCK first")
                         return@setOnClickListener
                     }
+                    recordUndoCheckpoint()
                     engine.setManualIso(isoVal)
                     updateEvDisplay()
                     refreshSliderState()
@@ -4902,6 +5254,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                             showSingleToast("AE/AF Lock is ON — turn off LOCK first")
                             return@setOnClickListener
                         }
+                        recordUndoCheckpoint()
                         engine.setManualShutterAngle(ang)
                         refreshSliderState()
                     }
@@ -4934,6 +5287,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                             showSingleToast("AE/AF Lock is ON — turn off LOCK first")
                             return@setOnClickListener
                         }
+                        recordUndoCheckpoint()
                         engine.setManualShutterNs(1_000_000_000L / denom.toLong())
                         refreshSliderState()
                     }
@@ -5238,6 +5592,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun triggerAutoPilotRescue() {
+        recordUndoCheckpoint()
         // 1. Clean UI & cancel competing animations or self-timer countdowns
         closeAllDrawers()
         rackAnimator?.cancel()
