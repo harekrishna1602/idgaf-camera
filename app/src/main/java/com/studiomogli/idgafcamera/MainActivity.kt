@@ -1482,7 +1482,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 CinemaResolution.FHD_1080P in sup -> CinemaResolution.FHD_1080P
                 else -> sup.lastOrNull { it.width <= resolution.width } ?: sup.firstOrNull() ?: CinemaResolution.FHD_1080P
             }
-            engine.targetBitrateMbps = bitrateMbps.coerceIn(2, 120)
+            engine.targetBitrateMbps = bitrateMbps.coerceIn(2, 250)
             engine.targetCodec = codec
             if (engine.targetResolution != resolvedRes) {
                 engine.updateSettings(resolvedRes, fps)
@@ -1922,8 +1922,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
 
         formatFpsRow.removeAllViews()
-        val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 60)
-        val presets = listOf(20, 24, 30, 60)
+        val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 240)
+        val presets = if (maxHw >= 120) listOf(24, 30, 60, 120) else listOf(20, 24, 30, 60)
         val isCustom = currentFps !in presets
         presets.forEachIndexed { idx, fps ->
             val ok = fps <= maxHw
@@ -1964,21 +1964,22 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         formatFpsRow.addView(customChip)
 
-        // Row 3: Bitrate (Mbps) — directly inside VIDEO FORMAT so users see auto-adjust when changing Resolution!
+        // Row 3: Bitrate (Mbps) + CUSTOM Mbps button (2 to 250 Mbps!)
         formatBitrateRow.removeAllViews()
-        val drawerBitrates = listOf(4, 12, 24, 35, 50, 75, 100)
+        val drawerBitrates = listOf(4, 12, 24, 50, 75, 100)
+        val isCustomBr = engine.targetBitrateMbps !in drawerBitrates
         drawerBitrates.forEachIndexed { idx, mbps ->
             val selected = (engine.targetBitrateMbps == mbps)
             val chip = TextView(this).apply {
                 text = "${mbps}M"
-                textSize = 8.8f
+                textSize = 8.6f
                 typeface = android.graphics.Typeface.MONOSPACE
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
                 gravity = Gravity.CENTER
                 setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
                 setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                    if (idx < drawerBitrates.lastIndex) marginEnd = dpToPx(3)
+                    marginEnd = dpToPx(3)
                 }
                 setOnClickListener {
                     recordUndoCheckpoint()
@@ -1990,6 +1991,22 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             }
             formatBitrateRow.addView(chip)
         }
+        val customBrChip = TextView(this).apply {
+            text = if (isCustomBr) "${engine.targetBitrateMbps}M✎" else "CUSTOM"
+            textSize = 8.2f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setBackgroundResource(if (isCustomBr) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+            setTextColor(if (isCustomBr) 0xFF0B0D10.toInt() else 0xFFFF5F1F.toInt())
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.40f)
+            setOnClickListener {
+                formatDrawer.visibility = View.GONE
+                updateFormatPillUi()
+                showCustomBitrateInputDialog()
+            }
+        }
+        formatBitrateRow.addView(customBrChip)
 
         // Row 4: Frame Ratio Selector (16:9 | 2.39:1 | 1.85:1 | 4:3 | 1:1 | 9:16)
         formatFrameRatioRow.removeAllViews()
@@ -3237,7 +3254,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         engine.timelapseIntervalMs = intervalMs.coerceAtLeast(0L)
         if (intervalMs > 0L && currentFps < 20) {
             // Ensure Time-Lapse always plays back at smooth cinema FPS (30 FPS) rather than 1 FPS!
-            val smoothFps = minOf(30, engine.capabilities.maxHardwareFps.coerceIn(24, 60))
+            val smoothFps = minOf(30, engine.capabilities.maxHardwareFps.coerceIn(24, 240))
             currentFps = smoothFps
             updateFormatPillUi()
             engine.updateSettings(currentResolution, smoothFps)
@@ -3368,7 +3385,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         recordUndoCheckpoint()
         currentResolution = try { CinemaResolution.valueOf(p.resolutionName) } catch (_: Exception) { CinemaResolution.FHD_1080P }
-        currentFps = p.fps.coerceIn(1, 60)
+        currentFps = p.fps.coerceIn(1, engine.capabilities.maxHardwareFps.coerceIn(15, 240))
         engine.targetCodec = try { CinemaCodec.valueOf(p.codecName) } catch (_: Exception) { CinemaCodec.H264 }
         engine.targetBitrateMbps = p.bitrateMbps
         bitrateIdx = bitrateOptions.indexOf(p.bitrateMbps).takeIf { it >= 0 } ?: 1
@@ -3713,8 +3730,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.7.7"
-    } catch (_: Exception) { "0.7.7.7" }
+        info.versionName ?: "0.7.7.8"
+    } catch (_: Exception) { "0.7.7.8" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -5097,11 +5114,36 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         styleToolPill(btnZoomPresetMax, kotlin.math.abs(z - maxZ) < 0.35f && maxZ > 5.2f)
     }
 
+    private fun showCustomBitrateInputDialog() {
+        openCinemaInputDrawer(
+            title = "CUSTOM BITRATE (Mbps)",
+            hint = "2 to 250 Mbps (Step ±5 • Higher = cleaner 4K/detail)",
+            initialValue = engine.targetBitrateMbps.toString(),
+            allowDecimal = false,
+            step = 5f,
+            minValue = 2f,
+            maxValue = 250f
+        ) { raw ->
+            val typed = raw.toIntOrNull()
+            if (typed == null || typed !in 2..250) {
+                showSingleToast("Enter a bitrate between 2 and 250 Mbps")
+                false
+            } else {
+                recordUndoCheckpoint()
+                engine.targetBitrateMbps = typed
+                bitrateIdx = bitrateOptions.indexOf(typed).takeIf { it >= 0 } ?: 4
+                updateFormatPillUi()
+                showSingleToast("Custom Bitrate: $typed Mbps")
+                true
+            }
+        }
+    }
+
     private fun showCustomFpsInputDialog() {
-        val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 60)
+        val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 240)
         openCinemaInputDrawer(
             title = "CUSTOM FRAME RATE (FPS)",
-            hint = "1 to $maxHw FPS (Step ±1 • GPU Pacer below 20)",
+            hint = "1 to $maxHw FPS (Lens Max: ${maxHw} • GPU Pacer below 20)",
             initialValue = currentFps.toString(),
             allowDecimal = false,
             step = 1f,
@@ -5109,8 +5151,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             maxValue = maxHw.toFloat()
         ) { raw ->
             val typed = raw.toIntOrNull()
-            if (typed == null || typed !in 1..60) {
-                showSingleToast("Enter a value between 1 and 60 FPS")
+            if (typed == null || typed !in 1..maxHw) {
+                showSingleToast("Enter a value between 1 and $maxHw FPS")
                 false
             } else {
                 applySelectedFps(typed)
@@ -5121,7 +5163,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun applySelectedFps(fps: Int) {
         recordUndoCheckpoint()
-        val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 60)
+        val maxHw = engine.capabilities.maxHardwareFps.coerceIn(15, 240)
         val clamped = fps.coerceIn(1, maxHw)
         if (fps > maxHw) {
             showSingleToast("This lens supports up to $maxHw FPS max — clamped to $maxHw FPS", Toast.LENGTH_LONG)
@@ -5540,7 +5582,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         isoPresetRow.removeAllViews()
         val minIso = engine.capabilities.effectiveIsoRange.lower
         val maxIso = engine.capabilities.effectiveIsoRange.upper
-        val standardStops = listOf(50, 100, 200, 400, 800, 1600, 3200, 6400)
+        val standardStops = listOf(25, 50, 100, 200, 400, 800, 1600, 3200, 6400)
         var presets = standardStops.filter { it in minIso..maxIso }
         if (presets.size > 7) {
             // Keep the 7 cleanest everyday cinema stops (50..3200 or 100..6400)
@@ -5657,7 +5699,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun progressToLogIso(progress: Int): Int {
-        val minIso = engine.capabilities.effectiveIsoRange.lower.coerceAtLeast(25).toDouble()
+        val minIso = engine.capabilities.effectiveIsoRange.lower.coerceAtLeast(10).toDouble()
         val maxIso = engine.capabilities.effectiveIsoRange.upper.coerceAtLeast(minIso.toInt() + 1).toDouble()
         val raw = minIso * Math.pow(maxIso / minIso, progress.coerceIn(0, 100) / 100.0)
         // Round to clean steps for tactile feel
@@ -5669,7 +5711,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun logIsoToProgress(iso: Int): Int {
-        val minIso = engine.capabilities.effectiveIsoRange.lower.coerceAtLeast(25).toDouble()
+        val minIso = engine.capabilities.effectiveIsoRange.lower.coerceAtLeast(10).toDouble()
         val maxIso = engine.capabilities.effectiveIsoRange.upper.coerceAtLeast(minIso.toInt() + 1).toDouble()
         val clamped = iso.toDouble().coerceIn(minIso, maxIso)
         val denom = kotlin.math.ln(maxIso / minIso).coerceAtLeast(0.001)
@@ -5984,7 +6026,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         updateLockUi(false)
 
         // 4. Reset custom/low FPS (e.g. 1 FPS) cleanly back to normal 30 FPS & launch two-stage scene meter + lock
-        val normalFps = minOf(30, engine.capabilities.maxHardwareFps.coerceIn(15, 60))
+        val normalFps = minOf(30, engine.capabilities.maxHardwareFps.coerceIn(15, 240))
         val fpsChanged = (currentFps != normalFps || engine.targetFps != normalFps)
         if (fpsChanged) {
             currentFps = normalFps
@@ -6889,10 +6931,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             currentResolution = try {
                 CinemaResolution.valueOf(prefs.getString("resolution", CinemaResolution.FHD_1080P.name)!!)
             } catch (_: Exception) { CinemaResolution.FHD_1080P }
-            currentFps = prefs.getInt("fps", 30).coerceIn(1, 60)
+            currentFps = prefs.getInt("fps", 30).coerceIn(1, 240)
             engine.targetResolution = currentResolution
             engine.targetFps = currentFps
-            engine.targetBitrateMbps = prefs.getInt("bitrate_mbps", 35).coerceIn(2, 120)
+            engine.targetBitrateMbps = prefs.getInt("bitrate_mbps", 35).coerceIn(2, 250)
             bitrateIdx = bitrateOptions.indexOf(engine.targetBitrateMbps).takeIf { it >= 0 } ?: 4
             engine.targetCodec = try {
                 CinemaCodec.valueOf(prefs.getString("codec", CinemaCodec.H264.name)!!)

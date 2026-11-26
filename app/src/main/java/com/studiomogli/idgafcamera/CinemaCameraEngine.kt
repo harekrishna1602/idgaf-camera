@@ -475,7 +475,7 @@ class CinemaCameraEngine(
         cleanupOrphanEraCacheFiles()
         glRenderer?.setCubeLut(activeCubeLut)
         glRenderer?.onTimelapseFrameCaptured = { frames ->
-            val fpsDenom = if (stopMotionEnabled) stopMotionPlaybackFps.coerceIn(1, 60) else targetFps.coerceIn(1, 60)
+            val fpsDenom = if (stopMotionEnabled) stopMotionPlaybackFps.coerceIn(1, 60) else targetFps.coerceIn(1, 240)
             val outSec = frames.toFloat() / fpsDenom.toFloat()
             listener.onTimelapseProgress(frames, outSec)
         }
@@ -582,7 +582,7 @@ class CinemaCameraEngine(
      */
     fun setTargetFpsSeamless(fps: Int) {
         if (isRecording) return
-        val clamped = fps.coerceIn(1, capabilities.maxHardwareFps.coerceIn(15, 60))
+        val clamped = fps.coerceIn(1, capabilities.maxHardwareFps.coerceIn(15, 240))
         targetFps = clamped
         if (isShutter180Locked && isManualExposure) {
             manualShutterNs = compute180ShutterNs(clamped)
@@ -790,7 +790,7 @@ class CinemaCameraEngine(
         // If FPS was stuck on a custom/low rate (e.g. 1 FPS), cleanly reopen camera at normal FPS first,
         // then automatically run scene metering & lock the instant the new session configures!
         if (resetToFps != null && targetFps != resetToFps && !isRecording) {
-            targetFps = resetToFps.coerceIn(1, capabilities.maxHardwareFps.coerceIn(15, 60))
+            targetFps = resetToFps.coerceIn(1, capabilities.maxHardwareFps.coerceIn(15, 240))
             pendingAutoPilotOnOpen = true
             autoPilotState = AutoPilotState.METERING
             listener.onAutoPilotStateChanged(AutoPilotState.METERING, null)
@@ -867,7 +867,7 @@ class CinemaCameraEngine(
             val minExp = capabilities.exposureRangeNs.lower.coerceAtLeast(10_000L)
             val maxExp = capabilities.exposureRangeNs.upper.coerceAtLeast(minExp)
 
-            val fps = targetFps.coerceIn(1, 60)
+            val fps = targetFps.coerceIn(1, 240)
             val maxVideoShutterNs = (1_000_000_000L / fps.toLong()).coerceIn(minExp, maxExp)
             val ideal180Ns = compute180ShutterNs(fps)
             val evProduct = liveIso.toDouble() * liveShutterNs.toDouble()
@@ -1201,7 +1201,7 @@ class CinemaCameraEngine(
     }
 
     fun compute180ShutterNs(fps: Int): Long {
-        val safeFps = fps.coerceIn(1, 60)
+        val safeFps = fps.coerceIn(1, 240)
         val maxFrameNs = 1_000_000_000L / safeFps.toLong()
         val raw180Ns = 1_000_000_000L / (safeFps * 2L).coerceAtLeast(16L)
         return when (antiFlickerMode) {
@@ -1505,7 +1505,7 @@ class CinemaCameraEngine(
             val resolvedEffectiveIso = Range(analogLower, effMaxIso.coerceAtLeast(analogLower))
 
             val fpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray()
-            val maxHwFps = (fpsRanges.maxOfOrNull { it.upper } ?: 30).coerceIn(15, 60)
+            val maxHwFps = (fpsRanges.maxOfOrNull { it.upper } ?: 30).coerceIn(15, 240)
             if (targetFps > maxHwFps) {
                 targetFps = maxHwFps
             }
@@ -1799,7 +1799,7 @@ class CinemaCameraEngine(
             mediaRecorder = recorder
 
             val isSm = (activeEraPlugin == null && stopMotionEnabled)
-            val encTargetFps = if (isSm) stopMotionPlaybackFps.coerceIn(1, 60) else targetFps
+            val encTargetFps = if (isSm) stopMotionPlaybackFps.coerceIn(1, 60) else targetFps.coerceIn(1, 240)
             val attached = renderer.attachEncoderSurfaceSync(
                 recorderSurface = recorder.surface,
                 width = encW,
@@ -2106,9 +2106,9 @@ class CinemaCameraEngine(
             recorder.setOutputFile(outFile.absolutePath)
         }
 
-        val bitrateBps = targetBitrateMbps.coerceIn(2, 120) * 1_000_000
+        val bitrateBps = targetBitrateMbps.coerceIn(2, 250) * 1_000_000
         recorder.setVideoEncodingBitRate(bitrateBps)
-        recorder.setVideoFrameRate((if (isSm) stopMotionPlaybackFps else targetFps).coerceIn(1, 60))
+        recorder.setVideoFrameRate((if (isSm) stopMotionPlaybackFps else targetFps).coerceIn(1, 240))
         recorder.setVideoSize(encW, encH)
         recorder.setVideoEncoder(targetCodec.encoder)
         if (recordAudioInMr) {

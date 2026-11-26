@@ -725,7 +725,7 @@ class CinemaGlRenderer(
     }
 
     fun updateOutputMonitorParams(desiredFps: Int, timelapseIntervalMs: Long, aspectMode: RecordAspectMode) {
-        monitorTargetFps = desiredFps.coerceIn(1, 60)
+        monitorTargetFps = desiredFps.coerceIn(1, 240)
         monitorTimelapseIntervalNs = if (timelapseIntervalMs > 0L) timelapseIntervalMs * 1_000_000L else 0L
         monitorAspectMode = aspectMode
         nextMonitorFrameDueNs = -1L
@@ -783,8 +783,8 @@ class CinemaGlRenderer(
                 encoderUsesHintRotation = usesHintRotation
                 encoderCropTargetAspect = cropTargetAspect
                 encoderMatteFallbackAspect = matteFallbackAspect
-                targetEncoderFps = desiredFps.coerceIn(1, 60)
-                hardwareFpsUpper = hwFpsUpper.coerceIn(1, 120)
+                targetEncoderFps = desiredFps.coerceIn(1, 240)
+                hardwareFpsUpper = hwFpsUpper.coerceIn(1, 240)
                 isEncoderRecording = false
                 encoderBaseCamTsNs = -1L
                 encoderBaseMonoNs = -1L
@@ -1147,7 +1147,7 @@ class CinemaGlRenderer(
         }
 
         // Standard Real-Time Video Frame-Pacer Gate
-        val desired = targetEncoderFps.coerceIn(1, 60)
+        val desired = targetEncoderFps.coerceIn(1, 240)
         if (desired >= hardwareFpsUpper) return true
 
         val nowNs = System.nanoTime()
@@ -1176,7 +1176,7 @@ class CinemaGlRenderer(
         if (timelapseBaseMonoNs < 0L) {
             timelapseBaseMonoNs = System.nanoTime()
         }
-        val frameStepNs = 1_000_000_000L / targetEncoderFps.coerceIn(1, 60).toLong()
+        val frameStepNs = 1_000_000_000L / targetEncoderFps.coerceIn(1, 240).toLong()
         val ptsNs = timelapseBaseMonoNs + (timelapseCapturedFrames * frameStepNs)
         timelapseCapturedFrames++
         lastEncoderPtsNs = ptsNs
@@ -1302,7 +1302,7 @@ class CinemaGlRenderer(
             if (nextMonitorFrameDueNs < nowNs) nextMonitorFrameDueNs = nowNs + tlNs
             return true
         }
-        val desired = monitorTargetFps.coerceIn(1, 60)
+        val desired = monitorTargetFps.coerceIn(1, 240)
         if (desired >= 20) return true
         val nowNs = System.nanoTime()
         val intervalNs = 1_000_000_000L / desired.toLong()
