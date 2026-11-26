@@ -172,19 +172,62 @@ class CinemaOverlayView @JvmOverloads constructor(
     private val frontBinsY = FloatArray(64)
     private var hasHighlightClip = false
 
-    // Real-time Luma Waveform Monitor (80 horizontal columns x 32 IRE rows)
-    private val wfmCols = 80
-    private val wfmRows = 32
-    private val rawWfmGrid = IntArray(80 * 32)
-    private val workWfmAlpha = IntArray(80 * 32)
-    private val frontWfmAlpha = IntArray(80 * 32)
+    // Safe Area HUD Inset Tracking + Live Minecraft-Style Corner Calibrator Preview
+    @Volatile var safeInsetLeftPx: Int = 0
+    @Volatile var safeInsetTopPx: Int = 0
+    @Volatile var safeInsetRightPx: Int = 0
+    @Volatile var safeInsetBottomPx: Int = 0
+    @Volatile var safeAreaPreviewActive: Boolean = false
+        set(value) {
+            field = value
+            postInvalidate()
+        }
+    @Volatile var safeAreaPreviewLabel: String = "SAFE AREA 100%"
+
+    fun updateSafeAreaInsets(left: Int, top: Int, right: Int, bottom: Int, label: String = safeAreaPreviewLabel) {
+        safeInsetLeftPx = left.coerceAtLeast(0)
+        safeInsetTopPx = top.coerceAtLeast(0)
+        safeInsetRightPx = right.coerceAtLeast(0)
+        safeInsetBottomPx = bottom.coerceAtLeast(0)
+        safeAreaPreviewLabel = label
+        postInvalidate()
+    }
+
+    // Next-Gen Broadcast Luma Waveform Monitor (160x64 Smooth Phosphor Density Bitmap + Temporal Persistence)
+    private val wfmCols = 160
+    private val wfmRows = 64
+    private val rawWfmGrid = IntArray(160 * 64)
+    private val persistWfmDensity = FloatArray(160 * 64)
+    private val workWfmPixels = IntArray(160 * 64)
+    private val frontWfmPixels = IntArray(160 * 64)
+    private var wfmBitmap: Bitmap = Bitmap.createBitmap(160, 64, Bitmap.Config.ARGB_8888)
     private var wfmHasClip = false
-    private val wfmTracePaint = Paint().apply {
+    private val wfmBitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private val wfmPlotRect = RectF()
+    private val wfmSkinGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(95, 244, 114, 182)
+        strokeWidth = 1f
+        style = Paint.Style.STROKE
+    }
+    private val wfmIreLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(170, 200, 210, 224)
+        typeface = Typeface.MONOSPACE
+        isFakeBoldText = true
+        textAlign = Paint.Align.RIGHT
+    }
+    private val safeDimPaint = Paint().apply {
+        color = Color.argb(125, 0, 0, 0)
         style = Paint.Style.FILL
     }
-    private val wfmSkinGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(70, 244, 114, 182)
-        strokeWidth = 1f
+    private val safeBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(145, 255, 95, 31)
+        strokeWidth = 1.5f
+        style = Paint.Style.STROKE
+    }
+    private val safeCornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#FF5F1F")
+        strokeWidth = 3.5f
+        strokeCap = Paint.Cap.SQUARE
         style = Paint.Style.STROKE
     }
 
@@ -375,9 +418,9 @@ class CinemaOverlayView @JvmOverloads constructor(
                 }
                 if (doWfm) {
                     val col = ((px * wfmCols) / w).coerceIn(0, wfmCols - 1)
-                    val bin = (y shr 3).coerceIn(0, wfmRows - 1)
+                    val bin = (y shr 2).coerceIn(0, wfmRows - 1) // 64 precise IRE steps (0..63)
                     rawWfmGrid[col * wfmRows + bin]++
-                    if (y >= 246) wfmClipCount++
+                    if (y >= 244) wfmClipCount++
                 }
             }
         }
@@ -400,21 +443,56 @@ class CinemaOverlayView @JvmOverloads constructor(
         }
 
         if (doWfm) {
-            // Boost trace intensity cleanly so even a single bright pixel per column reads clearly on the phosphor trace
-            val fullCount = (h / 4).coerceAtLeast(3).toFloat()
-            for (i in 0 until (wfmCols * wfmRows)) {
-                val cnt = rawWfmGrid[i]
-                workWfmAlpha[i] = if (cnt <= 0) {
-                    0
-                } else {
-                    val norm = (cnt / fullCount).coerceIn(0f, 1f)
-                    (78 + (norm * 177f).toInt()).coerceIn(78, 255)
+            // Broadcast Phosphor Density Engine: vertical soft-bloom kernel + logarithmic gain + silky temporal decay
+            val normScale = (h * 0.14f).coerceAtLeast(3.5f)
+            val cols = wfmCols
+            val rows = wfmRows
+            for (col in 0 until cols) {
+                val colBase = col * rows
+                for (bin in 0 until rows) {
+                    val c0 = rawWfmGrid[colBase + bin].toFloat()
+                    val cDown = if (bin > 0) rawWfmGrid[colBase + bin - 1].toFloat() else 0f
+                    val cUp = if (bin < rows - 1) rawWfmGrid[colBase + bin + 1].toFloat() else 0f
+                    val energy = c0 + 0.30f * (cDown + cUp)
+                    val target = if (energy <= 0.01f) 0f else (kotlin.math.ln(1.0 + (energy / normScale) * 5.2) / kotlin.math.ln(6.2)).toFloat().coerceIn(0f, 1f)
+                    val prev = persistWfmDensity[colBase + bin]
+                    val blended = (prev * 0.28f + target * 0.72f).let { if (it < 0.03f) 0f else it }
+                    persistWfmDensity[colBase + bin] = blended
+
+                    val imgRow = (rows - 1) - bin
+                    val pxIdx = imgRow * cols + col
+                    if (blended <= 0.03f) {
+                        workWfmPixels[pxIdx] = 0
+                    } else {
+                        val alpha = (68 + (blended * 187f).toInt()).coerceIn(0, 255)
+                        val hot = ((blended - 0.55f) / 0.45f).coerceIn(0f, 1f)
+                        workWfmPixels[pxIdx] = when {
+                            bin >= 61 -> { // 95-100% IRE Clip: Cinema Red -> White-Hot Core
+                                val r = 255
+                                val g = (59 + (hot * 160f).toInt()).coerceIn(0, 255)
+                                val b = (48 + (hot * 150f).toInt()).coerceIn(0, 255)
+                                Color.argb(alpha, r, g, b)
+                            }
+                            bin >= 54 -> { // 85-94% IRE Highlight Roll-off: Warm Amber -> Bright Gold
+                                val r = 255
+                                val g = (196 + (hot * 54f).toInt()).coerceIn(0, 255)
+                                val b = (36 + (hot * 170f).toInt()).coerceIn(0, 255)
+                                Color.argb(alpha, r, g, b)
+                            }
+                            else -> { // 0-84% IRE Broadcast Phosphor: Emerald -> Luminous White-Green Core
+                                val r = (24 + (hot * 205f).toInt()).coerceIn(0, 255)
+                                val g = (212 + (hot * 43f).toInt()).coerceIn(0, 255)
+                                val b = (132 + (hot * 112f).toInt()).coerceIn(0, 255)
+                                Color.argb(alpha, r, g, b)
+                            }
+                        }
+                    }
                 }
             }
         }
 
         val clipAlert = clippedCount > (total / 40)
-        val wfmClipAlert = wfmClipCount > (total / 50)
+        val wfmClipAlert = wfmClipCount > (total / 55)
         synchronized(renderLock) {
             if (doHist) {
                 System.arraycopy(workBinsR, 0, frontBinsR, 0, 64)
@@ -424,7 +502,7 @@ class CinemaOverlayView @JvmOverloads constructor(
                 hasHighlightClip = clipAlert
             }
             if (doWfm) {
-                System.arraycopy(workWfmAlpha, 0, frontWfmAlpha, 0, wfmCols * wfmRows)
+                System.arraycopy(workWfmPixels, 0, frontWfmPixels, 0, wfmCols * wfmRows)
                 wfmHasClip = wfmClipAlert
             }
         }
@@ -577,12 +655,15 @@ class CinemaOverlayView @JvmOverloads constructor(
             drawFalseColorLegend(canvas, w, h, dp)
         }
 
-        // 5. 3-Channel RGB + Luma Overlay Histogram (Top-Left opposite Pilot button, clear of right rail)
+        val safeLeft = safeInsetLeftPx.toFloat()
+        val safeTop = safeInsetTopPx.toFloat()
+
+        // 5. 3-Channel RGB + Luma Overlay Histogram (Safe-Area aware, clear of right rail)
         if (showHistogram) {
             val boxW = 132f * dp
-            val boxH = 56f * dp
-            val left = 18f * dp
-            val top = 58f * dp
+            val boxH = 62f * dp
+            val left = safeLeft + 16f * dp
+            val top = safeTop + 56f * dp
             histRect.set(left, top, left + boxW, top + boxH)
 
             canvas.drawRoundRect(histRect, 8f * dp, 8f * dp, histBgPaint)
@@ -590,12 +671,12 @@ class CinemaOverlayView @JvmOverloads constructor(
 
             val pad = 4f * dp
             val innerW = boxW - pad * 2f
-            val innerH = boxH - pad * 2f - 9f * dp
+            val innerH = boxH - pad * 2f - 10f * dp
             val baseY = top + boxH - pad
 
             for (q in 1..3) {
                 val gx = left + pad + (q * 0.25f) * innerW
-                canvas.drawLine(gx, top + 11f * dp, gx, baseY, histGuidePaint)
+                canvas.drawLine(gx, top + 12f * dp, gx, baseY, histGuidePaint)
             }
 
             var clipAlert = false
@@ -625,62 +706,87 @@ class CinemaOverlayView @JvmOverloads constructor(
             }
         }
 
-        // 6. Real-Time Luma Waveform Monitor (Left-to-Right Frame Exposure Scope — 0..100 IRE)
+        // 6. Modern Broadcast Luma Waveform Monitor (160x64 Smooth Phosphor Density Trace + IRE Graticule)
         if (showWaveform) {
-            val boxW = 132f * dp
-            val boxH = 56f * dp
-            val left = if (showHistogram) (156f * dp) else (18f * dp)
-            val top = 58f * dp
+            val boxW = 156f * dp
+            val boxH = 62f * dp
+            val left = safeLeft + if (showHistogram) (154f * dp) else (16f * dp)
+            val top = safeTop + 56f * dp
             histRect.set(left, top, left + boxW, top + boxH)
 
             canvas.drawRoundRect(histRect, 8f * dp, 8f * dp, histBgPaint)
             canvas.drawRoundRect(histRect, 8f * dp, 8f * dp, histBorderPaint)
 
-            val pad = 4f * dp
-            val plotTop = top + 11f * dp
-            val plotBot = top + boxH - pad
-            val innerW = boxW - pad * 2f
+            val padL = 5f * dp
+            val padR = 18f * dp
+            val plotTop = top + 12f * dp
+            val plotBot = top + boxH - 4f * dp
+            val plotRight = left + boxW - padR
             val innerH = (plotBot - plotTop).coerceAtLeast(1f)
 
-            // Horizontal IRE Graticule: 50% Mid-Grey + 70% Skin Tone + 100% Ceiling
-            val y50 = plotBot - innerH * 0.50f
+            // Precision Broadcast IRE Graticule (100 / 70 Skin / 50 Mid / 25 / 0)
             val y70 = plotBot - innerH * 0.70f
-            canvas.drawLine(left + pad, plotTop, left + boxW - pad, plotTop, histGuidePaint)
-            canvas.drawLine(left + pad, y70, left + boxW - pad, y70, wfmSkinGuidePaint)
-            canvas.drawLine(left + pad, y50, left + boxW - pad, y50, histGuidePaint)
-            canvas.drawLine(left + pad, plotBot, left + boxW - pad, plotBot, histGuidePaint)
+            val y50 = plotBot - innerH * 0.50f
+            val y25 = plotBot - innerH * 0.25f
+            canvas.drawLine(left + padL, plotTop, plotRight, plotTop, histGuidePaint)
+            canvas.drawLine(left + padL, y70, plotRight, y70, wfmSkinGuidePaint)
+            canvas.drawLine(left + padL, y50, plotRight, y50, histGuidePaint)
+            canvas.drawLine(left + padL, y25, plotRight, y25, histGuidePaint)
+            canvas.drawLine(left + padL, plotBot, plotRight, plotBot, histGuidePaint)
 
-            val cellW = innerW / wfmCols.toFloat()
-            val cellH = innerH / wfmRows.toFloat()
+            // Smooth Bilinear Phosphor Density Bitmap Draw (Zero chunky blocks!)
             var clipAlert = false
-
             synchronized(renderLock) {
                 clipAlert = wfmHasClip
-                for (col in 0 until wfmCols) {
-                    val cx0 = left + pad + col * cellW
-                    val cx1 = cx0 + cellW + 0.6f
-                    val baseIdx = col * wfmRows
-                    for (bin in 0 until wfmRows) {
-                        val a = frontWfmAlpha[baseIdx + bin]
-                        if (a <= 0) continue
-                        val cyBot = plotBot - bin * cellH
-                        val cyTop = cyBot - cellH - 0.6f
-                        wfmTracePaint.color = when {
-                            bin >= 30 -> Color.argb(a, 255, 59, 48)   // 94-100% IRE Clip Red
-                            bin >= 27 -> Color.argb(a, 255, 204, 0)   // 84-93% IRE Highlight Amber
-                            else -> Color.argb(a, 52, 199, 89)        // 0-83% IRE Cinema Phosphor Green
-                        }
-                        canvas.drawRect(cx0, cyTop, cx1, cyBot, wfmTracePaint)
-                    }
-                }
+                wfmBitmap.setPixels(frontWfmPixels, 0, wfmCols, 0, 0, wfmCols, wfmRows)
             }
+            wfmPlotRect.set(left + padL, plotTop, plotRight, plotBot)
+            canvas.drawBitmap(wfmBitmap, null, wfmPlotRect, wfmBitmapPaint)
+
+            // Crisp Mini IRE Scale Labels on Right Margin
+            wfmIreLabelPaint.textSize = 6.2f * dp
+            val lblX = left + boxW - 3.5f * dp
+            canvas.drawText("100", lblX, plotTop + 4f * dp, wfmIreLabelPaint)
+            canvas.drawText("70", lblX, y70 + 2.2f * dp, wfmIreLabelPaint)
+            canvas.drawText("50", lblX, y50 + 2.2f * dp, wfmIreLabelPaint)
+            canvas.drawText("0", lblX, plotBot, wfmIreLabelPaint)
 
             badgeTextPaint.textSize = 7.5f * dp
             badgeTextPaint.textAlign = Paint.Align.LEFT
-            canvas.drawText("WFM • IRE", left + 6f * dp, top + 10f * dp, badgeTextPaint)
+            canvas.drawText("WFM • LUMA", left + 6f * dp, top + 9.5f * dp, badgeTextPaint)
             if (clipAlert) {
-                canvas.drawCircle(left + boxW - 8f * dp, top + 7.5f * dp, 3f * dp, clipDotPaint)
+                canvas.drawCircle(left + boxW - 7.5f * dp, top + 7f * dp, 2.8f * dp, clipDotPaint)
             }
+        }
+
+        // 7. Minecraft-Style Interactive Safe Area Calibration Frame (Visible only while calibrating in PRO -> SAFE)
+        if (safeAreaPreviewActive) {
+            val l = safeInsetLeftPx.toFloat().coerceIn(0f, w * 0.35f)
+            val t = safeInsetTopPx.toFloat().coerceIn(0f, h * 0.35f)
+            val r = (w - safeInsetRightPx.toFloat()).coerceIn(l + 40f, w)
+            val b = (h - safeInsetBottomPx.toFloat()).coerceIn(t + 40f, h)
+
+            // Subtle dim outside safe perimeter so user clearly sees cropped/cutout margin
+            if (t > 0f) canvas.drawRect(0f, 0f, w, t, safeDimPaint)
+            if (b < h) canvas.drawRect(0f, b, w, h, safeDimPaint)
+            if (l > 0f) canvas.drawRect(0f, t, l, b, safeDimPaint)
+            if (r < w) canvas.drawRect(r, t, w, b, safeDimPaint)
+
+            // Crisp Safety Orange Perimeter + Cinema Corner Brackets
+            canvas.drawRect(l, t, r, b, safeBorderPaint)
+            val arm = 22f * dp
+            // Top-Left
+            canvas.drawLine(l, t, l + arm, t, safeCornerPaint)
+            canvas.drawLine(l, t, l, t + arm, safeCornerPaint)
+            // Top-Right
+            canvas.drawLine(r, t, r - arm, t, safeCornerPaint)
+            canvas.drawLine(r, t, r, t + arm, safeCornerPaint)
+            // Bottom-Left
+            canvas.drawLine(l, b, l + arm, b, safeCornerPaint)
+            canvas.drawLine(l, b, l, b - arm, safeCornerPaint)
+            // Bottom-Right
+            canvas.drawLine(r, b, r - arm, b, safeCornerPaint)
+            canvas.drawLine(r, b, r, b - arm, safeCornerPaint)
         }
     }
 

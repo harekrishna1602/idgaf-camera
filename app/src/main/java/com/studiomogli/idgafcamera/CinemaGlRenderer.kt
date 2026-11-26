@@ -511,6 +511,7 @@ class CinemaGlRenderer(
     private var defectBw: Float = 0.0f
     @Volatile var liveShutterNs: Long = 16_666_666L
     @Volatile var mirrorFrontExport: Boolean = false
+    @Volatile var anamorphicDesqueeze: Float = 1.0f // 1.0f = Off, 1.33f, 1.55f, 1.80f, 2.00f
 
     @Volatile private var previewWidth: Int = 0
     @Volatile private var previewHeight: Int = 0
@@ -1066,16 +1067,26 @@ class CinemaGlRenderer(
         val effVideoH = if (rotSwapped) rot0W else rot0H
 
         val viewAspect = viewW.toFloat() / viewH.coerceAtLeast(1).toFloat()
-        val videoAspect = effVideoW / effVideoH.coerceAtLeast(1f)
+        val baseVideoAspect = effVideoW / effVideoH.coerceAtLeast(1f)
+        val ana = if (pluginHandles == null) anamorphicDesqueeze.coerceIn(1.0f, 2.5f) else 1.0f
 
-        // Full-bleed center-crop scale in post-rotation screen space (zero stretching, 1:1 square pixels)
         val scaleX: Float
         val scaleY: Float
-        if (viewAspect > videoAspect) {
+        if (ana > 1.01f) {
+            // Anamorphic Live De-Squeeze: fit full ultra-wide cinema frame cleanly inside viewfinder
+            val desqAspect = baseVideoAspect * ana
+            if (desqAspect > viewAspect) {
+                scaleX = 1.0f
+                scaleY = viewAspect / desqAspect
+            } else {
+                scaleX = desqAspect / viewAspect
+                scaleY = 1.0f
+            }
+        } else if (viewAspect > baseVideoAspect) {
             scaleX = 1.0f
-            scaleY = viewAspect / videoAspect
+            scaleY = viewAspect / baseVideoAspect
         } else {
-            scaleX = videoAspect / viewAspect
+            scaleX = baseVideoAspect / viewAspect
             scaleY = 1.0f
         }
 
@@ -1228,8 +1239,22 @@ class CinemaGlRenderer(
                     if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)
                 } else {
                     val encAspect = encW.toFloat() / encH.coerceAtLeast(1).toFloat()
-                    val scaleX = if (encAspect > videoAspect) 1.0f else videoAspect / encAspect
-                    val scaleY = if (encAspect > videoAspect) encAspect / videoAspect else 1.0f
+                    val ana = if (pluginHandles == null) anamorphicDesqueeze.coerceIn(1.0f, 2.5f) else 1.0f
+                    val scaleX: Float
+                    val scaleY: Float
+                    if (ana > 1.01f) {
+                        val desqAspect = videoAspect * ana
+                        if (desqAspect > encAspect + 0.01f) {
+                            scaleX = 1.0f
+                            scaleY = encAspect / desqAspect
+                        } else {
+                            scaleX = desqAspect / encAspect
+                            scaleY = 1.0f
+                        }
+                    } else {
+                        scaleX = if (encAspect > videoAspect) 1.0f else videoAspect / encAspect
+                        scaleY = if (encAspect > videoAspect) encAspect / videoAspect else 1.0f
+                    }
 
                     Matrix.setIdentityM(outMvp, 0)
                     Matrix.scaleM(outMvp, 0, scaleX * unMirror, scaleY, 1.0f)
@@ -1295,8 +1320,22 @@ class CinemaGlRenderer(
                 val effVideoH = if (rotSwapped) rot0W else rot0H
                 val monAspect = monW.toFloat() / monH.coerceAtLeast(1).toFloat()
                 val videoAspect = effVideoW / effVideoH.coerceAtLeast(1f)
-                val scaleX = if (monAspect > videoAspect) 1.0f else videoAspect / monAspect
-                val scaleY = if (monAspect > videoAspect) monAspect / videoAspect else 1.0f
+                val ana = if (pluginHandles == null) anamorphicDesqueeze.coerceIn(1.0f, 2.5f) else 1.0f
+                val scaleX: Float
+                val scaleY: Float
+                if (ana > 1.01f) {
+                    val desqAspect = videoAspect * ana
+                    if (desqAspect > monAspect + 0.01f) {
+                        scaleX = 1.0f
+                        scaleY = monAspect / desqAspect
+                    } else {
+                        scaleX = desqAspect / monAspect
+                        scaleY = 1.0f
+                    }
+                } else {
+                    scaleX = if (monAspect > videoAspect) 1.0f else videoAspect / monAspect
+                    scaleY = if (monAspect > videoAspect) monAspect / videoAspect else 1.0f
+                }
                 Matrix.setIdentityM(outMvp, 0)
                 Matrix.scaleM(outMvp, 0, scaleX * unMirror, scaleY, 1.0f)
                 if (glRotDeg != 0f) Matrix.rotateM(outMvp, 0, glRotDeg, 0f, 0f, 1f)

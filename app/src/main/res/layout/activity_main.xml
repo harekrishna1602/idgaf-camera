@@ -41,17 +41,23 @@
         android:background="@drawable/bg_focus_reticle"
         android:visibility="gone" />
 
+    <!-- SAFE-AREA HUD CONTAINER (Shrinks cleanly via PRO -> SAFE or hardware DisplayCutout; camera stays 100% full-bleed!) -->
+    <FrameLayout
+        android:id="@+id/hudSafeContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
     <!-- TOP CINEMA TELEMETRY BAR (SAVIOR WORKBENCH) -->
     <LinearLayout
         android:id="@+id/saviorTopBar"
         android:layout_width="match_parent"
-        android:layout_height="50dp"
+        android:layout_height="48dp"
         android:layout_gravity="top"
         android:background="#990B0D10"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp">
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp">
 
         <TextView
             android:id="@+id/btnBrandCredits"
@@ -59,35 +65,37 @@
             android:layout_height="30dp"
             android:fontFamily="monospace"
             android:gravity="center"
-            android:paddingStart="6dp"
-            android:paddingEnd="8dp"
+            android:maxLines="1"
+            android:paddingStart="4dp"
+            android:paddingEnd="5dp"
+            android:singleLine="true"
             android:text="IDGAF CAM"
             android:textColor="#FF5F1F"
-            android:textSize="13sp"
+            android:textSize="11.5sp"
             android:textStyle="bold" />
 
-        <!-- Live Audio VU Meter + dB Badge (Fixed width so box never shifts/jitters) -->
+        <!-- Compact Live Audio VU Meter + dB Badge (Fixed width, zero jitter) -->
         <LinearLayout
             android:id="@+id/btnAudioPanelToggle"
-            android:layout_width="132dp"
-            android:layout_height="30dp"
-            android:layout_marginStart="6dp"
+            android:layout_width="104dp"
+            android:layout_height="29dp"
+            android:layout_marginStart="4dp"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="7dp"
-            android:paddingEnd="7dp">
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp">
 
             <com.studiomogli.idgafcamera.AudioMeterView
                 android:id="@+id/audioMeterView"
-                android:layout_width="68dp"
-                android:layout_height="11dp" />
+                android:layout_width="50dp"
+                android:layout_height="10dp" />
 
             <TextView
                 android:id="@+id/txtAudioDb"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
+                android:layout_marginStart="4dp"
                 android:layout_weight="1"
                 android:fontFamily="monospace"
                 android:gravity="end|center_vertical"
@@ -96,21 +104,46 @@
                 android:singleLine="true"
                 android:text="-∞dB"
                 android:textColor="#34C759"
-                android:textSize="9dp"
+                android:textSize="8.5dp"
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- Live Battery % & Free Storage (GB) -->
-        <TextView
-            android:id="@+id/txtSysTelemetry"
+        <!-- Vertically Stacked Live Battery % & Free Storage (Saves ~40dp horizontal bar width!) -->
+        <LinearLayout
+            android:id="@+id/sysTelemetryBox"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
-            android:fontFamily="monospace"
-            android:text="100% • 0GB"
-            android:textColor="#B0B7C3"
-            android:textSize="10sp"
-            android:textStyle="bold" />
+            android:layout_marginStart="6dp"
+            android:gravity="start|center_vertical"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/txtSysBattery"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:includeFontPadding="false"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:text="100%"
+                android:textColor="#B0B7C3"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/txtSysStorage"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="1dp"
+                android:fontFamily="monospace"
+                android:includeFontPadding="false"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:text="0.0GB"
+                android:textColor="#8E96A4"
+                android:textSize="8.5sp"
+                android:textStyle="bold" />
+        </LinearLayout>
 
         <View
             android:layout_width="0dp"
@@ -120,32 +153,32 @@
         <!-- 30-Step Rig Undo (↶) -->
         <TextView
             android:id="@+id/btnRigUndo"
-            android:layout_width="28dp"
-            android:layout_height="30dp"
-            android:layout_marginEnd="4dp"
+            android:layout_width="25dp"
+            android:layout_height="29dp"
+            android:layout_marginEnd="3dp"
             android:alpha="0.32"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center"
             android:text="↶"
             android:textColor="#FFFFFF"
-            android:textSize="14sp"
+            android:textSize="13sp"
             android:textStyle="bold" />
 
         <!-- Live Recording Dot + Timecode -->
         <LinearLayout
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
+            android:layout_height="30dp"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingStart="11dp"
-            android:paddingEnd="11dp">
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp">
 
             <View
                 android:id="@+id/viewRecDot"
-                android:layout_width="8dp"
-                android:layout_height="8dp"
-                android:layout_marginEnd="7dp"
+                android:layout_width="7dp"
+                android:layout_height="7dp"
+                android:layout_marginEnd="6dp"
                 android:background="@drawable/bg_shutter_rec"
                 android:visibility="gone" />
 
@@ -154,24 +187,26 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:fontFamily="monospace"
+                android:maxLines="1"
+                android:singleLine="true"
                 android:text="00:00:00"
                 android:textColor="#FFFFFF"
-                android:textSize="14.5sp"
+                android:textSize="13sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
         <!-- 30-Step Rig Redo (↷) -->
         <TextView
             android:id="@+id/btnRigRedo"
-            android:layout_width="28dp"
-            android:layout_height="30dp"
-            android:layout_marginStart="4dp"
+            android:layout_width="25dp"
+            android:layout_height="29dp"
+            android:layout_marginStart="3dp"
             android:alpha="0.32"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center"
             android:text="↷"
             android:textColor="#FFFFFF"
-            android:textSize="14sp"
+            android:textSize="13sp"
             android:textStyle="bold" />
 
         <View
@@ -182,72 +217,82 @@
         <TextView
             android:id="@+id/btnWorkbenchToEra"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:layout_marginEnd="6dp"
+            android:layout_height="30dp"
+            android:layout_marginEnd="4dp"
             android:background="@drawable/bg_hud_pill"
             android:fontFamily="monospace"
             android:gravity="center"
-            android:paddingStart="11dp"
-            android:paddingEnd="11dp"
-            android:text="ERA ▾"
+            android:maxLines="1"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:singleLine="true"
+            android:text="ERA▾"
             android:textColor="#FF5F1F"
-            android:textSize="11sp"
+            android:textSize="10sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/btnColorPanelToggle"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:layout_marginEnd="6dp"
+            android:layout_height="30dp"
+            android:layout_marginEnd="4dp"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
+            android:maxLines="1"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:singleLine="true"
             android:text="LOOK"
             android:textColor="#FFFFFF"
-            android:textSize="11sp"
+            android:textSize="10sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/btnProSettingsToggle"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:layout_marginEnd="6dp"
+            android:layout_height="30dp"
+            android:layout_marginEnd="4dp"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
+            android:maxLines="1"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:singleLine="true"
             android:text="PRO"
             android:textColor="#FFFFFF"
-            android:textSize="11sp"
+            android:textSize="10sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/btnMonitorToggle"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:layout_marginEnd="6dp"
+            android:layout_height="30dp"
+            android:layout_marginEnd="4dp"
             android:background="@drawable/bg_hud_pill"
             android:gravity="center"
-            android:paddingStart="10dp"
-            android:paddingEnd="10dp"
+            android:maxLines="1"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:singleLine="true"
             android:text="MON"
             android:textColor="#FFFFFF"
-            android:textSize="11sp"
+            android:textSize="10sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/btnFormatToggle"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
+            android:layout_height="30dp"
             android:background="@drawable/bg_hud_pill"
             android:fontFamily="monospace"
             android:gravity="center"
-            android:paddingStart="11dp"
-            android:paddingEnd="11dp"
-            android:text="1080P • 30"
+            android:maxLines="1"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:singleLine="true"
+            android:text="1080P•30"
             android:textColor="#FF5F1F"
-            android:textSize="11sp"
+            android:textSize="10sp"
             android:textStyle="bold" />
     </LinearLayout>
 
@@ -571,19 +616,32 @@
                 android:gravity="center"
                 android:text="TL: OFF"
                 android:textColor="#FFFFFF"
-                android:textSize="9.5sp"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnProSafeArea"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginEnd="5dp"
+                android:layout_weight="0.95"
+                android:background="@drawable/bg_hud_pill"
+                android:gravity="center"
+                android:text="SAFE"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:id="@+id/btnProPresets"
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
-                android:layout_weight="1.15"
+                android:layout_weight="1.05"
                 android:background="@drawable/bg_hud_pill"
                 android:gravity="center"
                 android:text="PRESETS"
                 android:textColor="#FF5F1F"
-                android:textSize="9.5sp"
+                android:textSize="9sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
@@ -789,6 +847,24 @@
             android:id="@+id/formatCodecAspectRow"
             android:layout_width="match_parent"
             android:layout_height="27dp"
+            android:layout_marginTop="3dp"
+            android:gravity="center"
+            android:orientation="horizontal" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:fontFamily="monospace"
+            android:text="ANAMORPHIC LENS DE-SQUEEZE"
+            android:textColor="#8E96A4"
+            android:textSize="8.5sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:id="@+id/formatAnamorphicRow"
+            android:layout_width="match_parent"
+            android:layout_height="26dp"
             android:layout_marginTop="3dp"
             android:gravity="center"
             android:orientation="horizontal" />
@@ -2720,5 +2796,115 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:visibility="gone" />
+
+    </FrameLayout> <!-- End hudSafeContainer -->
+
+    <!-- MINECRAFT-STYLE INTERACTIVE SAFE AREA CALIBRATION CARD (Centered outside hudSafeContainer) -->
+    <LinearLayout
+        android:id="@+id/safeAreaDrawer"
+        android:layout_width="336dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_hud_pill"
+        android:elevation="14dp"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="monospace"
+                android:text="SAFE AREA CALIBRATION"
+                android:textColor="#FF5F1F"
+                android:textSize="10.5sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/txtSafeAreaVal"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:text="100% • FULL"
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:fontFamily="monospace"
+            android:text="Shrink HUD inward to clear notches, punch-holes &amp; short screens."
+            android:textColor="#8E96A4"
+            android:textSize="8.8sp" />
+
+        <SeekBar
+            android:id="@+id/seekSafeArea"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:max="20"
+            android:progress="20"
+            android:progressTint="#FF5F1F"
+            android:thumbTint="#FFFFFF" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="30dp"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/btnSafeAreaAutoCutout"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginEnd="5dp"
+                android:layout_weight="1.25"
+                android:background="@drawable/bg_hud_pill"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:text="AUTO CUTOUT"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnSafeAreaReset"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginEnd="5dp"
+                android:layout_weight="0.85"
+                android:background="@drawable/bg_hud_pill"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:text="100%"
+                android:textColor="#FFFFFF"
+                android:textSize="9sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnSafeAreaDone"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="0.95"
+                android:background="@drawable/bg_lens_active"
+                android:fontFamily="monospace"
+                android:gravity="center"
+                android:text="DONE"
+                android:textColor="#0B0D10"
+                android:textSize="9.5sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
 
 </FrameLayout>

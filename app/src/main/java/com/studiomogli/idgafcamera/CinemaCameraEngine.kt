@@ -381,6 +381,7 @@ class CinemaCameraEngine(
         }
         syncEvOverdriveToGpu()
         glRenderer?.mirrorFrontExport = mirrorFrontExport
+        glRenderer?.anamorphicDesqueeze = anamorphicDesqueeze
         glRenderer?.updateOutputMonitorParams(targetFps, timelapseIntervalMs, recordAspectMode)
         cleanupOrphanEraCacheFiles()
         glRenderer?.setCubeLut(activeCubeLut)
@@ -414,6 +415,8 @@ class CinemaCameraEngine(
     @Volatile var activeCubeLut: CubeLutData? = null
         private set
     @Volatile var mirrorFrontExport: Boolean = false
+        private set
+    @Volatile var anamorphicDesqueeze: Float = 1.0f
         private set
 
     fun updateGpuScopes(state: GpuScopeState) {
@@ -508,6 +511,12 @@ class CinemaCameraEngine(
     fun setMirrorFrontExport(enabled: Boolean) {
         mirrorFrontExport = enabled
         glRenderer?.mirrorFrontExport = enabled
+    }
+
+    fun setAnamorphicDesqueeze(factor: Float) {
+        val clamped = factor.coerceIn(1.0f, 2.5f)
+        anamorphicDesqueeze = clamped
+        glRenderer?.anamorphicDesqueeze = clamped
     }
 
     fun onPreviewSizeChanged(width: Int, height: Int) {
@@ -1623,6 +1632,7 @@ class CinemaCameraEngine(
 
             fun align16(v: Int): Int = ((v + 8) / 16).coerceAtLeast(2) * 16
 
+            val isAnaActive = (activeEraPlugin == null && !isPortMode && anamorphicDesqueeze > 1.01f)
             var encW: Int
             var encH: Int
             if (isPortMode) {
@@ -1640,6 +1650,12 @@ class CinemaCameraEngine(
                     encH = srcH
                     encW = align16((srcH * targetRatio).toInt()).coerceIn(64, srcW)
                 }
+            } else if (isAnaActive) {
+                val srcW = resolvedVideoSize.width
+                val srcH = resolvedVideoSize.height
+                val desqAspect = (srcW.toFloat() / srcH.coerceAtLeast(1).toFloat()) * anamorphicDesqueeze
+                encW = srcW
+                encH = align16((srcW / desqAspect).toInt()).coerceIn(64, srcH)
             } else {
                 encW = resolvedVideoSize.width
                 encH = resolvedVideoSize.height
@@ -1659,7 +1675,7 @@ class CinemaCameraEngine(
                     cropGuide = customCropGuide
                 )
             } catch (firstErr: Exception) {
-                if (!isPortMode && customCropGuide == null) throw firstErr
+                if (!isPortMode && customCropGuide == null && !isAnaActive) throw firstErr
                 // Hardware encoder rejected non-standard dimensions (e.g. tall portrait or custom Mod-16 aspect):
                 // Cleanly fall back to standard hardware-guaranteed resolvedVideoSize!
                 cleanupRecorderOnFailure()
@@ -1869,6 +1885,7 @@ class CinemaCameraEngine(
         val eraTag = plugin?.fileTag?.trim().orEmpty()
         val aspectTag = when {
             aspectMode == RecordAspectMode.VERT_9_16_PORTRAIT -> "9x16P_"
+            anamorphicDesqueeze > 1.01f -> "ANA${String.format(Locale.US, "%.2f", anamorphicDesqueeze).replace('.', 'p')}x_"
             cropGuide != null -> "${cropGuide.label.replace(':', 'x').replace('.', 'p')}_"
             else -> ""
         }

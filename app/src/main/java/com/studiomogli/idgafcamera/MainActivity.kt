@@ -52,6 +52,7 @@ import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
+import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
@@ -70,6 +71,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -104,7 +106,8 @@ data class SaviorWorkbenchSnapshot(
     val splitCompareFraction: Float,
     val recordAspectMode: RecordAspectMode = RecordAspectMode.WIDE_16_9,
     val aspectGuide: AspectGuide = AspectGuide.OFF,
-    val frameCropRecEnabled: Boolean = false
+    val frameCropRecEnabled: Boolean = false,
+    val anamorphicDesqueeze: Float = 1.0f
 )
 
 data class RigHistorySnapshot(
@@ -115,6 +118,7 @@ data class RigHistorySnapshot(
     val recordAspectMode: RecordAspectMode,
     val aspectGuide: AspectGuide,
     val frameCropRecEnabled: Boolean,
+    val anamorphicDesqueeze: Float,
     val timelapseIntervalMs: Long,
     val timerDelaySec: Int,
     val evCompensationIndex: Int,
@@ -147,6 +151,7 @@ data class RigHistorySnapshot(
 class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     companion object {
+        private const val SESSION_PREFS_NAME = "idgaf_session_state_v1"
         private const val GITHUB_LATEST_RELEASE_API =
             "https://api.github.com/repos/harekrishna1602/idgaf-camera/releases/latest"
     }
@@ -170,6 +175,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var btnProTimer: TextView
     private lateinit var btnProTimelapse: TextView
     private lateinit var btnProMirrorFront: TextView
+    private lateinit var btnProSafeArea: TextView
     private lateinit var btnProPresets: TextView
 
     // Phase 7.2A Live GPU Color Studio Drawer (+ v0.7.1.1 Peek-Through Grading Mode)
@@ -230,7 +236,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private var countdownRemaining = 0
     private var pendingRecRotation = Surface.ROTATION_90
     private lateinit var btnBrandCredits: TextView
-    private lateinit var txtSysTelemetry: TextView
+    private lateinit var txtSysBattery: TextView
+    private lateinit var txtSysStorage: TextView
     private lateinit var txtLowBatteryBanner: TextView
     private var isBatteryCharging: Boolean = false
     private var lastBatteryPct: Int = 100
@@ -332,6 +339,21 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     private lateinit var formatBitrateRow: LinearLayout
     private lateinit var formatFrameRatioRow: LinearLayout
     private lateinit var formatCodecAspectRow: LinearLayout
+    private lateinit var formatAnamorphicRow: LinearLayout
+    private lateinit var hudSafeContainer: FrameLayout
+    private lateinit var safeAreaDrawer: LinearLayout
+    private lateinit var txtSafeAreaVal: TextView
+    private lateinit var seekSafeArea: SeekBar
+    private lateinit var btnSafeAreaAutoCutout: TextView
+    private lateinit var btnSafeAreaReset: TextView
+    private lateinit var btnSafeAreaDone: TextView
+    private var safeAreaPercent: Int = 100
+    private var safeAreaAutoCutout: Boolean = true
+    private var hwCutoutLeftPx: Int = 0
+    private var hwCutoutTopPx: Int = 0
+    private var hwCutoutRightPx: Int = 0
+    private var hwCutoutBottomPx: Int = 0
+    private var suppressSafeAreaSeek: Boolean = false
     private lateinit var workbenchEraDrawer: LinearLayout
     private lateinit var txtEraDrawerTitle: TextView
     private lateinit var workbenchSection: LinearLayout
@@ -477,6 +499,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 lastDisplayRotation = curRot
                 overlayView.displayRotation = curRot
                 engine.setDisplayRotation(curRot)
+                applySafeAreaInsets()
                 syncOutputMonitorUi()
             }
         }
@@ -514,9 +537,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                     isAnalyzingFrame.set(false)
                 } else {
                     try {
-                        // Ultra-lightweight 80x45 sample ONLY for RGB Histogram & Luma Waveform (Peaking, Zebras & False Color run 100% on GPU at 60 FPS!)
-                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 80 && it.height == 45 }
-                            ?: Bitmap.createBitmap(80, 45, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
+                        // High-res 160x90 sample ONLY for RGB Histogram & 160x64 Broadcast Phosphor Waveform (~1.4ms off-UI!)
+                        val reusable = captureSampleBitmap?.takeIf { !it.isRecycled && it.width == 160 && it.height == 90 }
+                            ?: Bitmap.createBitmap(160, 90, Bitmap.Config.ARGB_8888).also { captureSampleBitmap = it }
                         textureView.getBitmap(reusable)
                         worker.post {
                             try {
@@ -714,6 +737,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         btnProTimer = findViewById(R.id.btnProTimer)
         btnProTimelapse = findViewById(R.id.btnProTimelapse)
         btnProMirrorFront = findViewById(R.id.btnProMirrorFront)
+        btnProSafeArea = findViewById(R.id.btnProSafeArea)
         btnProPresets = findViewById(R.id.btnProPresets)
         btnColorPanelToggle = findViewById(R.id.btnColorPanelToggle)
         colorControlDrawer = findViewById(R.id.colorControlDrawer)
@@ -759,7 +783,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         txtColorVigVal = findViewById(R.id.txtColorVigVal)
         txtTimerCountdown = findViewById(R.id.txtTimerCountdown)
         btnBrandCredits = findViewById(R.id.btnBrandCredits)
-        txtSysTelemetry = findViewById(R.id.txtSysTelemetry)
+        txtSysBattery = findViewById(R.id.txtSysBattery)
+        txtSysStorage = findViewById(R.id.txtSysStorage)
         txtLowBatteryBanner = findViewById(R.id.txtLowBatteryBanner)
         txtLowBatteryBanner.setOnClickListener {
             lowBatteryBannerDismissed = true
@@ -815,6 +840,14 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         formatBitrateRow = findViewById(R.id.formatBitrateRow)
         formatFrameRatioRow = findViewById(R.id.formatFrameRatioRow)
         formatCodecAspectRow = findViewById(R.id.formatCodecAspectRow)
+        formatAnamorphicRow = findViewById(R.id.formatAnamorphicRow)
+        hudSafeContainer = findViewById(R.id.hudSafeContainer)
+        safeAreaDrawer = findViewById(R.id.safeAreaDrawer)
+        txtSafeAreaVal = findViewById(R.id.txtSafeAreaVal)
+        seekSafeArea = findViewById(R.id.seekSafeArea)
+        btnSafeAreaAutoCutout = findViewById(R.id.btnSafeAreaAutoCutout)
+        btnSafeAreaReset = findViewById(R.id.btnSafeAreaReset)
+        btnSafeAreaDone = findViewById(R.id.btnSafeAreaDone)
         workbenchEraDrawer = findViewById(R.id.workbenchEraDrawer)
         txtEraDrawerTitle = findViewById(R.id.txtEraDrawerTitle)
         workbenchSection = findViewById(R.id.workbenchSection)
@@ -903,6 +936,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         setupColorStudioDrawer()
         setupEraWorkbench()
         setupUnifiedInlineDrawersAndCleanUi()
+        setupSafeAreaControls()
+        restoreSessionState()
 
         btnBrandCredits.setOnClickListener {
             showStudioMogliCreditsDialog()
@@ -963,7 +998,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
             scaleDetector.onTouchEvent(event)
             if (event.actionMasked == MotionEvent.ACTION_DOWN && event.pointerCount == 1 && !scaleDetector.isInProgress) {
-                if (cinemaInputDrawer.visibility == View.VISIBLE) {
+                if (safeAreaDrawer.visibility == View.VISIBLE) {
+                    closeSafeAreaCalibrator()
+                } else if (cinemaInputDrawer.visibility == View.VISIBLE) {
                     closeCinemaInputDrawer()
                 } else if (workbenchEraDrawer.visibility == View.VISIBLE) {
                     closeWorkbenchEraDrawer()
@@ -1135,6 +1172,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         recordAspectMode = engine.recordAspectMode,
         aspectGuide = overlayView.aspectGuide,
         frameCropRecEnabled = engine.frameCropRecEnabled,
+        anamorphicDesqueeze = engine.anamorphicDesqueeze,
         timelapseIntervalMs = engine.timelapseIntervalMs,
         timerDelaySec = timerDelaySec,
         evCompensationIndex = engine.evCompensationIndex,
@@ -1249,6 +1287,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.activeFrameGuide = s.aspectGuide
             engine.frameCropRecEnabled = s.frameCropRecEnabled
             overlayView.frameCropRecEnabled = s.frameCropRecEnabled
+            engine.setAnamorphicDesqueeze(s.anamorphicDesqueeze)
 
             engine.timelapseIntervalMs = s.timelapseIntervalMs
             updateTimelapseUi()
@@ -1733,12 +1772,16 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
 
     private fun updateFormatPillUi() {
         val isPort = (engine.recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT)
-        val hasCropRec = !isPort && engine.frameCropRecEnabled &&
+        val ana = engine.anamorphicDesqueeze
+        val hasAna = !isPort && ana > 1.01f
+        val hasCropRec = !isPort && !hasAna && engine.frameCropRecEnabled &&
             overlayView.aspectGuide != AspectGuide.OFF && overlayView.aspectGuide != AspectGuide.WIDE_169
+        val anaTag = String.format(Locale.US, "%.2fx", ana).removeSuffix("0x").let { if (it.endsWith(".")) "${it}0x" else if (it.endsWith("x")) it else "${it}x" }
         btnFormatToggle.text = when {
-            isPort -> "9:16P • $currentFps"
-            hasCropRec -> "${overlayView.aspectGuide.label} • $currentFps"
-            else -> "${currentResolution.label} • $currentFps"
+            isPort -> "9:16P•$currentFps"
+            hasAna -> "${anaTag}•$currentFps"
+            hasCropRec -> "${overlayView.aspectGuide.label}•$currentFps"
+            else -> "${currentResolution.label}•$currentFps"
         }
         val open = formatDrawer.visibility == View.VISIBLE
         if (open) {
@@ -1749,6 +1792,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         val aspectShort = when {
             isPort -> "9:16P"
+            hasAna -> "ANA $anaTag"
             hasCropRec -> "${overlayView.aspectGuide.label} CROP"
             overlayView.aspectGuide != AspectGuide.OFF -> "${overlayView.aspectGuide.label} GUIDE"
             else -> "16:9"
@@ -1953,7 +1997,64 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         formatCodecAspectRow.addView(portChip)
 
+        // Row 6: Anamorphic Lens De-Squeeze (OFF | 1.33x | 1.55x | 1.8x | 2.0x)
+        formatAnamorphicRow.removeAllViews()
+        val anaChoices = listOf(
+            1.0f to "OFF",
+            1.33f to "1.33x",
+            1.55f to "1.55x",
+            1.80f to "1.8x",
+            2.00f to "2.0x"
+        )
+        anaChoices.forEachIndexed { idx, (factor, lbl) ->
+            val selected = !isPort && kotlin.math.abs(engine.anamorphicDesqueeze - factor) < 0.03f
+            val chip = TextView(this).apply {
+                text = lbl
+                textSize = 8.6f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                alpha = if (isPort && factor > 1.01f) 0.40f else 1.0f
+                setBackgroundResource(if (selected) R.drawable.bg_lens_active else R.drawable.bg_hud_pill)
+                setTextColor(if (selected) 0xFF0B0D10.toInt() else 0xFFFFFFFF.toInt())
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    if (idx < anaChoices.lastIndex) marginEnd = dpToPx(3)
+                }
+                setOnClickListener {
+                    selectAnamorphicDesqueeze(factor)
+                }
+            }
+            formatAnamorphicRow.addView(chip)
+        }
+
         updateFormatPillUi()
+    }
+
+    private fun selectAnamorphicDesqueeze(factor: Float) {
+        if (engine.isRecording) {
+            showSingleToast("Stop recording to change Anamorphic De-Squeeze")
+            return
+        }
+        recordUndoCheckpoint()
+        if (factor > 1.01f && engine.recordAspectMode == RecordAspectMode.VERT_9_16_PORTRAIT) {
+            engine.recordAspectMode = RecordAspectMode.WIDE_16_9
+            overlayView.recordAspectMode = RecordAspectMode.WIDE_16_9
+        }
+        if (factor > 1.01f && engine.frameCropRecEnabled) {
+            engine.frameCropRecEnabled = false
+            overlayView.frameCropRecEnabled = false
+        }
+        engine.setAnamorphicDesqueeze(factor)
+        syncOutputMonitorUi()
+        if (formatDrawer.visibility == View.VISIBLE) {
+            renderFormatDrawerChips()
+        } else {
+            updateFormatPillUi()
+        }
+        showSingleToast(
+            if (factor <= 1.01f) "Anamorphic De-Squeeze: OFF (1.0x)"
+            else String.format(Locale.US, "Anamorphic De-Squeeze: %.2fx (Live Preview + MP4)", factor)
+        )
     }
 
     private fun selectFrameRatio(guide: AspectGuide) {
@@ -2169,7 +2270,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
                 splitCompareFraction = splitCompareFraction,
                 recordAspectMode = engine.recordAspectMode,
                 aspectGuide = overlayView.aspectGuide,
-                frameCropRecEnabled = engine.frameCropRecEnabled
+                frameCropRecEnabled = engine.frameCropRecEnabled,
+                anamorphicDesqueeze = engine.anamorphicDesqueeze
             )
         } else {
             activeEraPlugin?.onExit(eraHostBridge)
@@ -2250,6 +2352,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.activeFrameGuide = snap.aspectGuide
             engine.frameCropRecEnabled = snap.frameCropRecEnabled
             overlayView.frameCropRecEnabled = snap.frameCropRecEnabled
+            engine.setAnamorphicDesqueeze(snap.anamorphicDesqueeze)
             currentFps = snap.fps
             if (engine.targetResolution != snap.resolution) {
                 engine.updateSettings(snap.resolution, snap.fps)
@@ -2510,8 +2613,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             overlayView.aspectGuide != AspectGuide.OFF && overlayView.aspectGuide != AspectGuide.WIDE_169
         ) overlayView.aspectGuide else null
 
+        val hasAna = (!isEra && !isPort && engine.anamorphicDesqueeze > 1.01f)
         val (baseWdp, baseHdp) = when {
             isPort -> 82 to 146
+            hasAna -> 192 to (192f / ((16f / 9f) * engine.anamorphicDesqueeze)).roundToInt().coerceIn(58, 96)
             activeCropGuide == AspectGuide.SCOPE_239 -> 186 to 78
             activeCropGuide == AspectGuide.FLAT_185 -> 172 to 93
             activeCropGuide == AspectGuide.CLASSIC_43 -> 140 to 105
@@ -2546,6 +2651,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         val isRec = engine.isRecording
         val aspectLbl = when {
             isPort -> "9:16P"
+            hasAna -> String.format(Locale.US, "ANA %.2fx", engine.anamorphicDesqueeze)
             activeCropGuide != null -> activeCropGuide.label
             else -> "16:9"
         }
@@ -2663,7 +2769,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             proSettingsBar.visibility == View.VISIBLE ||
             formatDrawer.visibility == View.VISIBLE ||
             workbenchEraDrawer.visibility == View.VISIBLE ||
-            cinemaInputDrawer.visibility == View.VISIBLE
+            cinemaInputDrawer.visibility == View.VISIBLE ||
+            safeAreaDrawer.visibility == View.VISIBLE
     }
 
     private fun syncLowBatteryBannerVisibility() {
@@ -2723,6 +2830,9 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
         if (cinemaInputDrawer.visibility == View.VISIBLE) {
             closeCinemaInputDrawer()
+        }
+        if (except != "SAFE" && safeAreaDrawer.visibility == View.VISIBLE) {
+            closeSafeAreaCalibrator()
         }
         syncLowBatteryBannerVisibility()
     }
@@ -2813,6 +2923,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             engine.setMirrorFrontExport(next)
             updateMirrorFrontPillUi()
             showSingleToast(if (next) "Front MP4 Export: MIRRORED (Selfie)" else "Front MP4 Export: NATURAL (Un-Mirrored)")
+        }
+
+        btnProSafeArea.setOnClickListener {
+            openSafeAreaCalibrator()
         }
 
         btnProPresets.setOnClickListener {
@@ -3190,19 +3304,26 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val stat = StatFs(Environment.getDataDirectory().path)
             val freeGb = (stat.availableBlocksLong * stat.blockSizeLong) / (1024.0 * 1024.0 * 1024.0)
 
-            // 1. Update SAVIOR top-bar battery + charging icon (⚡) + free storage
-            txtSysTelemetry.text = when {
-                charging -> String.format(Locale.US, "⚡%d%% • %.1fGB", pct, freeGb)
-                pct <= 15 -> String.format(Locale.US, "LOW %d%% • %.1fGB", pct, freeGb)
-                else -> String.format(Locale.US, "%d%% • %.1fGB", pct, freeGb)
+            // 1. Update Vertically Stacked Battery % (top) & Free Storage GB (bottom)
+            txtSysBattery.text = when {
+                charging -> "⚡${pct}%"
+                pct <= 15 -> "LOW ${pct}%"
+                else -> "${pct}%"
             }
-            txtSysTelemetry.setTextColor(
+            txtSysBattery.setTextColor(
                 when {
-                    freeGb < 1.0 -> 0xFFFF3B30.toInt()
                     charging -> 0xFF34C759.toInt()
                     pct <= 15 -> 0xFFFF3B30.toInt()
-                    pct <= 30 || freeGb < 3.0 -> 0xFFFFCC00.toInt()
-                    else -> 0xFFB0B7C3.toInt()
+                    pct <= 30 -> 0xFFFFCC00.toInt()
+                    else -> 0xFFE5E7EB.toInt()
+                }
+            )
+            txtSysStorage.text = String.format(Locale.US, "%.1fGB", freeGb)
+            txtSysStorage.setTextColor(
+                when {
+                    freeGb < 1.0 -> 0xFFFF3B30.toInt()
+                    freeGb < 3.0 -> 0xFFFFCC00.toInt()
+                    else -> 0xFF8E96A4.toInt()
                 }
             )
 
@@ -3416,8 +3537,8 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         } else {
             @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, 0)
         }
-        info.versionName ?: "0.7.7.3"
-    } catch (_: Exception) { "0.7.7.3" }
+        info.versionName ?: "0.7.7.4"
+    } catch (_: Exception) { "0.7.7.4" }
 
     private fun isNewerVersion(latestRaw: String, currentRaw: String): Boolean {
         val lParts = latestRaw.removePrefix("v").removePrefix("V")
@@ -3849,9 +3970,10 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
             val lp = btnExitSplitWipe.layoutParams as? android.widget.FrameLayout.LayoutParams
             if (lp != null) {
                 lp.marginStart = when {
-                    overlayView.showHistogram && overlayView.showWaveform -> dpToPx(296)
-                    overlayView.showHistogram || overlayView.showWaveform -> dpToPx(160)
-                    else -> dpToPx(20)
+                    overlayView.showHistogram && overlayView.showWaveform -> dpToPx(316)
+                    overlayView.showWaveform -> dpToPx(178)
+                    overlayView.showHistogram -> dpToPx(156)
+                    else -> dpToPx(16)
                 }
                 btnExitSplitWipe.layoutParams = lp
             }
@@ -5390,6 +5512,11 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
     }
 
     private fun enableImmersiveFullscreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowInsetsControllerCompat(window, window.decorView)
         controller.hide(WindowInsetsCompat.Type.systemBars())
@@ -5445,6 +5572,7 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         textureView.post {
             engine.onPreviewSizeChanged(textureView.width, textureView.height)
             engine.setDisplayRotation(lastDisplayRotation)
+            applySafeAreaInsets()
             syncOutputMonitorUi()
         }
     }
@@ -5820,7 +5948,300 @@ class MainActivity : AppCompatActivity(), CinemaEngineListener {
         }
     }
 
+
+    // ==================== MINECRAFT-STYLE SAFE AREA & AUTO CUTOUT ENGINE ====================
+
+    private fun setupSafeAreaControls() {
+        ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
+            val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
+            hwCutoutLeftPx = cutout.left
+            hwCutoutTopPx = cutout.top
+            hwCutoutRightPx = cutout.right
+            hwCutoutBottomPx = cutout.bottom
+            applySafeAreaInsets()
+            insets
+        }
+
+        hudSafeContainer.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or2, ob ->
+            if ((r - l) != (or2 - ol) || (b - t) != (ob - ot)) {
+                applySafeAreaInsets()
+            }
+        }
+
+        seekSafeArea.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser || suppressSafeAreaSeek) return
+                safeAreaPercent = (80 + progress).coerceIn(80, 100)
+                applySafeAreaInsets()
+                persistSafeAreaPrefs()
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+
+        btnSafeAreaAutoCutout.setOnClickListener {
+            safeAreaAutoCutout = !safeAreaAutoCutout
+            applySafeAreaInsets()
+            persistSafeAreaPrefs()
+            showSingleToast(
+                if (safeAreaAutoCutout) "Auto Cutout ON (Clears camera notch / punch-hole)"
+                else "Auto Cutout OFF (Manual % only)"
+            )
+        }
+
+        btnSafeAreaReset.setOnClickListener {
+            safeAreaPercent = 100
+            suppressSafeAreaSeek = true
+            seekSafeArea.progress = 20
+            suppressSafeAreaSeek = false
+            applySafeAreaInsets()
+            persistSafeAreaPrefs()
+            showSingleToast("Safe Area reset to 100%")
+        }
+
+        btnSafeAreaDone.setOnClickListener {
+            closeSafeAreaCalibrator()
+        }
+    }
+
+    private fun openSafeAreaCalibrator() {
+        closeTopDrawers(except = "SAFE")
+        selectPanel(ProControlPanel.NONE)
+        suppressSafeAreaSeek = true
+        seekSafeArea.progress = (safeAreaPercent - 80).coerceIn(0, 20)
+        suppressSafeAreaSeek = false
+        overlayView.safeAreaPreviewActive = true
+        safeAreaDrawer.visibility = View.VISIBLE
+        applySafeAreaInsets()
+    }
+
+    private fun closeSafeAreaCalibrator() {
+        safeAreaDrawer.visibility = View.GONE
+        overlayView.safeAreaPreviewActive = false
+        persistSafeAreaPrefs()
+        syncLowBatteryBannerVisibility()
+    }
+
+    private fun persistSafeAreaPrefs() {
+        try {
+            getSharedPreferences(SESSION_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putInt("safe_area_pct", safeAreaPercent)
+                .putBoolean("safe_area_auto_cutout", safeAreaAutoCutout)
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun applySafeAreaInsets() {
+        val dm = resources.displayMetrics
+        val screenW = hudSafeContainer.width.takeIf { it > 0 } ?: dm.widthPixels
+        val screenH = hudSafeContainer.height.takeIf { it > 0 } ?: dm.heightPixels
+        val shrinkFrac = ((100 - safeAreaPercent).coerceIn(0, 20)) / 100f
+        val manualPadX = ((screenW * shrinkFrac) * 0.5f).roundToInt()
+        val manualPadY = ((screenH * shrinkFrac) * 0.5f).roundToInt()
+
+        val padL = if (safeAreaAutoCutout) maxOf(manualPadX, hwCutoutLeftPx) else manualPadX
+        val padT = if (safeAreaAutoCutout) maxOf(manualPadY, hwCutoutTopPx) else manualPadY
+        val padR = if (safeAreaAutoCutout) maxOf(manualPadX, hwCutoutRightPx) else manualPadX
+        val padB = if (safeAreaAutoCutout) maxOf(manualPadY, hwCutoutBottomPx) else manualPadY
+
+        if (hudSafeContainer.paddingLeft != padL || hudSafeContainer.paddingTop != padT ||
+            hudSafeContainer.paddingRight != padR || hudSafeContainer.paddingBottom != padB
+        ) {
+            hudSafeContainer.setPadding(padL, padT, padR, padB)
+        }
+
+        // Dynamic Compact Top-Bar Scaling: guarantee 1080P•30 NEVER clips even on tiny phones or 80% Safe Area!
+        val usableDpW = ((screenW - padL - padR) / dm.density).coerceAtLeast(320f)
+        val isTight = usableDpW < 640f
+        val isUltraTight = usableDpW < 570f
+
+        val wantBrandBase = if (isUltraTight) "IDGAF" else "IDGAF CAM"
+        if (updateDownloadUrl.isNullOrBlank()) {
+            if (btnBrandCredits.text.toString() != wantBrandBase) btnBrandCredits.text = wantBrandBase
+        } else {
+            val updTxt = "$wantBrandBase ↑"
+            if (btnBrandCredits.text.toString() != updTxt) btnBrandCredits.text = updTxt
+        }
+
+        val wantVuW = dpToPx(if (isUltraTight) 80 else if (isTight) 92 else 104)
+        val vuLp = btnAudioPanelToggle.layoutParams
+        if (vuLp != null && vuLp.width != wantVuW) {
+            vuLp.width = wantVuW
+            btnAudioPanelToggle.layoutParams = vuLp
+        }
+        val wantMeterW = dpToPx(if (isUltraTight) 34 else if (isTight) 42 else 50)
+        val meterLp = audioMeterView.layoutParams
+        if (meterLp != null && meterLp.width != wantMeterW) {
+            meterLp.width = wantMeterW
+            audioMeterView.layoutParams = meterLp
+        }
+
+        val lbl = when {
+            safeAreaPercent < 100 && safeAreaAutoCutout && (hwCutoutLeftPx > 0 || hwCutoutRightPx > 0) -> "${safeAreaPercent}% + CUTOUT"
+            safeAreaPercent < 100 -> "${safeAreaPercent}%"
+            safeAreaAutoCutout && (hwCutoutLeftPx > 0 || hwCutoutRightPx > 0) -> "100% • CUTOUT"
+            else -> "100% • FULL"
+        }
+        txtSafeAreaVal.text = lbl
+        styleToolPill(btnSafeAreaAutoCutout, safeAreaAutoCutout)
+        btnProSafeArea.text = if (safeAreaPercent < 100) "SAFE:${safeAreaPercent}%" else "SAFE"
+        styleToolPill(btnProSafeArea, safeAreaPercent < 100)
+        overlayView.updateSafeAreaInsets(padL, padT, padR, padB, lbl)
+    }
+
+    // ==================== AUTO-SAVE SESSION PERSISTENCE (ZERO-RECONFIGURE BOOT) ====================
+
+    private fun saveSessionState() {
+        try {
+            val prefs = getSharedPreferences(SESSION_PREFS_NAME, Context.MODE_PRIVATE)
+            val snap = saviorSnapshot
+            val resName = (snap?.resolution ?: currentResolution).name
+            val fpsVal = snap?.fps ?: currentFps
+            val brVal = snap?.bitrateMbps ?: engine.targetBitrateMbps
+            val codecName = (snap?.codec ?: engine.targetCodec).name
+            val aspectName = (snap?.recordAspectMode ?: engine.recordAspectMode).name
+            val guideName = (snap?.aspectGuide ?: overlayView.aspectGuide).name
+            val cropRec = snap?.frameCropRecEnabled ?: engine.frameCropRecEnabled
+            val anaVal = snap?.anamorphicDesqueeze ?: engine.anamorphicDesqueeze
+
+            prefs.edit()
+                .putInt("safe_area_pct", safeAreaPercent)
+                .putBoolean("safe_area_auto_cutout", safeAreaAutoCutout)
+                .putString("resolution", resName)
+                .putInt("fps", fpsVal)
+                .putInt("bitrate_mbps", brVal)
+                .putString("codec", codecName)
+                .putString("record_aspect_mode", aspectName)
+                .putString("aspect_guide", guideName)
+                .putBoolean("frame_crop_rec", cropRec)
+                .putFloat("anamorphic_desqueeze", anaVal)
+                .putBoolean("stab_enabled", engine.isStabilizationEnabled)
+                .putBoolean("mirror_front", engine.mirrorFrontExport)
+                .putBoolean("audio_muted", engine.isAudioMuted)
+                .putString("audio_preamp", engine.audioPreampMode.name)
+                .putString("mic_pref", engine.micPreference.name)
+                .putInt("audio_trim_db", engine.audioMonitorTrimDb)
+                .putString("grid_mode", overlayView.gridMode.name)
+                .putString("peaking_color", overlayView.peakingColor.name)
+                .putString("peaking_sens", overlayView.peakingSensitivity.name)
+                .putString("zebra_mode", overlayView.zebraMode.name)
+                .putFloat("gpu_exp", gpuColorState.exposureLift)
+                .putFloat("gpu_con", gpuColorState.contrast)
+                .putFloat("gpu_sat", gpuColorState.saturation)
+                .putFloat("gpu_shd", gpuColorState.shadows)
+                .putFloat("gpu_hil", gpuColorState.highlights)
+                .putFloat("gpu_vig", gpuColorState.vignette)
+                .putFloat("gpu_lut_mix", gpuColorState.lutIntensity)
+                .putString("active_look_tag", activeLookTag)
+                .putString("active_lut_id", activeLutSourceId)
+                .putFloat("out_mon_scale", outputMonitorScale)
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun restoreSessionState() {
+        try {
+            val prefs = getSharedPreferences(SESSION_PREFS_NAME, Context.MODE_PRIVATE)
+            safeAreaPercent = prefs.getInt("safe_area_pct", 100).coerceIn(80, 100)
+            safeAreaAutoCutout = prefs.getBoolean("safe_area_auto_cutout", true)
+            outputMonitorScale = prefs.getFloat("out_mon_scale", 1.0f).coerceIn(0.75f, 1.85f)
+            applySafeAreaInsets()
+
+            if (!prefs.contains("resolution")) return
+
+            currentResolution = try {
+                CinemaResolution.valueOf(prefs.getString("resolution", CinemaResolution.FHD_1080P.name)!!)
+            } catch (_: Exception) { CinemaResolution.FHD_1080P }
+            currentFps = prefs.getInt("fps", 30).coerceIn(1, 60)
+            engine.targetResolution = currentResolution
+            engine.targetFps = currentFps
+            engine.targetBitrateMbps = prefs.getInt("bitrate_mbps", 35).coerceIn(2, 120)
+            bitrateIdx = bitrateOptions.indexOf(engine.targetBitrateMbps).takeIf { it >= 0 } ?: 4
+            engine.targetCodec = try {
+                CinemaCodec.valueOf(prefs.getString("codec", CinemaCodec.H264.name)!!)
+            } catch (_: Exception) { CinemaCodec.H264 }
+
+            val recMode = try {
+                RecordAspectMode.valueOf(prefs.getString("record_aspect_mode", RecordAspectMode.WIDE_16_9.name)!!)
+            } catch (_: Exception) { RecordAspectMode.WIDE_16_9 }
+            engine.recordAspectMode = recMode
+            overlayView.recordAspectMode = recMode
+
+            val guide = try {
+                AspectGuide.valueOf(prefs.getString("aspect_guide", AspectGuide.OFF.name)!!)
+            } catch (_: Exception) { AspectGuide.OFF }
+            overlayView.aspectGuide = guide
+            engine.activeFrameGuide = guide
+            val cropRec = prefs.getBoolean("frame_crop_rec", false) && guide != AspectGuide.OFF && guide != AspectGuide.WIDE_169
+            engine.frameCropRecEnabled = cropRec
+            overlayView.frameCropRecEnabled = cropRec
+
+            val ana = prefs.getFloat("anamorphic_desqueeze", 1.0f).coerceIn(1.0f, 2.5f)
+            engine.setAnamorphicDesqueeze(ana)
+
+            val stab = prefs.getBoolean("stab_enabled", true)
+            engine.setStabilizationEnabled(stab)
+            styleToolPill(btnProStab, stab)
+
+            engine.setMirrorFrontExport(prefs.getBoolean("mirror_front", false))
+            updateMirrorFrontPillUi()
+
+            engine.isAudioMuted = prefs.getBoolean("audio_muted", false)
+            engine.audioPreampMode = try {
+                AudioPreampMode.valueOf(prefs.getString("audio_preamp", AudioPreampMode.CAMCORDER.name)!!)
+            } catch (_: Exception) { AudioPreampMode.CAMCORDER }
+            engine.micPreference = try {
+                MicPreference.valueOf(prefs.getString("mic_pref", MicPreference.AUTO.name)!!)
+            } catch (_: Exception) { MicPreference.AUTO }
+            engine.audioMonitorTrimDb = prefs.getInt("audio_trim_db", 0).coerceIn(-12, 12)
+            audioGainSeekBar.progress = (engine.audioMonitorTrimDb + 12).coerceIn(0, 24)
+            txtAudioTrimVal.text = if (engine.audioMonitorTrimDb > 0) "+${engine.audioMonitorTrimDb} dB" else "${engine.audioMonitorTrimDb} dB"
+            updateAudioDrawerUi()
+
+            overlayView.gridMode = try {
+                GridMode.valueOf(prefs.getString("grid_mode", GridMode.OFF.name)!!)
+            } catch (_: Exception) { GridMode.OFF }
+            gridModeIdx = GridMode.values().indexOf(overlayView.gridMode).coerceAtLeast(0)
+            btnToolGrid.text = overlayView.gridMode.label
+            styleToolPill(btnToolGrid, overlayView.gridMode != GridMode.OFF)
+
+            overlayView.peakingColor = try {
+                PeakingColor.valueOf(prefs.getString("peaking_color", PeakingColor.GREEN.name)!!)
+            } catch (_: Exception) { PeakingColor.GREEN }
+            overlayView.peakingSensitivity = try {
+                PeakingSensitivity.valueOf(prefs.getString("peaking_sens", PeakingSensitivity.MED.name)!!)
+            } catch (_: Exception) { PeakingSensitivity.MED }
+            overlayView.zebraMode = try {
+                ZebraMode.valueOf(prefs.getString("zebra_mode", ZebraMode.IRE_92.name)!!)
+            } catch (_: Exception) { ZebraMode.IRE_92 }
+            updateMonitorPillLabels()
+
+            gpuColorState = GpuColorState(
+                exposureLift = prefs.getFloat("gpu_exp", 0f).coerceIn(-1.5f, 1.5f),
+                contrast = prefs.getFloat("gpu_con", 1f).coerceIn(0.50f, 1.60f),
+                saturation = prefs.getFloat("gpu_sat", 1f).coerceIn(0.0f, 1.80f),
+                shadows = prefs.getFloat("gpu_shd", 0f).coerceIn(-0.50f, 0.50f),
+                highlights = prefs.getFloat("gpu_hil", 0f).coerceIn(-0.50f, 0.50f),
+                vignette = prefs.getFloat("gpu_vig", 0f).coerceIn(-0.85f, 0.85f),
+                lutIntensity = prefs.getFloat("gpu_lut_mix", 1f).coerceIn(0.0f, 1.0f),
+                isBypassed = false
+            )
+            activeLookTag = prefs.getString("active_look_tag", "NONE") ?: "NONE"
+            val savedLutId = prefs.getString("active_lut_id", "") ?: ""
+            if (savedLutId.isNotEmpty()) {
+                loadAndActivateCubeLut(savedLutId, silent = true)
+            }
+            pushGpuColorStateAndRefreshUi()
+            updateFormatPillUi()
+        } catch (_: Exception) {
+        }
+    }
+
     override fun onPause() {
+        saveSessionState()
         displayManager?.unregisterDisplayListener(displayRotationListener)
         rackAnimator?.cancel()
         zoomAnimator?.cancel()
